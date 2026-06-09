@@ -1,0 +1,171 @@
+<Window x:Class="TcpRedirectorGUI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="TcpRedirector — Proxy Redirector"
+        Height="800" Width="1100" MinHeight="600" MinWidth="900"
+        Background="#F0F0F0" FontFamily="Segoe UI">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="28"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0" Background="#0078D4" Padding="16,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="TcpRedirector" Foreground="White" FontSize="18" FontWeight="Bold" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Foreground="White" FontSize="12" Margin="0,0,16,0">
+                        <Run Text="Conn:"/><Run Text="{Binding ActiveConnections, Mode=OneWay}" FontWeight="Bold"/>
+                        <Run Text="|"/><Run Text="{Binding TotalTraffic, Mode=OneWay}"/>
+                    </TextBlock>
+                    <Ellipse Width="8" Height="8" Margin="0,0,4,0">
+                        <Ellipse.Fill>
+                            <SolidColorBrush Color="{Binding IsConnected, Converter={StaticResource BoolToColor}}"/>
+                        </Ellipse.Fill>
+                    </Ellipse>
+                    <TextBlock Text="{Binding StatusText, Mode=OneWay}" Foreground="White" FontSize="12"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Body -->
+        <Grid Grid.Row="1" Margin="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="160"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Navigation -->
+            <Border Grid.Column="0" Background="White" CornerRadius="4" Margin="0,0,8,0" Padding="8">
+                <StackPanel>
+                    <TextBlock Text="Menu" FontWeight="Bold" Foreground="#666" Margin="0,0,0,8"/>
+                    <Button Content="⚙ Settings" Command="{Binding NavCommand}" CommandParameter="Settings"
+                            Background="Transparent" Foreground="#333" HorizontalContentAlignment="Left" Margin="0,2"/>
+                    <Button Content="📋 Rules" Command="{Binding NavCommand}" CommandParameter="Rules"
+                            Background="Transparent" Foreground="#333" HorizontalContentAlignment="Left" Margin="0,2"/>
+                    <Button Content="🔌 Connections" Command="{Binding NavCommand}" CommandParameter="Connections"
+                            Background="Transparent" Foreground="#333" HorizontalContentAlignment="Left" Margin="0,2"/>
+                    <Button Content="🛠 Service" Command="{Binding NavCommand}" CommandParameter="Service"
+                            Background="Transparent" Foreground="#333" HorizontalContentAlignment="Left" Margin="0,2"/>
+                    <Separator Margin="0,8"/>
+                    <TextBlock Text="{Binding IsServiceRunning, Mode=OneWay, StringFormat='Service: {0}'}" Foreground="#666"/>
+                </StackPanel>
+            </Border>
+
+            <!-- Content -->
+            <Border Grid.Column="1" Background="White" CornerRadius="4" Padding="16">
+                <Grid>
+                <!-- Settings -->
+                <StackPanel Visibility="{Binding ActiveView, Converter={StaticResource ViewToVis}, ConverterParameter=Settings}">
+                    <TextBlock Text="Proxy Settings" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="100"/><ColumnDefinition Width="300"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:" VerticalAlignment="Center" Margin="0,4"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Proxy.Host}" Margin="0,4"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Port:" VerticalAlignment="Center" Margin="0,4"/>
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Proxy.Port}" Margin="0,4"/>
+                        <CheckBox Grid.Row="2" Grid.Column="1" Content="Authentication required" IsChecked="{Binding Proxy.Auth}" Margin="0,4"/>
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Login:" VerticalAlignment="Center" Margin="0,4"/>
+                        <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Proxy.Login}" Margin="0,4"/>
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Password:" VerticalAlignment="Center" Margin="0,4"/>
+                        <PasswordBox Grid.Row="4" Grid.Column="1" x:Name="PwdBox" Margin="0,4"/>
+                        <Button Grid.Row="5" Grid.Column="1" Content="Save" Click="SaveProxy_Click" Width="100" HorizontalAlignment="Left" Margin="0,8,0,0"/>
+                        <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding Proxy.Msg, Mode=OneWay}" Foreground="#107C10" FontWeight="Bold" Margin="0,4,0,0"/>
+                    </Grid>
+                </StackPanel>
+
+                <!-- Rules -->
+                <Grid Visibility="{Binding ActiveView, Converter={StaticResource ViewToVis}, ConverterParameter=Rules}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="Rules" FontSize="20" FontWeight="Bold" VerticalAlignment="Center"/>
+                        <Button Content="+ Add" Click="AddRule_Click" Margin="12,0,0,0"/>
+                        <Button Content="Save" Command="{Binding Rules.SaveCommand}" Margin="8,0,0,0"/>
+                        <TextBlock Text="{Binding Rules.Msg, Mode=OneWay}" Foreground="#107C10" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                    </StackPanel>
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding Rules.Rules}" SelectedItem="{Binding Rules.Sel}"
+                              AutoGenerateColumns="False" IsReadOnly="True" FontSize="12">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*"/>
+                            <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="*"/>
+                            <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled}" Width="60"/>
+                            <DataGridTemplateColumn Header="" Width="60">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="✕" Command="{Binding DataContext.Rules.DeleteCommand, RelativeSource={RelativeSource AncestorType={x:Type DataGrid}}}"
+                                                CommandParameter="{Binding}" Background="#D13438" Foreground="White" FontSize="11"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <TextBlock Grid.Row="2" Foreground="#666" Margin="0,4,0,0">
+                        <Run Text="Total:"/><Run Text="{Binding Rules.Rules.Count, Mode=OneWay}" FontWeight="Bold"/><Run Text=" rules"/>
+                    </TextBlock>
+                </Grid>
+
+                <!-- Connections -->
+                <Grid Visibility="{Binding ActiveView, Converter={StaticResource ViewToVis}, ConverterParameter=Connections}">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <TextBlock Text="Active Connections" FontSize="20" FontWeight="Bold" Margin="0,0,0,8"/>
+                    <DataGrid Grid.Row="1" ItemsSource="{Binding ConnList}" AutoGenerateColumns="False" IsReadOnly="True" FontSize="12">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="PID" Binding="{Binding Pid}" Width="60"/>
+                            <DataGridTextColumn Header="Process" Binding="{Binding ProcessName}" Width="120"/>
+                            <DataGridTextColumn Header="Destination" Binding="{Binding DisplayDestination}" Width="*"/>
+                            <DataGridTextColumn Header="Port" Binding="{Binding DestinationPort}" Width="60"/>
+                            <DataGridTextColumn Header="RX" Binding="{Binding RxDisplay}" Width="80"/>
+                            <DataGridTextColumn Header="TX" Binding="{Binding TxDisplay}" Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+
+                <!-- Service -->
+                <StackPanel Visibility="{Binding ActiveView, Converter={StaticResource ViewToVis}, ConverterParameter=Service}">
+                    <TextBlock Text="Service Control" FontSize="20" FontWeight="Bold" Margin="0,0,0,16"/>
+                    <Border Background="#F5F5F5" CornerRadius="4" Padding="16" Margin="0,0,0,16">
+                        <StackPanel>
+                            <TextBlock FontSize="16" Margin="0,0,0,12">
+                                <Run Text="Status:"/>
+                                <Run Text="{Binding Service.Status, Mode=OneWay}" FontWeight="Bold" Foreground="#0078D4"/>
+                            </TextBlock>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Start" Command="{Binding Service.StartCommand}" Width="100" Margin="0,0,8,0"/>
+                                <Button Content="Stop" Command="{Binding Service.StopCommand}" Width="100" Margin="8,0" Background="#D13438"/>
+                                <Button Content="Restart" Command="{Binding Service.RestartCommand}" Width="100" Margin="8,0" Background="#FF8C00"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding Service.Msg, Mode=OneWay}" Foreground="#107C10" FontWeight="Bold" Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- Status Bar -->
+        <Border Grid.Row="2" Background="White" BorderBrush="#E0E0E0" BorderThickness="0,1,0,0" Padding="8,0">
+            <TextBlock Foreground="#666" FontSize="11" VerticalAlignment="Center">
+                <Run Text="TcpRedirector v1.0.0"/> <Run Text="|"/> <Run Text="Service:"/>
+                <Run Text="{Binding StatusText, Mode=OneWay}" FontWeight="Bold"/>
+            </TextBlock>
+        </Border>
+    </Grid>
+</Window>

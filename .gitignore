@@ -1,0 +1,104 @@
+# Windows
+[Dd]esktop.ini
+Thumbs.db
+*.cab
+*.cat
+*.cer
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.obj
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+
+# Visual Studio
+.vs/
+*.sln.docstates
+*.suo
+*.user
+*.userosscache
+*.userprefs
+*.suo
+*.cache
+*.dll
+*.exe
+*.sys
+*.msi
+*.pdb
+*.nupkg
+*.log
+
+# Build output
+build/
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+ARM64/
+ipch/
+
+# WDK
+*.wpp.log
+*.wpp.tlog
+*.wpp.scan
+trace.h
+tmh.*
+*.tmh
+
+# .NET
+*.nupkg
+*.snk
+*.pfx
+packages/
+*.nuget.props
+*.nuget.targets
+
+# C++ CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.Directory
+
+# Config with secrets (keep template)
+config.json
+*.user
+
+# Test output
+*.trx
+TestResults/
+coverage/
+*.coverage
+
+# Logs
+logs/
+*.log
+
+# NuGet
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nupkg
+
+# dotnet
+**/[Pp]ublish/
+*.nuget.props
+*.nuget.targets

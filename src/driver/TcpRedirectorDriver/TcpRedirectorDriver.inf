@@ -1,0 +1,51 @@
+;
+; TcpRedirectorDriver.inf
+; Installation file for TcpRedirector WFP Redirect Driver
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=NetService
+ClassGuid={121348E0-0DC0-4C8D-8E82-FA8B5B0B8F8C}
+Provider=%ProviderName%
+DriverVer=08/01/2025,1.0.0.0
+CatalogFile=TcpRedirectorDriver.cat
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[DefaultInstall]
+OptionDesc = %ServiceDescription%
+CopyFiles = TcpRedirectorDriver.Files
+
+[DefaultInstall.Services]
+AddService = TcpRedirectorDriver, 0x00000002, TcpRedirectorDriver.Service
+
+[DefaultUninstall]
+DelFiles = TcpRedirectorDriver.Files
+
+[DefaultUninstall.Services]
+DelService = TcpRedirectorDriver, 0x200
+
+[TcpRedirectorDriver.Service]
+DisplayName = %ServiceDisplayName%
+Description = %ServiceDescription%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %12%\TcpRedirectorDriver.sys
+
+[TcpRedirectorDriver.Files]
+TcpRedirectorDriver.sys
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+TcpRedirectorDriver.sys = 1
+
+[Strings]
+ProviderName = "TcpRedirector"
+ServiceDisplayName = "TcpRedirector WFP Driver"
+ServiceDescription = "Redirects TCP connections through HTTP proxy using WFP"
+DiskName = "TcpRedirector Driver Installation Disk"

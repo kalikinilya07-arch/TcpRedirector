@@ -1,0 +1,10 @@
+{
+  "name": "tcpredirector",
+  "version": "1.0.0",
+  "description": "TCP traffic redirector via HTTP proxy using WFP",
+  "dependencies": [
+    "nlohmann-json",
+    "spdlog",
+    "boost-asio"
+  ]
+}
