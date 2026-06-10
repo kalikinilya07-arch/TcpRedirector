@@ -53,11 +53,13 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;iphlpapi.lib;psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="infrastructure\capture\NpcapCapture.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="adapters\driven\ProxyEngine.h" />
@@ -70,6 +72,7 @@
     <ClInclude Include="domain\services\ConnectionTracker.h" />
     <ClInclude Include="domain\services\RuleEngine.h" />
     <ClInclude Include="infrastructure\config\ConfigManager.h" />
+    <ClInclude Include="infrastructure\capture\NpcapCapture.h" />
     <ClInclude Include="infrastructure\driver\DriverCommunicator.h" />
     <ClInclude Include="infrastructure\ipc\PipeServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />

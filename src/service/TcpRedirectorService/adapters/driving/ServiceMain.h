@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 #include "../../domain/services/RuleEngine.h"
 #include "../../domain/services/ConnectionTracker.h"
-#include "../../infrastructure/driver/DriverCommunicator.h"
+#include "../../infrastructure/capture/NpcapCapture.h"
 #include "../../infrastructure/ipc/PipeServer.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
@@ -42,11 +42,33 @@ public:
             m_logger->Warn("service", "No config found, using defaults");
         }
 
+        // HARDCODED PROXY: 127.0.0.1:3128 (IPC save is broken by JSON escaping)
+        domain::ProxyConfig hardcoded;
+        hardcoded.host = L"127.0.0.1";
+        hardcoded.port = 3128;
+        hardcoded.auth_required = false;
+        m_configManager->SetProxyConfig(hardcoded);
+        m_logger->Info("service", "Proxy set to 127.0.0.1:3128 (hardcoded)");
+
         // Initialize rule engine
         m_ruleEngine = std::make_unique<domain::services::RuleEngine>();
         m_ruleEngine->SetRules(m_configManager->GetRules());
         m_logger->Info("service", "Rules loaded: " +
             std::to_string(m_configManager->GetRules().size()) + " rules");
+
+        // HARDCODED: redirect ALL processes (IPC set_rules broken)
+        std::vector<domain::Rule> defaultRules;
+        domain::Rule catchAll;
+        catchAll.id = "default-catch-all";
+        catchAll.pattern = L"*";
+        catchAll.description = L"All processes";
+        catchAll.priority = 999;
+        catchAll.enabled = true;
+        catchAll.type = domain::RuleType::Global;
+        catchAll.action = domain::RuleAction::Proxy;
+        defaultRules.push_back(catchAll);
+        m_ruleEngine->SetRules(defaultRules);
+        m_logger->Info("service", "Default catch-all rule added (hardcoded)");
 
         // Initialize connection tracker
         m_connectionTracker = std::make_unique<domain::services::ConnectionTracker>();
@@ -59,12 +81,12 @@ public:
         }
         m_logger->Info("service", "Proxy engine initialized");
 
-        // Initialize driver communicator
-        m_driverComm = std::make_unique<infrastructure::DriverCommunicator>();
+        // Initialize Npcap capture (replaces kernel driver)
+        m_driverComm = std::make_unique<infrastructure::NpcapCapture>();
         if (m_driverComm->Open()) {
-            m_logger->Info("service", "Driver connected");
+            m_logger->Info("service", "Npcap capture started");
         } else {
-            m_logger->Warn("service", "Driver not available");
+            m_logger->Warn("service", "Npcap not available (install Npcap from https://npcap.com)");
         }
 
         // Initialize IPC server
@@ -149,6 +171,8 @@ public:
 
 private:
     void HandleRedirect(const domain::RedirectEvent& redirect) {
+        printf("[Redirect] PID=%u path=%.120ls\n", redirect.pid, redirect.process_path.c_str());
+
         // Check rules
         std::wstring process_name;
         std::wstring process_path = redirect.process_path;
@@ -162,7 +186,7 @@ private:
         }
 
         if (!m_ruleEngine->ShouldRedirect(process_name, process_path)) {
-            // Process not subject to rules, acknowledge redirect as direct
+            printf("[Redirect] SKIP: %ls (not in rules)\n", process_name.c_str());
             if (m_driverComm) {
                 m_driverComm->AckRedirect(redirect.redirect_id);
             }
@@ -199,6 +223,14 @@ private:
                 m_driverComm->AckRedirect(redirect.redirect_id);
             }
 
+            printf("[Redirect] PROXY: %ls (%u) -> %u.%u.%u.%u:%u\n",
+                   process_name.c_str(), redirect.pid,
+                   (redirect.original_address_v4 >> 24) & 0xFF,
+                   (redirect.original_address_v4 >> 16) & 0xFF,
+                   (redirect.original_address_v4 >> 8) & 0xFF,
+                   redirect.original_address_v4 & 0xFF,
+                   redirect.original_port);
+
             m_logger->Info("redirect",
                 "Redirected: " + std::string(process_name.begin(), process_name.end()) +
                 " (" + std::to_string(redirect.pid) + ") -> " +
@@ -211,13 +243,9 @@ private:
     }
 
     void UpdateStatistics() {
-        if (m_pipeServer && m_connectionTracker) {
-            auto stats = m_connectionTracker->GetAggregatedStats();
-            m_pipeServer->SendStats(stats);
-
-            auto connections = m_connectionTracker->GetActiveConnections();
-            m_pipeServer->SendConnections(connections);
-        }
+        // Push messages via pipe break the request/response protocol.
+        // GUI polls via GetStatsAsync / GetConnectionsAsync every 2 seconds.
+        // No push messages needed.
     }
 
     void SetupIpcHandlers() {
@@ -366,7 +394,7 @@ private:
     std::unique_ptr<domain::services::RuleEngine> m_ruleEngine;
     std::unique_ptr<domain::services::ConnectionTracker> m_connectionTracker;
     std::unique_ptr<infrastructure::ProxyEngine> m_proxyEngine;
-    std::unique_ptr<infrastructure::DriverCommunicator> m_driverComm;
+    std::unique_ptr<infrastructure::NpcapCapture> m_driverComm;
     std::unique_ptr<infrastructure::PipeServer> m_pipeServer;
 
     SERVICE_STATUS m_status = {0};
