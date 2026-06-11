@@ -44,12 +44,30 @@ public:
         }
 
         // Default proxy config — restored from config.json on each start
-        domain::ProxyConfig hardcoded;
-        hardcoded.host = L"127.0.0.1";
-        hardcoded.port = 3128;
-        hardcoded.auth_required = false;
-        m_configManager->SetProxyConfig(hardcoded);
-        m_logger->Info("service", "Proxy set to 127.0.0.1:3128");
+        // REPLACED with config: читаем из ConfigManager вместо хардкода
+        // ВАЖНО: НЕ вызываем SetProxyConfig — он затирает config.json через SaveImpl()
+        // ProxyConfig передаётся напрямую в ProxyEngine::Initialize
+        {
+            auto cfg = m_configManager->GetConfig();
+            domain::ProxyConfig proxyCfg;
+            proxyCfg.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
+            proxyCfg.port = cfg.proxy.port;
+            proxyCfg.auth_required = cfg.auth.enabled;
+            if (cfg.auth.enabled) {
+                proxyCfg.login = std::wstring(cfg.auth.username.begin(), cfg.auth.username.end());
+                proxyCfg.has_password = !cfg.auth.encryptedPassword.empty();
+            }
+            // Прямая передача в ProxyEngine (без сохранения в JSON)
+            m_configManager->UpdateConfigNoSave(cfg);
+            m_logger->Info("service", "Proxy set from config: " + cfg.proxy.host + ":" + std::to_string(cfg.proxy.port));
+        }
+        // Старый хардкод (сохранён для совместимости):
+        // domain::ProxyConfig hardcoded;
+        // hardcoded.host = L"127.0.0.1";
+        // hardcoded.port = 8888;
+        // hardcoded.auth_required = false;
+        // m_configManager->SetProxyConfig(hardcoded);
+        // m_logger->Info("service", "Proxy set to 127.0.0.1:8888");
 
         // Initialize rule engine
         m_ruleEngine = std::make_unique<domain::services::RuleEngine>();
@@ -57,19 +75,32 @@ public:
         m_logger->Info("service", "Rules loaded: " +
             std::to_string(m_configManager->GetRules().size()) + " rules");
 
-        // Default rule: redirect ONLY TransfersClient.exe
-        std::vector<domain::Rule> defaultRules;
-        domain::Rule transfersRule;
-        transfersRule.id = "transfers-client";
-        transfersRule.pattern = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
-        transfersRule.description = L"TransfersClient";
-        transfersRule.priority = 1;
-        transfersRule.enabled = true;
-        transfersRule.type = domain::RuleType::ProcessPath;
-        transfersRule.action = domain::RuleAction::Proxy;
-        defaultRules.push_back(transfersRule);
-        m_ruleEngine->SetRules(defaultRules);
-        m_logger->Info("service", "Rule added: TransfersClient.exe only");
+        // Default rule: создаётся из ConfigManager (полный путь, ProcessPath — как в оригинале)
+        {
+            auto cfg = m_configManager->GetConfig();
+            std::vector<domain::Rule> configRules;
+            domain::Rule rule;
+            rule.id = "capture-target";
+            rule.pattern = cfg.app.exePath; // полный путь, как в оригинальном хардкоде
+            rule.description = L"Auto-generated from config: " + cfg.app.exePath;
+            rule.priority = 1;
+            rule.enabled = true;
+            rule.type = domain::RuleType::ProcessPath;
+            rule.action = cfg.proxy.enabled
+                ? domain::RuleAction::Proxy
+                : domain::RuleAction::Direct;
+            configRules.push_back(rule);
+            m_ruleEngine->SetRules(configRules);
+            std::string exePath(cfg.app.exePath.begin(), cfg.app.exePath.end());
+            m_logger->Info("service", "Rule set from config (ProcessPath): " + exePath +
+                ", proxy=" + (cfg.proxy.enabled ? "enabled" : "disabled"));
+        }
+        // Старый хардкод (сохранён для совместимости):
+        // std::vector<domain::Rule> defaultRules;
+        // domain::Rule transfersRule;
+        // transfersRule.id = "packet-gen-test";
+        // transfersRule.pattern = L"packet_generator.exe";
+        // ...
 
         // Initialize connection tracker
         m_connectionTracker = std::make_unique<domain::services::ConnectionTracker>();
@@ -84,6 +115,13 @@ public:
 
         // Initialize WinDivert capture via ICapture port
         m_capture = std::make_unique<infrastructure::WinDivertCapture>();
+        // Установить целевой процесс из конфига (замена хардкода)
+        {
+            auto cfg = m_configManager->GetConfig();
+            m_capture->SetTargetProcess(cfg.app.exePath);
+            m_logger->Info("service", "Target process set from config: " +
+                std::string(cfg.app.exePath.begin(), cfg.app.exePath.end()));
+        }
         if (m_capture->Open()) {
             m_logger->Info("service", "WinDivert capture started");
         } else {

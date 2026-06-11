@@ -22,6 +22,7 @@ public:
     virtual void Close() = 0;
     virtual bool IsOpen() const = 0;
 
+    virtual void SetTargetProcess(const std::wstring& exePath) = 0;
     virtual std::vector<RedirectEvent> GetPendingRedirects(
         uint32_t timeout_ms = 1000) = 0;
     virtual bool AckRedirect(uint64_t redirect_id) = 0;

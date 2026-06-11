@@ -40,6 +40,11 @@ class WinDivertCapture : public domain::ports::IDriverCommunicator,
                           public domain::ports::ICapture {
 public:
     WinDivertCapture();
+    // Установить путь к целевому процессу из конфига (вызывается из ServiceMain)
+    void SetTargetProcess(const std::wstring& exePath) {
+        m_targetProcessPath = exePath;
+        m_targetPid = 0; // сбросить PID, будет найден заново
+    }
     ~WinDivertCapture() override;
 
     // IDriverCommunicator interface
@@ -82,7 +87,7 @@ private:
     std::atomic<bool> m_initialized{false};
 
     // Target process info
-    std::wstring m_targetProcessPath = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
+    std::wstring m_targetProcessPath = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe"; // REPLACED with config: SetTargetProcess()
     std::atomic<uint32_t> m_targetPid{0};
     uint32_t FindTargetPid();
 

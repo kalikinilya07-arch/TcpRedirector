@@ -1,13 +1,29 @@
 #pragma once
 
+//
+// AsyncLogger — асинхронная система логирования.
+// - Асинхронная очередь (queue + mutex + cv + WriterThread)
+// - Ring buffer на 2000 записей для IPC get_logs
+// - Batch pop — WriterThread забирает все сообщения разом (swap)
+// - Ротация файлов при превышении maxSizeMB
+// - Цветной вывод в консоль
+// - Listener-механизм для подписки GUI
+// - Потокобезопасен
+//
+
 #include <string>
 #include <vector>
+#include <queue>
 #include <mutex>
-#include <fstream>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
+#include <array>
+#include <functional>
+#include <unordered_map>
 #include <filesystem>
 #include <chrono>
-#include <iomanip>
-#include <sstream>
+#include <cstdio>
 #include <windows.h>
 #include "../../domain/ports/IConnectionMonitor.h"
 
@@ -16,183 +32,97 @@ namespace infrastructure {
 
 class Logger : public domain::ports::ILogSink {
 public:
-    Logger() = default;
+    Logger();
+    ~Logger() override;
 
+    // Инициализация
     bool Initialize(const std::filesystem::path& log_dir,
                     domain::LogLevel level = domain::LogLevel::Info,
-                    size_t max_file_size_mb = 50,
-                    size_t max_files = 10) {
-        try {
-            std::filesystem::create_directories(log_dir);
-            m_logDir = log_dir;
-            m_currentLevel = level;
-            m_maxFileSize = max_file_size_mb * 1024 * 1024;
-            m_maxFiles = max_files;
+                    size_t max_file_size_mb = 10,
+                    size_t max_files = 5);
+    void Shutdown();
 
-            OpenLogFile();
-            return true;
-        }
-        catch (...) {
-            return false;
-        }
-    }
+    // --- ILogSink interface ---
+    void Log(domain::LogLevel level, const std::string& logger,
+             const std::string& message) override;
 
-    void Shutdown() {
-        std::unique_lock lock(m_mutex);
-        if (m_file.is_open()) {
-            m_file.close();
-        }
-    }
+    void Log(domain::LogLevel level, const std::string& logger,
+             const std::string& message,
+             const std::string& file, int line,
+             const std::string& function);
 
-    void Log(domain::LogLevel level, const std::string& logger_name,
-             const std::string& message) override {
-        if (static_cast<int>(level) < static_cast<int>(m_currentLevel)) return;
+    void SetLevel(domain::LogLevel level) override;
+    domain::LogLevel GetLevel() const override;
 
-        auto now = std::chrono::system_clock::now();
-        auto in_time_t = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
+    void SetOnLogEntry(LogCallback callback) override;
+    std::vector<domain::LogEntry> GetRecentEntries(size_t max_count = 100) const override;
 
-        std::ostringstream ss;
-        ss << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S")
-           << "." << std::setfill('0') << std::setw(3) << ms.count() << "]"
-           << "[" << LevelToString(level) << "]"
-           << "[" << logger_name << "] "
-           << message;
+    // --- Listener mechanism (push model) ---
+    using ListenerCallback = std::function<void(const domain::LogEntry&)>;
+    uint64_t RegisterListener(ListenerCallback callback);
+    void UnregisterListener(uint64_t listener_id);
 
-        std::string formatted = ss.str();
-
-        // Output to debugger (works in both debug and release)
-        OutputDebugStringA((formatted + "\n").c_str());
-
-        // Write to file
-        {
-            std::unique_lock lock(m_mutex);
-            if (m_file.is_open()) {
-                m_file << formatted << std::endl;
-                m_file.flush();
-                CheckRotation();
-            }
-        }
-
-        // Store for GUI
-        domain::LogEntry entry;
-        entry.timestamp = now;
-        entry.level = level;
-        entry.logger = logger_name;
-        entry.message = message;
-
-        {
-            std::unique_lock lock(m_entriesMutex);
-            m_recentEntries.push_back(entry);
-            if (m_recentEntries.size() > 1000) {
-                m_recentEntries.erase(m_recentEntries.begin());
-            }
-        }
-
-        // Push to GUI callback
-        if (m_logCallback) {
-            m_logCallback(entry);
-        }
-    }
-
-    void SetLevel(domain::LogLevel level) override {
-        m_currentLevel = level;
-    }
-
-    domain::LogLevel GetLevel() const override { return m_currentLevel; }
-
-    void SetOnLogEntry(LogCallback callback) override {
-        m_logCallback = callback;
-    }
-
-    std::vector<domain::LogEntry> GetRecentEntries(size_t max_count) const override {
-        std::unique_lock lock(m_entriesMutex);
-        if (m_recentEntries.size() <= max_count) {
-            return m_recentEntries;
-        }
-        return std::vector<domain::LogEntry>(
-            m_recentEntries.end() - static_cast<long long>(max_count),
-            m_recentEntries.end());
-    }
-
-    // Convenience methods
+    // Convenience methods (совместимость)
     void Info(const std::string& logger, const std::string& msg) {
         Log(domain::LogLevel::Info, logger, msg);
     }
-
     void Debug(const std::string& logger, const std::string& msg) {
         Log(domain::LogLevel::Debug, logger, msg);
     }
-
     void Trace(const std::string& logger, const std::string& msg) {
         Log(domain::LogLevel::Trace, logger, msg);
     }
-
     void Warn(const std::string& logger, const std::string& msg) {
         Log(domain::LogLevel::Warn, logger, msg);
     }
-
     void Error(const std::string& logger, const std::string& msg) {
         Log(domain::LogLevel::Error, logger, msg);
     }
 
 private:
-    static const char* LevelToString(domain::LogLevel level) {
-        switch (level) {
-            case domain::LogLevel::Trace: return "TRACE";
-            case domain::LogLevel::Debug: return "DEBUG";
-            case domain::LogLevel::Info:  return "INFO ";
-            case domain::LogLevel::Warn:  return "WARN ";
-            case domain::LogLevel::Error: return "ERROR";
-            default: return "?????";
-        }
-    }
+    void WriterThread();
+    bool OpenLogFile();
+    void RotateLogFile();
+    std::string FormatLogMessage(const domain::LogEntry& entry) const;
+    void WriteColorConsole(const domain::LogEntry& entry) const;
+    void AddToRingBuffer(const domain::LogEntry& entry);
+    void NotifyListeners(const domain::LogEntry& entry);
 
-    void OpenLogFile() {
-        m_logPath = m_logDir / "tcp_redirector.log";
-        m_file.open(m_logPath, std::ios::app);
-    }
+    // Async queue
+    struct AsyncQueue {
+        std::queue<domain::LogEntry> queue;
+        std::mutex mutex;
+        std::condition_variable cv;
+    };
+    AsyncQueue m_asyncQueue;
+    std::thread m_writerThread;
+    std::atomic<bool> m_running{false};
 
-    void CheckRotation() {
-        if (!m_file.is_open()) return;
+    // Level
+    std::atomic<domain::LogLevel> m_currentLevel{domain::LogLevel::Info};
 
-        auto size = std::filesystem::file_size(m_logPath);
-        if (size < m_maxFileSize) return;
-
-        m_file.close();
-
-        // Rotate: remove oldest, shift files
-        auto base = m_logDir / "tcp_redirector";
-        auto last = m_logDir / ("tcp_redirector." +
-            std::to_string(m_maxFiles - 1) + ".log");
-        std::filesystem::remove(last);
-
-        for (size_t i = m_maxFiles - 1; i > 0; --i) {
-            auto old_name = m_logDir / ("tcp_redirector." +
-                std::to_string(i - 1) + ".log");
-            auto new_name = m_logDir / ("tcp_redirector." +
-                std::to_string(i) + ".log");
-            if (std::filesystem::exists(old_name)) {
-                std::filesystem::rename(old_name, new_name);
-            }
-        }
-
-        std::filesystem::rename(m_logPath,
-            m_logDir / "tcp_redirector.1.log");
-        OpenLogFile();
-    }
-
-    std::ofstream m_file;
+    // File
+    std::FILE* m_file = nullptr;
     std::filesystem::path m_logDir;
     std::filesystem::path m_logPath;
-    domain::LogLevel m_currentLevel = domain::LogLevel::Info;
-    size_t m_maxFileSize = 50 * 1024 * 1024;
-    size_t m_maxFiles = 10;
-    mutable std::mutex m_mutex;
-    mutable std::mutex m_entriesMutex;
-    std::vector<domain::LogEntry> m_recentEntries;
+    size_t m_maxFileSize = 10 * 1024 * 1024;
+    size_t m_maxFiles = 5;
+    std::mutex m_fileMutex;
+
+    // Ring buffer for IPC get_logs
+    static constexpr size_t RING_BUFFER_SIZE = 2000;
+    std::array<domain::LogEntry, RING_BUFFER_SIZE> m_ringBuffer;
+    std::atomic<size_t> m_ringIndex{0};
+    mutable std::mutex m_ringMutex;
+
+    // LogCallback (ILogSink совместимость)
     LogCallback m_logCallback;
+    mutable std::mutex m_callbackMutex;
+
+    // Listeners (push model)
+    std::unordered_map<uint64_t, ListenerCallback> m_listeners;
+    uint64_t m_nextListenerId = 1;
+    mutable std::mutex m_listenersMutex;
 };
 
 } // namespace infrastructure

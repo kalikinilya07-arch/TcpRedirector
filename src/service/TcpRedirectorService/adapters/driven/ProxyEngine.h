@@ -37,6 +37,9 @@ public:
         Close();
     }
 
+    // Установить локальный сокет для бриджа (восстановлено после рефакторинга)
+    void SetLocalSocket(SOCKET s) { m_localSocket = s; }
+
     bool Start(const domain::RedirectEvent& redirect) override {
         m_redirect = redirect;
         m_state = domain::ConnectionState::ConnectingToProxy;

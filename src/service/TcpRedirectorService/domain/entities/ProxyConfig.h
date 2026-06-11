@@ -93,6 +93,9 @@ struct LogEntry {
     LogLevel level = LogLevel::Info;
     std::string logger;
     std::string message;
+    std::string file;      // __FILE__ (опционально)
+    int line = 0;          // __LINE__ (опционально)
+    std::string function;  // __FUNCTION__ (опционально)
 };
 
 struct ServiceStats {

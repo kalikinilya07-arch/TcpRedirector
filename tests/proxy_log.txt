@@ -1,0 +1,11 @@
+============================================================
+  MOCK_PROXY (test stub)
+  Listening: 0.0.0.0:8888, protocol: tcp
+  Press Ctrl+C to exit
+============================================================
+[MOCK_PROXY] TCP server started on port 8888. Waiting for connections...
+[MOCK_PROXY] --- Client #1 connected: 127.0.0.1:12277 ---
+[MOCK_PROXY] Client #1 -> received 45 bytes: PACKET #1 FROM packet_generator TIME=75228437
+[MOCK_PROXY] Client #1 <- sent CONNECT response
+[MOCK_PROXY] Client #1 disconnected (closed connection)
+[MOCK_PROXY] --- Client #1 disconnected (total received: 45 bytes) ---

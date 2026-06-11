@@ -60,6 +60,9 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="infrastructure\capture\WinDivertCapture.cpp" />
+    <ClCompile Include="infrastructure\config\ConfigManager.cpp" />
+    <ClCompile Include="infrastructure\logging\Logger.cpp" />
+    <ClCompile Include="infrastructure\stats\StatsCollector.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="infrastructure\capture\WinDivertCapture.h" />
@@ -74,6 +77,8 @@
     <ClInclude Include="domain\ports\IProxyConnector.h" />
     <ClInclude Include="domain\services\ConnectionTracker.h" />
     <ClInclude Include="domain\services\RuleEngine.h" />
+    <ClInclude Include="infrastructure\config\Config.h" />
+    <ClInclude Include="infrastructure\stats\StatsCollector.h" />
     <ClInclude Include="infrastructure\config\ConfigManager.h" />
     <ClInclude Include="infrastructure\ipc\PipeServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />

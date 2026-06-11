@@ -1,6 +1,6 @@
 // packet_generator.cpp
 // Изолированная тестовая заглушка. Не имеет зависимостей от основного проекта.
-// Компиляция: cl.exe packet_generator.cpp /Fe:packet_generator.exe /link ws2_32.lib
+// Компиляция: g++ packet_generator.cpp -o packet_generator.exe -lws2_32
 // Использование: packet_generator.exe --dest_ip 127.0.0.1 --dest_port 3128 --protocol tcp --count 5
 
 #define WIN32_LEAN_AND_MEAN
@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
             if (bytes_recv > 0) {
                 recv_buf[bytes_recv] = '\0';
                 printf("[PACKET_GEN] Получен ответ на пакет #%d: %.*s\n",
-                       i + 1, min(bytes_recv, 100), recv_buf);
+                       i + 1, bytes_recv < 100 ? bytes_recv : 100, recv_buf);
             }
 
             closesocket(sock);

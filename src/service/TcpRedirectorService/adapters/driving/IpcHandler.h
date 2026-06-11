@@ -127,10 +127,14 @@ private:
         for (const auto& r : j["rules"]) {
             domain::Rule rule;
             rule.id = r.value("id", "");
-            rule.pattern = std::wstring(r["pattern"].get<std::string>().begin(),
-                                         r["pattern"].get<std::string>().end());
-            rule.description = std::wstring(r.value("description", std::string()).begin(),
-                                             r.value("description", std::string()).end());
+            {
+                std::string tmp = r["pattern"].get<std::string>();
+                rule.pattern = std::wstring(tmp.begin(), tmp.end());
+            }
+            {
+                std::string tmp = r.value("description", std::string());
+                rule.description = std::wstring(tmp.begin(), tmp.end());
+            }
             rule.priority = r.value("priority", 0);
             rule.enabled = r.value("enabled", true);
             rule.type = static_cast<domain::RuleType>(r.value("type", 0));

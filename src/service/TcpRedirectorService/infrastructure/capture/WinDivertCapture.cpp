@@ -13,10 +13,20 @@
 #define TCP_TABLE_OWNER_PID_ALL 5
 #endif
 
-// File logging - writes to both console and file
+// File logging - writes to both console and file with timestamps (full date)
 #define LOG(...) do { \
+    SYSTEMTIME st__; GetLocalTime(&st__); \
+    printf("[%04u-%02u-%02u %02u:%02u:%02u.%03u] ", \
+        st__.wYear, st__.wMonth, st__.wDay, \
+        st__.wHour, st__.wMinute, st__.wSecond, st__.wMilliseconds); \
     printf(__VA_ARGS__); \
-    if (g_LogFile) { fprintf(g_LogFile, __VA_ARGS__); fflush(g_LogFile); } \
+    if (g_LogFile) { \
+        fprintf(g_LogFile, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] ", \
+            st__.wYear, st__.wMonth, st__.wDay, \
+            st__.wHour, st__.wMinute, st__.wSecond, st__.wMilliseconds); \
+        fprintf(g_LogFile, __VA_ARGS__); \
+        fflush(g_LogFile); \
+    } \
 } while(0)
 
 static FILE* g_LogFile = nullptr;
@@ -223,6 +233,7 @@ void WinDivertCapture::CaptureLoop() {
                 event.process_path = m_targetProcessPath;
                 event.original_address_v4 = ipHdr->DstAddr;
                 event.original_port = dstPort;
+                event.redirect_local_port = srcPort; // ← ВОССТАНОВЛЕНО: порт для локального сокета
                 m_redirects_emitted++;
                 {
                     std::lock_guard<std::mutex> lock(m_queueMutex);
