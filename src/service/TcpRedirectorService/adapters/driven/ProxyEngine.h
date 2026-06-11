@@ -186,33 +186,32 @@ private:
     }
 
     void BridgeLoop() {
-        // Simple bidirectional forwarding using select()
         fd_set read_set;
-        char buf1[65536], buf2[65536];
+        char buf[65536];
 
         while (m_state == domain::ConnectionState::TunnelEstablished) {
             FD_ZERO(&read_set);
-            FD_SET(m_localSocket, &read_set);
+            bool hasLocal = (m_localSocket != INVALID_SOCKET);
+            if (hasLocal) FD_SET(m_localSocket, &read_set);
             FD_SET(m_proxySocket, &read_set);
 
-            timeval tv = {1, 0}; // 1 second timeout
+            timeval tv = {1, 0};
             int ret = select(0, &read_set, NULL, NULL, &tv);
-
             if (ret <= 0) continue;
 
-            if (FD_ISSET(m_localSocket, &read_set)) {
-                int n = recv(m_localSocket, buf1, sizeof(buf1), 0);
+            if (hasLocal && FD_ISSET(m_localSocket, &read_set)) {
+                int n = recv(m_localSocket, buf, sizeof(buf), 0);
                 if (n > 0) {
                     m_txBytes += n;
-                    send(m_proxySocket, buf1, n, 0);
+                    send(m_proxySocket, buf, n, 0);
                 } else break;
             }
 
             if (FD_ISSET(m_proxySocket, &read_set)) {
-                int n = recv(m_proxySocket, buf2, sizeof(buf2), 0);
+                int n = recv(m_proxySocket, buf, sizeof(buf), 0);
                 if (n > 0) {
                     m_rxBytes += n;
-                    send(m_localSocket, buf2, n, 0);
+                    if (hasLocal) send(m_localSocket, buf, n, 0);
                 } else break;
             }
         }

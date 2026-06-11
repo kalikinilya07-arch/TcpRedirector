@@ -65,7 +65,9 @@
     <ClInclude Include="infrastructure\capture\WinDivertCapture.h" />
     <ClInclude Include="adapters\driven\ProxyEngine.h" />
     <ClInclude Include="adapters\driving\ServiceMain.h" />
+    <ClInclude Include="adapters\driving\IpcHandler.h" />
     <ClInclude Include="domain\entities\ProxyConfig.h" />
+    <ClInclude Include="domain\ports\ICapture.h" />
     <ClInclude Include="domain\ports\IConfigStore.h" />
     <ClInclude Include="domain\ports\IConnectionMonitor.h" />
     <ClInclude Include="domain\ports\IDriverCommunicator.h" />

@@ -5,7 +5,7 @@
 #include <memory>
 #include <atomic>
 #include <thread>
-#include <nlohmann/json.hpp>
+#include "../../domain/ports/ICapture.h"
 #include "../../domain/services/RuleEngine.h"
 #include "../../domain/services/ConnectionTracker.h"
 #include "../../infrastructure/capture/WinDivertCapture.h"
@@ -13,6 +13,7 @@
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
 #include "../../adapters/driven/ProxyEngine.h"
+#include "IpcHandler.h"
 
 namespace tcp_redirector {
 namespace service {
@@ -48,7 +49,7 @@ public:
         hardcoded.port = 3128;
         hardcoded.auth_required = false;
         m_configManager->SetProxyConfig(hardcoded);
-        m_logger->Info("service", "Proxy set to 127.0.0.1:3128 (hardcoded)");
+        m_logger->Info("service", "Proxy set to 127.0.0.1:3128");
 
         // Initialize rule engine
         m_ruleEngine = std::make_unique<domain::services::RuleEngine>();
@@ -68,7 +69,7 @@ public:
         transfersRule.action = domain::RuleAction::Proxy;
         defaultRules.push_back(transfersRule);
         m_ruleEngine->SetRules(defaultRules);
-        m_logger->Info("service", "Rule added: TransfersClient.exe only (hardcoded)");
+        m_logger->Info("service", "Rule added: TransfersClient.exe only");
 
         // Initialize connection tracker
         m_connectionTracker = std::make_unique<domain::services::ConnectionTracker>();
@@ -81,16 +82,20 @@ public:
         }
         m_logger->Info("service", "Proxy engine initialized");
 
-        // Initialize WinDivert capture
-        m_driverComm = std::make_unique<infrastructure::WinDivertCapture>();
-        if (m_driverComm->Open()) {
+        // Initialize WinDivert capture via ICapture port
+        m_capture = std::make_unique<infrastructure::WinDivertCapture>();
+        if (m_capture->Open()) {
             m_logger->Info("service", "WinDivert capture started");
         } else {
             m_logger->Warn("service", "WinDivert not available (place WinDivert.dll and WinDivert64.sys next to exe)");
         }
 
-        // Initialize IPC server
+        // Initialize IPC server with IpcHandler
         m_pipeServer = std::make_unique<infrastructure::PipeServer>();
+        m_ipcHandler = std::make_unique<adapters::IpcHandler>(
+            m_ruleEngine.get(), m_connectionTracker.get(),
+            m_configManager.get(), m_logger.get(),
+            &m_running, &m_initialized);
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {
             m_logger->Info("service", "IPC server started");
@@ -106,14 +111,13 @@ public:
         m_logger->Info("service", "Service is running");
 
         while (m_running) {
-            // Poll for redirect events from driver
-            if (m_driverComm && m_driverComm->IsOpen()) {
-                auto redirects = m_driverComm->GetPendingRedirects(100);
+            // Poll for redirect events from capture
+            if (m_capture && m_capture->IsOpen()) {
+                auto redirects = m_capture->GetPendingRedirects(100);
                 for (const auto& redirect : redirects) {
                     HandleRedirect(redirect);
                 }
             }
-
 
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -133,8 +137,8 @@ public:
             m_pipeServer->Stop();
         }
 
-        if (m_driverComm) {
-            m_driverComm->Close();
+        if (m_capture) {
+            m_capture->Close();
         }
 
         if (m_logger) {
@@ -169,12 +173,9 @@ public:
 
 private:
     void HandleRedirect(const domain::RedirectEvent& redirect) {
-
-        // Check rules
         std::wstring process_name;
         std::wstring process_path = redirect.process_path;
 
-        // Extract process name from path
         auto pos = process_path.find_last_of(L'\\');
         if (pos != std::wstring::npos) {
             process_name = process_path.substr(pos + 1);
@@ -183,8 +184,8 @@ private:
         }
 
         if (!m_ruleEngine->ShouldRedirect(process_name, process_path)) {
-            if (m_driverComm) {
-                m_driverComm->AckRedirect(redirect.redirect_id);
+            if (m_capture) {
+                m_capture->AckRedirect(redirect.redirect_id);
             }
             m_logger->Debug("redirect",
                 "Skipped (direct): " + std::string(process_name.begin(), process_name.end()));
@@ -203,7 +204,6 @@ private:
             });
 
         if (session) {
-            // Record connection
             domain::ConnectionRecord record;
             record.id = m_connectionTracker->GenerateId();
             record.pid = redirect.pid;
@@ -214,9 +214,8 @@ private:
             record.state = domain::ConnectionState::Redirecting;
             m_connectionTracker->AddConnection(record);
 
-            // Acknowledge to driver
-            if (m_driverComm) {
-                m_driverComm->AckRedirect(redirect.redirect_id);
+            if (m_capture) {
+                m_capture->AckRedirect(redirect.redirect_id);
             }
 
             m_logger->Info("redirect",
@@ -230,146 +229,13 @@ private:
         }
     }
 
-
     void SetupIpcHandlers() {
         m_pipeServer->SetOnRequest(
             [this](const std::string& method,
                    const std::string& params,
                    std::string& response) {
-                HandleIpcRequest(method, params, response);
+                m_ipcHandler->Handle(method, params, response);
             });
-    }
-
-    void HandleIpcRequest(const std::string& method,
-                          const std::string& params,
-                          std::string& response) {
-        nlohmann::json result;
-
-        try {
-            if (method == "get_config") {
-                auto config = m_configManager->GetProxyConfig();
-                result["status"] = "success";
-                result["data"]["proxy"]["host"] = std::string(config.host.begin(), config.host.end());
-                result["data"]["proxy"]["port"] = config.port;
-                result["data"]["proxy"]["auth_required"] = config.auth_required;
-                result["data"]["proxy"]["has_password"] = config.has_password;
-            }
-            else if (method == "set_config") {
-                auto j = nlohmann::json::parse(params);
-                domain::ProxyConfig config;
-                std::string host = j["host"].get<std::string>();
-                config.host = std::wstring(host.begin(), host.end());
-                config.port = j["port"].get<uint16_t>();
-                config.auth_required = j.value("auth_required", false);
-                config.login = std::wstring(j.value("login", std::string()).begin(),
-                                             j.value("login", std::string()).end());
-                config.has_password = j.value("set_password", false);
-                m_configManager->SetProxyConfig(config);
-                result["status"] = "success";
-            }
-            else if (method == "get_rules") {
-                auto rules = m_ruleEngine->GetRules();
-                nlohmann::json arr = nlohmann::json::array();
-                for (const auto& r : rules) {
-                    arr.push_back({
-                        {"id", r.id},
-                        {"pattern", std::string(r.pattern.begin(), r.pattern.end())},
-                        {"description", std::string(r.description.begin(), r.description.end())},
-                        {"priority", r.priority},
-                        {"enabled", r.enabled},
-                        {"type", static_cast<int>(r.type)},
-                        {"action", static_cast<int>(r.action)}
-                    });
-                }
-                result["status"] = "success";
-                result["data"]["rules"] = arr;
-            }
-            else if (method == "set_rules") {
-                auto j = nlohmann::json::parse(params);
-                std::vector<domain::Rule> rules;
-                for (const auto& r : j["rules"]) {
-                    domain::Rule rule;
-                    rule.id = r.value("id", "");
-                    rule.pattern = std::wstring(r["pattern"].get<std::string>().begin(),
-                                                 r["pattern"].get<std::string>().end());
-                    rule.description = std::wstring(r.value("description", std::string()).begin(),
-                                                     r.value("description", std::string()).end());
-                    rule.priority = r.value("priority", 0);
-                    rule.enabled = r.value("enabled", true);
-                    rule.type = static_cast<domain::RuleType>(r.value("type", 0));
-                    rule.action = static_cast<domain::RuleAction>(r.value("action", 0));
-                    rules.push_back(rule);
-                }
-                m_ruleEngine->SetRules(rules);
-                m_configManager->SetRules(rules);
-                result["status"] = "success";
-            }
-            else if (method == "get_connections") {
-                auto connections = m_connectionTracker->GetActiveConnections();
-                nlohmann::json arr = nlohmann::json::array();
-                for (const auto& c : connections) {
-                    arr.push_back({
-                        {"id", c.id},
-                        {"pid", c.pid},
-                        {"process_name", std::string(c.process_name.begin(), c.process_name.end())},
-                        {"destination_host", std::string(c.destination_host.begin(), c.destination_host.end())},
-                        {"destination_ip", c.destination_ip},
-                        {"destination_port", c.destination_port},
-                        {"rx_bytes", c.rx_bytes},
-                        {"tx_bytes", c.tx_bytes},
-                        {"duration_ms", c.duration.count()},
-                        {"state", static_cast<int>(c.state)},
-                        {"proxy_enabled", c.proxy_enabled}
-                    });
-                }
-                result["status"] = "success";
-                result["data"]["connections"] = arr;
-            }
-            else if (method == "get_logs") {
-                auto entries = m_logger->GetRecentEntries(500);
-                nlohmann::json arr = nlohmann::json::array();
-                for (const auto& e : entries) {
-                    arr.push_back({
-                        {"timestamp", std::chrono::duration_cast<std::chrono::milliseconds>(
-                            e.timestamp.time_since_epoch()).count()},
-                        {"level", static_cast<int>(e.level)},
-                        {"logger", e.logger},
-                        {"message", e.message}
-                    });
-                }
-                result["status"] = "success";
-                result["data"]["logs"] = arr;
-            }
-            else if (method == "get_stats") {
-                auto stats = m_connectionTracker->GetAggregatedStats();
-                result["status"] = "success";
-                result["data"]["total_connections"] = stats.total_connections;
-                result["data"]["active_connections"] = stats.active_connections;
-                result["data"]["total_rx_bytes"] = stats.total_rx_bytes;
-                result["data"]["total_tx_bytes"] = stats.total_tx_bytes;
-            }
-            else if (method == "service_status") {
-                result["status"] = "success";
-                result["data"]["running"] = m_running.load();
-                result["data"]["initialized"] = m_initialized.load();
-            }
-            else if (method == "set_log_level") {
-                auto j = nlohmann::json::parse(params);
-                auto level = static_cast<domain::LogLevel>(j["level"].get<int>());
-                m_logger->SetLevel(level);
-                result["status"] = "success";
-            }
-            else {
-                result["status"] = "error";
-                result["error"] = "unknown_method";
-            }
-        }
-        catch (const std::exception& e) {
-            result["status"] = "error";
-            result["error"] = e.what();
-        }
-
-        response = result.dump();
     }
 
     std::unique_ptr<infrastructure::Logger> m_logger;
@@ -377,8 +243,9 @@ private:
     std::unique_ptr<domain::services::RuleEngine> m_ruleEngine;
     std::unique_ptr<domain::services::ConnectionTracker> m_connectionTracker;
     std::unique_ptr<infrastructure::ProxyEngine> m_proxyEngine;
-    std::unique_ptr<infrastructure::WinDivertCapture> m_driverComm;
+    std::unique_ptr<domain::ports::ICapture> m_capture;
     std::unique_ptr<infrastructure::PipeServer> m_pipeServer;
+    std::unique_ptr<adapters::IpcHandler> m_ipcHandler;
 
     SERVICE_STATUS m_status = {0};
     SERVICE_STATUS_HANDLE m_statusHandle;

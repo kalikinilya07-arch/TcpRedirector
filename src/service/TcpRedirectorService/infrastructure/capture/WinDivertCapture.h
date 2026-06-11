@@ -26,14 +26,18 @@
 
 #include <windivert.h>
 #include "../../domain/ports/IDriverCommunicator.h"
+#include "../../domain/ports/ICapture.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
 
 //
-// WinDivertCapture — implements IDriverCommunicator using WinDivert.
+// WinDivertCapture — implements IDriverCommunicator + ICapture using WinDivert.
+// Наследует оба порта: старый IDriverCommunicator для совместимости и новый
+// ICapture (без NOP-методов) для clean hexagonal architecture.
 //
-class WinDivertCapture : public domain::ports::IDriverCommunicator {
+class WinDivertCapture : public domain::ports::IDriverCommunicator,
+                          public domain::ports::ICapture {
 public:
     WinDivertCapture();
     ~WinDivertCapture() override;
