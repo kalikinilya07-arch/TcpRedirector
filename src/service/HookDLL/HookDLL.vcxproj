@@ -9,13 +9,13 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>18.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{B8E4F2A1-3C5D-4E6F-8A7B-9C0D1E2F3A4B}</ProjectGuid>
-    <RootNamespace>TcpRedirectorService</RootNamespace>
+    <ProjectGuid>{D8E4F2A1-3C5D-4E6F-8A7B-9C0D1E2F3A4C}</ProjectGuid>
+    <RootNamespace>HookDLL</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>Application</ConfigurationType>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>$(DefaultPlatformToolset)</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -32,9 +32,9 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <OutDir>$(SolutionDir)build\service\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(SolutionDir)build\service\$(Platform)\$(Configuration)\obj\</IntDir>
-    <TargetName>TcpRedirectorService</TargetName>
+    <OutDir>$(SolutionDir)build\hook\</OutDir>
+    <IntDir>$(SolutionDir)build\hook\obj\</IntDir>
+    <TargetName>HookDLL</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -43,40 +43,24 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
-      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;_WINSOCK_DEPRECATED_NO_WARNINGS;WIN32;_WINDOWS;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NDEBUG;_WINDOWS;_USRDLL;HOOKDLL_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..\..\external;$(ProjectDir)..\..\..\external\boost</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <SubSystem>Console</SubSystem>
+      <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;iphlpapi.lib;psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>kernel32.lib;user32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="infrastructure\capture\WinDivertCapture.cpp" />
+    <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="hook_connect.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="infrastructure\capture\WinDivertCapture.h" />
-    <ClInclude Include="adapters\driven\ProxyEngine.h" />
-    <ClInclude Include="adapters\driving\ServiceMain.h" />
-    <ClInclude Include="domain\entities\ProxyConfig.h" />
-    <ClInclude Include="domain\ports\IConfigStore.h" />
-    <ClInclude Include="domain\ports\IConnectionMonitor.h" />
-    <ClInclude Include="domain\ports\IDriverCommunicator.h" />
-    <ClInclude Include="domain\ports\IProxyConnector.h" />
-    <ClInclude Include="domain\services\ConnectionTracker.h" />
-    <ClInclude Include="domain\services\RuleEngine.h" />
-    <ClInclude Include="infrastructure\config\ConfigManager.h" />
-    <ClInclude Include="infrastructure\capture\NpcapCapture.h" />
-    <ClInclude Include="infrastructure\driver\DriverCommunicator.h" />
-    <ClInclude Include="infrastructure\ipc\PipeServer.h" />
-    <ClInclude Include="infrastructure\logging\Logger.h" />
+    <ClInclude Include="hook_connect.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

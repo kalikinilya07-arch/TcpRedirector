@@ -52,6 +52,9 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
 // Console mode entry
 //
 int main(int argc, char* argv[]) {
+    // Disable stdout buffering for real-time console output
+    setbuf(stdout, NULL);
+    setbuf(stderr, NULL);
     if (argc > 1) {
         std::string arg = argv[1];
         if (arg == "--install") {

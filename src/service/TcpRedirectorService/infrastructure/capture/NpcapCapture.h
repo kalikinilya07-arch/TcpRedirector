@@ -8,6 +8,10 @@
 // Npcap driver (npcap.sys) is WHQL-signed by Microsoft — works with
 // Secure Boot, no test mode required.
 //
+// Multi-adapter: opens ALL suitable network adapters simultaneously,
+// each in its own capture thread. ProcessSynPacket is shared and
+// thread-safe (event queue is mutex-protected).
+//
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -55,21 +59,26 @@ public:
 
     // Capture statistics
     struct CaptureStats {
-        uint64_t packets_captured = 0;
-        uint64_t redirects_emitted = 0;
-        uint64_t pid_lookups_failed = 0;
-        uint64_t syn_filtered = 0;
+        std::atomic<uint64_t> packets_captured{0};
+        std::atomic<uint64_t> redirects_emitted{0};
+        std::atomic<uint64_t> pid_lookups_failed{0};
+        std::atomic<uint64_t> syn_filtered{0};
     };
-    CaptureStats GetCaptureStats() const;
+
+    struct AdapterInfo {
+        std::string name;
+        std::string desc;
+        std::string ip;
+    };
 
 private:
-    // Packet capture thread
-    void CaptureLoop();
+    // Per-adapter capture thread
+    void CaptureLoop(int adapterIndex);
     static void PacketHandler(u_char* user, const struct pcap_pkthdr* header,
                               const u_char* packet);
 
     // Packet processing helpers
-    void ProcessSynPacket(const u_char* packet, uint32_t length);
+    void ProcessSynPacket(const u_char* packet, uint32_t length, int adapterIndex);
 
     // PID lookup by source port + destination
     uint32_t FindPidBySourcePort(uint16_t src_port,
@@ -90,14 +99,25 @@ private:
     static std::wstring GetProcessNameByPid(uint32_t pid);
     static std::wstring GetProcessPathByPid(uint32_t pid);
 
+    // Find PID of target process by path (cached)
+    uint32_t FindTargetPid();
+    bool IsPidTargetProcess(uint32_t pid);
+
+    // Diagnostic: dump all TCP connections for a given PID
+    void DumpProcessConnections(uint32_t pid);
+
     PcapApi m_api;
-    pcap_t* m_handle = nullptr;
-    std::thread m_captureThread;
+
+    // Multi-adapter: each adapter gets its own handle and thread
+    std::vector<pcap_t*> m_handles;
+    std::vector<std::thread> m_captureThreads;
+    std::vector<AdapterInfo> m_adapterInfos;
+
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_initialized{false};
     HANDLE m_hEvent = nullptr;
 
-    // Redirect event queue
+    // Redirect event queue (thread-safe via mutex)
     std::mutex m_queueMutex;
     std::queue<domain::RedirectEvent> m_eventQueue;
     static constexpr size_t MAX_QUEUE_SIZE = 4096;
@@ -106,11 +126,18 @@ private:
     std::mutex m_rulesMutex;
     std::vector<domain::Rule> m_rules;
 
-    // Statistics
+    // Cached target PID (TransfersClient.exe)
+    std::atomic<uint32_t> m_targetPid{0};
+    std::wstring m_targetProcessPath = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
+
+    // Statistics (atomic fields for multi-threaded access)
     CaptureStats m_stats;
 
     // Redirect ID counter
     std::atomic<uint64_t> m_nextRedirectId{1};
+
+    // Last target PID scan (thread-safe for multi-adapter)
+    std::atomic<uint64_t> m_lastTargetScan{0};
 };
 
 } // namespace infrastructure

@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 #include "../../domain/services/RuleEngine.h"
 #include "../../domain/services/ConnectionTracker.h"
-#include "../../infrastructure/capture/NpcapCapture.h"
+#include "../../infrastructure/capture/WinDivertCapture.h"
 #include "../../infrastructure/ipc/PipeServer.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
@@ -56,19 +56,19 @@ public:
         m_logger->Info("service", "Rules loaded: " +
             std::to_string(m_configManager->GetRules().size()) + " rules");
 
-        // HARDCODED: redirect ALL processes (IPC set_rules broken)
+        // HARDCODED: redirect ONLY TransfersClient.exe
         std::vector<domain::Rule> defaultRules;
-        domain::Rule catchAll;
-        catchAll.id = "default-catch-all";
-        catchAll.pattern = L"*";
-        catchAll.description = L"All processes";
-        catchAll.priority = 999;
-        catchAll.enabled = true;
-        catchAll.type = domain::RuleType::Global;
-        catchAll.action = domain::RuleAction::Proxy;
-        defaultRules.push_back(catchAll);
+        domain::Rule transfersRule;
+        transfersRule.id = "transfers-client";
+        transfersRule.pattern = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
+        transfersRule.description = L"TransfersClient";
+        transfersRule.priority = 1;
+        transfersRule.enabled = true;
+        transfersRule.type = domain::RuleType::ProcessPath;
+        transfersRule.action = domain::RuleAction::Proxy;
+        defaultRules.push_back(transfersRule);
         m_ruleEngine->SetRules(defaultRules);
-        m_logger->Info("service", "Default catch-all rule added (hardcoded)");
+        m_logger->Info("service", "Rule added: TransfersClient.exe only (hardcoded)");
 
         // Initialize connection tracker
         m_connectionTracker = std::make_unique<domain::services::ConnectionTracker>();
@@ -81,12 +81,12 @@ public:
         }
         m_logger->Info("service", "Proxy engine initialized");
 
-        // Initialize Npcap capture (replaces kernel driver)
-        m_driverComm = std::make_unique<infrastructure::NpcapCapture>();
+        // Initialize WinDivert capture
+        m_driverComm = std::make_unique<infrastructure::WinDivertCapture>();
         if (m_driverComm->Open()) {
-            m_logger->Info("service", "Npcap capture started");
+            m_logger->Info("service", "WinDivert capture started");
         } else {
-            m_logger->Warn("service", "Npcap not available (install Npcap from https://npcap.com)");
+            m_logger->Warn("service", "WinDivert not available (place WinDivert.dll and WinDivert64.sys next to exe)");
         }
 
         // Initialize IPC server
@@ -171,7 +171,6 @@ public:
 
 private:
     void HandleRedirect(const domain::RedirectEvent& redirect) {
-        printf("[Redirect] PID=%u path=%.120ls\n", redirect.pid, redirect.process_path.c_str());
 
         // Check rules
         std::wstring process_name;
@@ -186,7 +185,6 @@ private:
         }
 
         if (!m_ruleEngine->ShouldRedirect(process_name, process_path)) {
-            printf("[Redirect] SKIP: %ls (not in rules)\n", process_name.c_str());
             if (m_driverComm) {
                 m_driverComm->AckRedirect(redirect.redirect_id);
             }
@@ -222,14 +220,6 @@ private:
             if (m_driverComm) {
                 m_driverComm->AckRedirect(redirect.redirect_id);
             }
-
-            printf("[Redirect] PROXY: %ls (%u) -> %u.%u.%u.%u:%u\n",
-                   process_name.c_str(), redirect.pid,
-                   (redirect.original_address_v4 >> 24) & 0xFF,
-                   (redirect.original_address_v4 >> 16) & 0xFF,
-                   (redirect.original_address_v4 >> 8) & 0xFF,
-                   redirect.original_address_v4 & 0xFF,
-                   redirect.original_port);
 
             m_logger->Info("redirect",
                 "Redirected: " + std::string(process_name.begin(), process_name.end()) +
@@ -394,7 +384,7 @@ private:
     std::unique_ptr<domain::services::RuleEngine> m_ruleEngine;
     std::unique_ptr<domain::services::ConnectionTracker> m_connectionTracker;
     std::unique_ptr<infrastructure::ProxyEngine> m_proxyEngine;
-    std::unique_ptr<infrastructure::NpcapCapture> m_driverComm;
+    std::unique_ptr<infrastructure::WinDivertCapture> m_driverComm;
     std::unique_ptr<infrastructure::PipeServer> m_pipeServer;
 
     SERVICE_STATUS m_status = {0};

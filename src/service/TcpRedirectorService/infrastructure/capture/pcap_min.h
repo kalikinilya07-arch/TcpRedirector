@@ -16,6 +16,7 @@ extern "C" {
 #define PCAP_ERRBUF_SIZE    256
 #define PCAP_IF_LOOPBACK    0x00000001
 #define PCAP_IF_UP          0x00000002
+#define PCAP_IF_RUNNING     0x00000004
 #define PCAP_NETMASK_UNKNOWN 0xffffffff
 
 struct bpf_program {
@@ -30,15 +31,27 @@ struct pcap_pkthdr {
     uint32_t len;
 };
 
-struct pcap_if {
-    struct pcap_if* next;
-    char*           name;
-    char*           description;
-    void*           addresses;
-    uint32_t        flags;
+// Forward decl for sockaddr (defined in ws2tcpip.h/winsock2.h included before this header)
+struct sockaddr;
+
+struct pcap_addr {
+    struct pcap_addr* next;
+    struct sockaddr*  addr;
+    struct sockaddr*  netmask;
+    struct sockaddr*  broadaddr;
+    struct sockaddr*  dstaddr;
 };
 
-typedef struct pcap_if pcap_if_t;
+struct pcap_if {
+    struct pcap_if*  next;
+    char*            name;
+    char*            description;
+    struct pcap_addr* addresses;
+    uint32_t         flags;
+};
+
+typedef struct pcap_if   pcap_if_t;
+typedef struct pcap_addr pcap_addr_t;
 typedef void* pcap_t;
 typedef unsigned char u_char;
 
