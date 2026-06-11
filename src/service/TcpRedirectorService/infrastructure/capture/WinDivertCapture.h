@@ -1,18 +1,11 @@
 #pragma once
 
 //
-// WinDivert capture module — replaces NpcapCapture for actual TCP redirection.
-// Uses WinDivert (WHQL-signed kernel driver) to intercept, block, and redirect
-// TCP SYN packets from the target process through an HTTP CONNECT proxy.
+// WinDivert capture module — captures TCP packets via WinDivert (WHQL-signed
+// kernel driver), identifies target process by PID, emits RedirectEvents.
 //
-// Architecture:
-//   1. WinDivert captures outbound TCP SYN packets
-//   2. For target process: BLOCK original SYN, create CONNECT tunnel to proxy,
-//      spoof SYN-ACK back to process, bridge all subsequent data through tunnel
-//   3. For non-target: re-inject original packet unchanged (pass-through)
-//
-// WinDivert driver (WinDivert64.sys) is WHQL-signed by Microsoft — works with
-// Secure Boot, no Test Mode, no EV certificate needed.
+// WinDivert64.sys is WHQL-signed by Microsoft — works with Secure Boot,
+// no Test Mode, no EV certificate needed.
 //
 
 #define WIN32_LEAN_AND_MEAN
@@ -46,10 +39,6 @@ public:
     ~WinDivertCapture() override;
 
     // IDriverCommunicator interface
-    // File logging for remote debugging
-    bool InitLog(const std::wstring& logPath);
-    void Log(const char* fmt, ...);
-
     bool Open() override;
     void Close() override;
     bool IsOpen() const override;
@@ -69,56 +58,17 @@ private:
     // Capture thread
     void CaptureLoop();
 
-    // Proxy connection thread for a single redirected flow
-    struct RedirectFlow;
-    void ProxyBridge(RedirectFlow* flow);
-
-    // TCP connection tracking entry
-    struct RedirectFlow {
-        uint64_t id;
-        uint32_t src_addr;
-        uint16_t src_port;
-        uint32_t dst_addr;
-        uint16_t dst_port;
-        uint32_t proxy_addr;
-        uint16_t proxy_port;
-
-        // TCP state tracking
-        uint32_t client_seq = 0;
-        uint32_t server_seq = 0;
-        uint32_t client_ack = 0;
-        uint32_t server_ack = 0;
-
-        // Proxy connection
-        SOCKET proxy_sock = INVALID_SOCKET;
-        HANDLE bridge_thread = nullptr;
-        bool connected = false;
-        bool closed = false;
-    };
-
     // Find PID from TCP table
     uint32_t FindPidBySourcePort(uint16_t src_port);
 
     // Check if PID belongs to target process
     bool IsTargetProcess(uint32_t pid);
 
-    // Spoof TCP packets
-    bool SendSpoofedSynAck(const RedirectFlow& flow);
-    bool SendSpoofedPacket(const RedirectFlow& flow, const uint8_t* data, int dataLen, uint8_t flags);
-    bool SendSpoofedRst(const RedirectFlow& flow);
-
-    // Calculate checksum helper
-    uint16_t TcpChecksum(const uint8_t* packet, int ipHdrLen, int totalLen);
-
     // Redirect event queue
     std::mutex m_queueMutex;
     std::queue<domain::RedirectEvent> m_eventQueue;
     HANDLE m_hEvent = nullptr;
     static constexpr size_t MAX_QUEUE_SIZE = 4096;
-
-    // Flow tracking
-    std::mutex m_flowsMutex;
-    std::unordered_map<uint64_t, std::unique_ptr<RedirectFlow>> m_flows;
     std::atomic<uint64_t> m_nextFlowId{1};
 
     // WinDivert state
@@ -172,12 +122,6 @@ private:
     // Stats
     std::atomic<uint64_t> m_packets_captured{0};
     std::atomic<uint64_t> m_redirects_emitted{0};
-    std::atomic<uint64_t> m_pid_lookups_failed{0};
-    std::atomic<uint64_t> m_flows_active{0};
-
-    // Debug log file
-    FILE* m_logFile = nullptr;
-    std::mutex m_logMutex;
 };
 
 } // namespace infrastructure

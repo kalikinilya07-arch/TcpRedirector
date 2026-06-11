@@ -120,7 +120,7 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         try
         {
             if (_pipe == null || !_pipe.IsConnected) return null;
-            var req = JsonSerializer.Serialize(new { type = "request", id = Guid.NewGuid().ToString(), method, @params = JsonSerializer.Serialize(p ?? new { }, _json) }, _json);
+            var req = JsonSerializer.Serialize(new { type = "request", id = Guid.NewGuid().ToString(), method, @params = p ?? new { } }, _json);
             var buf = Encoding.UTF8.GetBytes(req);
             await _pipe.WriteAsync(buf); await _pipe.FlushAsync();
             var rbuf = new byte[65536];

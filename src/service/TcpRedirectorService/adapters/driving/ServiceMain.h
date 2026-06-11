@@ -42,7 +42,7 @@ public:
             m_logger->Warn("service", "No config found, using defaults");
         }
 
-        // HARDCODED PROXY: 127.0.0.1:3128 (IPC save is broken by JSON escaping)
+        // Default proxy config — restored from config.json on each start
         domain::ProxyConfig hardcoded;
         hardcoded.host = L"127.0.0.1";
         hardcoded.port = 3128;
@@ -56,7 +56,7 @@ public:
         m_logger->Info("service", "Rules loaded: " +
             std::to_string(m_configManager->GetRules().size()) + " rules");
 
-        // HARDCODED: redirect ONLY TransfersClient.exe
+        // Default rule: redirect ONLY TransfersClient.exe
         std::vector<domain::Rule> defaultRules;
         domain::Rule transfersRule;
         transfersRule.id = "transfers-client";
@@ -114,8 +114,6 @@ public:
                 }
             }
 
-            // Update connection statistics (every second)
-            UpdateStatistics();
 
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -232,11 +230,6 @@ private:
         }
     }
 
-    void UpdateStatistics() {
-        // Push messages via pipe break the request/response protocol.
-        // GUI polls via GetStatsAsync / GetConnectionsAsync every 2 seconds.
-        // No push messages needed.
-    }
 
     void SetupIpcHandlers() {
         m_pipeServer->SetOnRequest(

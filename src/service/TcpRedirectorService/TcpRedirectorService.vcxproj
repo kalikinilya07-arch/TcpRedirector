@@ -73,8 +73,6 @@
     <ClInclude Include="domain\services\ConnectionTracker.h" />
     <ClInclude Include="domain\services\RuleEngine.h" />
     <ClInclude Include="infrastructure\config\ConfigManager.h" />
-    <ClInclude Include="infrastructure\capture\NpcapCapture.h" />
-    <ClInclude Include="infrastructure\driver\DriverCommunicator.h" />
     <ClInclude Include="infrastructure\ipc\PipeServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />
   </ItemGroup>

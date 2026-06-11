@@ -3,13 +3,11 @@
 #include <cstring>
 #include <iphlpapi.h>
 #include <tcpmib.h>
-#include <psapi.h>
 #include <tlhelp32.h>
 #include <vector>
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "psapi.lib")
 
 #ifndef TCP_TABLE_OWNER_PID_ALL
 #define TCP_TABLE_OWNER_PID_ALL 5
@@ -136,6 +134,7 @@ void WinDivertCapture::CaptureLoop() {
     WINDIVERT_ADDRESS addr;
     UINT recvLen = 0;
     uint64_t pktCount = 0;
+    uint64_t lastPidCheck = 0;
 
     if (!packet) {
         LOG("[WinDivert] FATAL: malloc failed\n");
@@ -143,14 +142,12 @@ void WinDivertCapture::CaptureLoop() {
     }
 
     while (m_running) {
-        // Recv with queue_time 2000ms - returns every 2s even if no packets
         if (!m_api.Recv(m_handle, (PVOID)packet, 0xFFFF, &recvLen, &addr)) {
             DWORD err = GetLastError();
             if (err == ERROR_NO_MORE_ITEMS) {
                 LOG("[WD] ERROR_NO_MORE_ITEMS - shutting down\n");
                 break;
             }
-            // Recv failed - log and retry (don't exit loop)
             LOG("[WD] Recv failed: err=%lu (retrying)\n", err);
             Sleep(100);
             continue;
@@ -158,16 +155,14 @@ void WinDivertCapture::CaptureLoop() {
 
         if (recvLen == 0) continue;
 
-        // HEARTBEAT: log every 50 packets
         pktCount++;
         if (pktCount % 50 == 0) {
-            LOG("[WD] HEARTBEAT: %llu packets captured, %llu redirected\n",
+            LOG("[WD] HEARTBEAT: %llu packets, %llu redirected\n",
                    pktCount, m_redirects_emitted.load());
         }
 
         bool shouldBlock = false;
 
-        // Parse packet headers
         WINDIVERT_IPHDR* ipHdr = nullptr;
         WINDIVERT_IPV6HDR* ipv6Hdr = nullptr;
         uint8_t protocol = 0;
@@ -184,10 +179,9 @@ void WinDivertCapture::CaptureLoop() {
 
             uint16_t srcPort = ntohs(tcpHdr->SrcPort);
             uint16_t dstPort = ntohs(tcpHdr->DstPort);
-            bool isSyn = tcpHdr->Syn ? true : false;
             bool isSynOnly = (tcpHdr->Syn && !tcpHdr->Ack);
 
-            // Format IPs for logging
+            // Format IPs once for all logs
             char srcIP[16], dstIP[16];
             snprintf(srcIP, sizeof(srcIP), "%u.%u.%u.%u",
                      (ipHdr->SrcAddr >> 0) & 0xFF, (ipHdr->SrcAddr >> 8) & 0xFF,
@@ -196,32 +190,20 @@ void WinDivertCapture::CaptureLoop() {
                      (ipHdr->DstAddr >> 0) & 0xFF, (ipHdr->DstAddr >> 8) & 0xFF,
                      (ipHdr->DstAddr >> 16) & 0xFF, (ipHdr->DstAddr >> 24) & 0xFF);
 
-            // Determine action label: PROXIED/SKIPPED
             const char* action = "SKIPPED";
             bool isTargetSyn = false;
-
             uint32_t pid = 0;
 
-            // Check SYN-only from target process
             if (isSynOnly) {
                 pid = FindPidBySourcePort(srcPort);
                 if (pid != 0 && IsTargetProcess(pid)) {
                     isTargetSyn = true;
                     action = "PROXIED";
-                    LOG("[WD] *** TARGET SYN PID=%u %s:%u -> %s:%u ***\n",
-                           pid, srcIP, srcPort, dstIP, dstPort);
                 }
             }
 
-            // Log first 100 packets, then every 100th
+            // Log first 100, then every 100th, always for target
             if (pktCount <= 100 || pktCount % 100 == 0 || isTargetSyn) {
-                snprintf(srcIP, sizeof(srcIP), "%u.%u.%u.%u",
-                         (ipHdr->SrcAddr >> 0) & 0xFF, (ipHdr->SrcAddr >> 8) & 0xFF,
-                         (ipHdr->SrcAddr >> 16) & 0xFF, (ipHdr->SrcAddr >> 24) & 0xFF);
-                snprintf(dstIP, sizeof(dstIP), "%u.%u.%u.%u",
-                         (ipHdr->DstAddr >> 0) & 0xFF, (ipHdr->DstAddr >> 8) & 0xFF,
-                         (ipHdr->DstAddr >> 16) & 0xFF, (ipHdr->DstAddr >> 24) & 0xFF);
-
                 LOG("[%s] #%llu %s %s:%u -> %s:%u [%c%c%c%c%c] len=%u\n",
                     action, pktCount,
                     isSynOnly ? "SYN" : "TCP",
@@ -236,38 +218,32 @@ void WinDivertCapture::CaptureLoop() {
 
             if (isTargetSyn) {
                 domain::RedirectEvent event;
-                    event.redirect_id = m_nextFlowId++;
-                    event.pid = pid;
-                    event.process_path = m_targetProcessPath;
-                    event.original_address_v4 = ipHdr->DstAddr;
-                    event.original_port = dstPort;
-                    m_redirects_emitted++;
-                    {
-                        std::lock_guard<std::mutex> lock(m_queueMutex);
-                        if (m_eventQueue.size() < MAX_QUEUE_SIZE)
-                            m_eventQueue.push(event);
-                    }
-                    SetEvent(m_hEvent);
-                    shouldBlock = true;
-                } else if (pktCount <= 20) {
-                    LOG("[SKIPPED] #%llu SYN (no target PID) %s:%u -> %s:%u PID=%u\n",
-                        pktCount, srcIP, srcPort, dstIP, dstPort, pid);
+                event.redirect_id = m_nextFlowId++;
+                event.pid = pid;
+                event.process_path = m_targetProcessPath;
+                event.original_address_v4 = ipHdr->DstAddr;
+                event.original_port = dstPort;
+                m_redirects_emitted++;
+                {
+                    std::lock_guard<std::mutex> lock(m_queueMutex);
+                    if (m_eventQueue.size() < MAX_QUEUE_SIZE)
+                        m_eventQueue.push(event);
                 }
+                SetEvent(m_hEvent);
+                shouldBlock = true;
             }
 
             // Periodically find target PID
-            static uint64_t lastCheck = 0;
-            if (pktCount - lastCheck >= 200 || m_targetPid == 0) {
+            if (pktCount - lastPidCheck >= 200 || m_targetPid == 0) {
                 uint32_t newPid = FindTargetPid();
                 if (newPid != m_targetPid) {
                     m_targetPid = newPid;
-                    LOG("[WD] Target PID: %u\n", newPid ? newPid : 0);
+                    LOG("[WD] Target PID: %u\n", newPid);
                 }
-                lastCheck = pktCount;
+                lastPidCheck = pktCount;
             }
         }
 
-        // Always re-inject unless blocking
         UINT sendLen = 0;
         if (!shouldBlock) {
             if (!m_api.Send(m_handle, (PVOID)packet, recvLen, &sendLen, &addr)) {
@@ -339,7 +315,6 @@ bool WinDivertCapture::IsTargetProcess(uint32_t pid) {
         m_targetPid = pid;
         return true;
     }
-    // Also check by process name (TransfersClient.exe) for flexibility
     return false;
 }
 
