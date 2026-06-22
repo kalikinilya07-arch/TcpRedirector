@@ -1,0 +1,3 @@
+Версия MSBuild 17.14.40+3e7442088 для .NET Framework
+
+  TcpRedirectorService.vcxproj -> C:\Users\user\Desktop\TcpRedirector\build_refactored\TcpRedirectorService.exe
