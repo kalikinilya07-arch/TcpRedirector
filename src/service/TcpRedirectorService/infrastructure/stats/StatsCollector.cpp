@@ -1,3 +1,14 @@
+/**
+ * @file StatsCollector.cpp
+ * @brief Реализация lock-free сборщика статистики.
+ *
+ * Содержит логику атомарного обновления счётчиков (OnPacket),
+ * создания снимка с дифференциальным расчётом скорости (GetStats)
+ * и сброса всех счётчиков (Reset).
+ *
+ * @author TcpRedirector Team
+ */
+
 #include "StatsCollector.h"
 
 namespace tcp_redirector {

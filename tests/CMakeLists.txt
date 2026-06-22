@@ -29,11 +29,14 @@ list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 # Общие исходники тестов
 #   packet_generator.cpp  — тестируем парсинг аргументов + формат пакетов
 #   mock_proxy.cpp        — тестируем формат ответов + обработку данных
+#   test_comprehensive.cpp — модульные тесты: ConnectionTable, RuleEngine,
+#                            bitmap операции, структуры данных Config/ProxyConfig
 # ============================================================
 set(TEST_SOURCES
     test_main.cpp
     test_packet_gen.cpp
     test_mock_proxy.cpp
+    test_comprehensive.cpp
 )
 
 # ============================================================
@@ -51,6 +54,10 @@ target_include_directories(tcp_redirector_tests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/catch2
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/service/TcpRedirectorService
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/service/TcpRedirectorService/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../external
+        ${CMAKE_CURRENT_SOURCE_DIR}/../external/boost
 )
 
 # ============================================================

@@ -77,9 +77,19 @@ private:
     // PID + rule check: единая точка входа
     // Returns: 0 = DIRECT, 1 = PROXY, 2 = BLOCK
     // Если PROXY, out_proxy_config_id заполняется
+    // out_pid / out_proc_path заполняются при любом non-zero PID
     int CheckProcessRule(uint32_t src_ip, uint16_t src_port,
                          uint32_t dst_ip, uint16_t dst_port,
-                         uint32_t* out_proxy_config_id);
+                         uint32_t* out_proxy_config_id,
+                         uint32_t* out_pid = nullptr,
+                         wchar_t* out_proc_path = nullptr,
+                         DWORD out_proc_path_size = 0);
+
+    // Получить короткое имя файла из полного пути (для логов)
+    static const wchar_t* ShortName(const wchar_t* path) {
+        const wchar_t* p = wcsrchr(path, L'\\');
+        return p ? p + 1 : path;
+    }
 
     // Per-port decision bitmap (как в ProxyBridge)
     // Два битмапа по 2048 LONG = 8 KB каждый

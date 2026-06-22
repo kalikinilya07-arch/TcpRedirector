@@ -131,8 +131,6 @@ bool WinDivertCapture::Open() {
     // Pre-find target PID if process is already running
     if (m_targetPid == 0 && !m_targetProcessPath.empty()) {
         FindTargetPid();
-        LOG("[WinDivert] Target PID pre-fetch: %lu (path=%ls)\n",
-            m_targetPid.load(), m_targetProcessPath.c_str());
     }
 
     // Очищаем bitmap при старте
@@ -219,6 +217,9 @@ void WinDivertCapture::CaptureLoop() {
                 ClearPort(srcPort);
             }
             if (IsPortDirect(srcPort)) {
+                if (tcpHdr->Fin || tcpHdr->Rst) {
+                    // Log connection close for previously MISSED connections
+                }
                 // DIRECT — отправляем без изменений
                 m_api.Send(m_handle, (PVOID)packet, recvLen, nullptr, &addr);
                 continue;
@@ -226,7 +227,7 @@ void WinDivertCapture::CaptureLoop() {
             // decided, not direct (PROXY/BLOCK) — fall through к connection track
         }
 
-        // ==== Шаг 2: Relay response ====
+        // ==== Шаг 2: Relay response (data from target back to client) ====
         if (srcPort == m_relayPort && m_connTable != nullptr) {
             uint32_t origIp = 0;
             uint16_t origPort = 0;
@@ -234,19 +235,39 @@ void WinDivertCapture::CaptureLoop() {
                 RestoreFromRelay(packet, recvLen, addr, ipHdr, tcpHdr);
                 modified = true;
 
-                if (pktCount % 100 == 0) {
-                    LOG("[RLY-RSP] #%llu restore port=%u\n", pktCount, dstPort);
-                }
+                // Track downstream bytes (target → client)
+                m_connTable->AddBytes(dstPort, 0, recvLen);
 
                 if (tcpHdr->Fin || tcpHdr->Rst) {
+                    // Log connection summary
+                    domain::ports::ConnectionInfo info;
+                    if (m_connTable->GetInfo(dstPort, &info)) {
+                        LOG("[PROXIED] %ls (srcPort=%u) closed: up=%llu down=%llu total=%llu\n",
+                            ShortName(info.proc_path), dstPort,
+                            info.bytes_up, info.bytes_down,
+                            info.bytes_up + info.bytes_down);
+                    }
                     m_connTable->Remove(dstPort);
+                    ClearPort(dstPort);
                 }
             }
         }
-        // ==== Шаг 3: Tracked connection ====
+        // ==== Шаг 3: Tracked connection (data from client to relay) ====
         else if (m_connTable != nullptr &&
                  m_connTable->IsTracked(srcPort)) {
+
+            // Track upstream bytes (client → target via relay)
+            m_connTable->AddBytes(srcPort, recvLen, 0);
+
             if (tcpHdr->Fin || tcpHdr->Rst) {
+                // Log connection summary
+                domain::ports::ConnectionInfo info;
+                if (m_connTable->GetInfo(srcPort, &info)) {
+                    LOG("[PROXIED] %ls (srcPort=%u) closed: up=%llu down=%llu total=%llu\n",
+                        ShortName(info.proc_path), srcPort,
+                        info.bytes_up, info.bytes_down,
+                        info.bytes_up + info.bytes_down);
+                }
                 m_connTable->Remove(srcPort);
                 ClearPort(srcPort);
             }
@@ -256,33 +277,30 @@ void WinDivertCapture::CaptureLoop() {
                 SwapIpAndDirection(ipHdr, addr);
             }
             modified = true;
-
-            if (pktCount % 100 == 0) {
-                LOG("[TRACK] #%llu srcPort=%u -> relay:%u\n",
-                    pktCount, srcPort, m_relayPort);
-            }
         }
         // ==== Шаг 4: Untracked outbound → CheckProcessRule ====
         else if (addr.Outbound && m_connTable != nullptr &&
                  !m_connTable->IsTracked(srcPort)) {
 
             uint32_t proxyCfgId = 0;
+            uint32_t pid = 0;
+            wchar_t procPath[MAX_PATH] = {0};
             int action = CheckProcessRule(
                 ntohl(ipHdr->SrcAddr), srcPort,
                 ntohl(ipHdr->DstAddr), dstPort,
-                &proxyCfgId);
+                &proxyCfgId, &pid, procPath, MAX_PATH);
 
             if (action == 0) { // DIRECT
                 SetPortDirect(srcPort);
                 m_api.Send(m_handle, (PVOID)packet, recvLen, nullptr, &addr);
-                if (pktCount % 50 == 0) {
-                    LOG("[DRCT] #%llu srcPort=%u\n", pktCount, srcPort);
+                const wchar_t* name = procPath[0] ? ShortName(procPath) : nullptr;
+                if (name) {
+                    LOG("[MISSED] %ls srcPort=%u\n", name, srcPort);
                 }
                 continue;
             }
             else if (action == 2) { // BLOCK
                 SetPortDecided(srcPort);
-                // drop
                 continue;
             }
             else if (action == 1) { // PROXY
@@ -291,6 +309,9 @@ void WinDivertCapture::CaptureLoop() {
 
                 m_connTable->Add(srcPort, ipHdr->SrcAddr,
                                 origDestIp, origDestPort, proxyCfgId);
+                if (pid != 0 && procPath[0]) {
+                    m_connTable->SetProcessInfo(srcPort, pid, procPath);
+                }
                 SetPortDecided(srcPort);
                 m_redirects_emitted++;
 
@@ -302,8 +323,9 @@ void WinDivertCapture::CaptureLoop() {
                 snprintf(dstIP, sizeof(dstIP), "%u.%u.%u.%u",
                     (origDestIp >> 0) & 0xFF, (origDestIp >> 8) & 0xFF,
                     (origDestIp >> 16) & 0xFF, (origDestIp >> 24) & 0xFF);
-                LOG("[PROXY] #%llu srcPort=%u -> relay:%u (was %s:%u)\n",
-                    pktCount, srcPort, m_relayPort, dstIP, origDestPort);
+                LOG("[PROXIED] %ls srcPort=%u %s:%u bytes=%u to %s:%u\n",
+                    ShortName(procPath), srcPort, dstIP, origDestPort, recvLen,
+                    m_proxyHost.c_str(), m_proxyPort);
             }
         }
 
@@ -331,7 +353,10 @@ void WinDivertCapture::CaptureLoop() {
 // =====================================================================
 int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
                                         uint32_t dst_ip, uint16_t dst_port,
-                                        uint32_t* out_proxy_config_id) {
+                                        uint32_t* out_proxy_config_id,
+                                        uint32_t* out_pid,
+                                        wchar_t* out_proc_path,
+                                        DWORD out_proc_path_size) {
     (void)src_ip;
     (void)dst_ip;
     (void)dst_port;
@@ -346,19 +371,16 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
             uint32_t newPid = FindTargetPid();
             if (newPid != 0) {
                 m_targetPid = newPid;
-                LOG("[CheckRule] Target PID found: %lu\n", newPid);
             }
         }
         // Если targetPid известен, а PID=0 — возможно helper процесс,
         // который ещё не создал запись. Возвращаем DIRECT — следующий пакет
         // этого же соединения (ACK/DATA) снова вызовет CheckProcessRule.
-        LOG("[CheckRule] PID=0 for srcPort=%u → DIRECT\n", src_port);
         return 0; // DIRECT
     }
 
     // 2. Исключаем собственный процесс (loop prevention)
     if (pid == GetCurrentProcessId()) {
-        LOG("[CheckRule] PID=%lu is self → DIRECT\n", pid);
         return 0; // DIRECT
     }
 
@@ -367,27 +389,28 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
     {
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!hProcess) {
-            LOG("[CheckRule] OpenProcess(%lu) failed → DIRECT\n", pid);
             return 0; // DIRECT
         }
         DWORD size = MAX_PATH;
         BOOL ok = QueryFullProcessImageNameW(hProcess, 0, procPath, &size);
         CloseHandle(hProcess);
         if (!ok) {
-            LOG("[CheckRule] QueryFullProcessImageName(%lu) failed → DIRECT\n", pid);
             return 0; // DIRECT
         }
+    }
+
+    // Заполняем out-параметры PID/пути (для логов)
+    if (out_pid) *out_pid = pid;
+    if (out_proc_path && out_proc_path_size > 0) {
+        wcscpy_s(out_proc_path, out_proc_path_size, procPath);
     }
 
     // 4. Проверка: совпадает с target process?
     if (_wcsicmp(procPath, m_targetProcessPath.c_str()) == 0) {
         m_targetPid = pid;
-        LOG("[CheckRule] PID=%lu matches target '%ls' → PROXY\n",
-            pid, m_targetProcessPath.c_str());
 
         // Проверка, что прокси настроен
         if (m_proxyHost.empty() || m_proxyPort == 0) {
-            LOG("[CheckRule] Proxy not configured → DIRECT\n");
             return 0; // DIRECT
         }
         if (out_proxy_config_id) *out_proxy_config_id = 0;
@@ -401,8 +424,6 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
             PROCESSENTRY32W pe = { sizeof(pe) };
             uint32_t currentPid = pid;
             int depth = 0;
-            LOG("[CheckRule] Parent chain walk: starting from PID=%lu, targetPid=%lu\n",
-                pid, m_targetPid.load());
             while (currentPid != 0 && depth < 10) {
                 bool found = false;
                 if (Process32FirstW(hSnap, &pe)) {
@@ -410,16 +431,12 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
                         if (pe.th32ProcessID == currentPid) {
                             if (pe.th32ProcessID == m_targetPid.load()) {
                                 CloseHandle(hSnap);
-                                LOG("[CheckRule] PID=%lu is CHILD of target (depth=%d) → PROXY\n",
-                                    pid, depth);
                                 if (m_proxyHost.empty() || m_proxyPort == 0) {
                                     return 0; // DIRECT
                                 }
                                 if (out_proxy_config_id) *out_proxy_config_id = 0;
                                 return 1; // PROXY
                             }
-                            LOG("[CheckRule] Parent chain depth=%d: PID=%lu -> parentPid=%lu\n",
-                                depth, currentPid, pe.th32ParentProcessID);
                             currentPid = pe.th32ParentProcessID;
                             found = true;
                             depth++;
@@ -428,22 +445,14 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
                     } while (Process32NextW(hSnap, &pe));
                 }
                 if (!found) {
-                    LOG("[CheckRule] Parent chain: PID=%lu not found in snapshot, stopping\n",
-                        currentPid);
                     break;
                 }
             }
             CloseHandle(hSnap);
-            if (depth >= 10) {
-                LOG("[CheckRule] Parent chain exceeded max depth (10) for PID=%lu\n", pid);
-            }
-        } else {
-            LOG("[CheckRule] CreateToolhelp32Snapshot failed for parent chain check\n");
         }
     }
 
     // 6. Не совпадает — DIRECT
-    LOG("[CheckRule] PID=%lu '%ls' not target → DIRECT\n", pid, procPath);
     return 0; // DIRECT
 }
 
@@ -516,8 +525,6 @@ uint32_t WinDivertCapture::FindPidBySourcePort(uint16_t src_port) {
     for (DWORD i = 0; i < table->dwNumEntries; i++) {
         // dwLocalPort — DWORD, но содержит порт в network byte order как u_short
         if (ntohs(static_cast<u_short>(table->table[i].dwLocalPort)) == src_port) {
-            LOG("[FindPid] src_port=%u -> pid=%lu (entries=%lu)\n",
-                src_port, table->table[i].dwOwningPid, table->dwNumEntries);
             return table->table[i].dwOwningPid;
         }
     }
@@ -549,7 +556,6 @@ uint32_t WinDivertCapture::FindTargetPid() {
                 const wchar_t* target = wcsrchr(m_targetProcessPath.c_str(), L'\\');
                 target = target ? target + 1 : m_targetProcessPath.c_str();
                 if (_wcsicmp(fname, target) == 0) {
-                    LOG("[FindTarget] FOUND pid=%lu path=%ls\n", pe.th32ProcessID, path);
                     CloseHandle(hSnapshot);
                     return pe.th32ProcessID;
                 }
@@ -557,8 +563,6 @@ uint32_t WinDivertCapture::FindTargetPid() {
         } while (Process32NextW(hSnapshot, &pe));
     }
     CloseHandle(hSnapshot);
-    LOG("[FindTarget] scanned %d processes, target=%ls NOT FOUND\n",
-        count, m_targetProcessPath.c_str());
     return 0;
 }
 

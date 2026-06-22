@@ -1,10 +1,23 @@
+/**
+ * @file ConfigManager.cpp
+ * @brief Реализация менеджера конфигурации приложения.
+ *
+ * Содержит логику загрузки/сохранения JSON-конфигурации,
+ * шифрования/дешифрования паролей через DPAPI,
+ * сериализации правил и уведомления подписчиков.
+ *
+ * @author TcpRedirector Team
+ */
+
 #include "ConfigManager.h"
 #include <cstdio>
 
 namespace tcp_redirector {
 namespace infrastructure {
 
-// ---- Конструктор ----
+// ====================================================================
+// Конструктор ConfigManager
+// ====================================================================
 
 ConfigManager::ConfigManager() {
     wchar_t progData[MAX_PATH] = {0};
@@ -15,7 +28,9 @@ ConfigManager::ConfigManager() {
     }
 }
 
-// ---- IConfigStore Load/Save ----
+// ====================================================================
+// IConfigStore: Load / Save
+// ====================================================================
 
 bool ConfigManager::Load() {
     std::unique_lock lock(m_mutex);
@@ -27,7 +42,9 @@ bool ConfigManager::Save() {
     return SaveImpl();
 }
 
-// ---- IConfigStore ProxyConfig ----
+// ====================================================================
+// IConfigStore: ProxyConfig
+// ====================================================================
 
 domain::ProxyConfig ConfigManager::GetProxyConfig() const {
     std::shared_lock lock(m_mutex);
@@ -58,7 +75,9 @@ bool ConfigManager::SetProxyConfig(const domain::ProxyConfig& config) {
     return false;
 }
 
-// ---- IConfigStore Rules ----
+// ====================================================================
+// IConfigStore: Rules
+// ====================================================================
 
 std::vector<domain::Rule> ConfigManager::GetRules() const {
     std::shared_lock lock(m_mutex);
@@ -71,7 +90,9 @@ bool ConfigManager::SetRules(const std::vector<domain::Rule>& rules) {
     return SaveImpl();
 }
 
-// ---- IConfigStore Logging ----
+// ====================================================================
+// IConfigStore: Logging
+// ====================================================================
 
 domain::LogLevel ConfigManager::GetLogLevel() const {
     std::shared_lock lock(m_mutex);
@@ -117,7 +138,9 @@ uint32_t ConfigManager::GetMaxLogFiles() const {
     return MAX_LOG_FILES;
 }
 
-// ---- Новый Config-ориентированный API ----
+// ====================================================================
+// Новый Config-ориентированный API
+// ====================================================================
 
 Config ConfigManager::GetConfig() const {
     std::shared_lock lock(m_mutex);
@@ -155,7 +178,9 @@ bool ConfigManager::UpdateConfigNoSave(const Config& newConfig) {
     return true;
 }
 
-// ---- DPAPI для пароля ----
+// ====================================================================
+// DPAPI для пароля
+// ====================================================================
 
 std::wstring ConfigManager::GetPlainPassword() const {
     std::shared_lock lock(m_mutex);
@@ -170,7 +195,9 @@ void ConfigManager::SetPassword(const std::wstring& plainPassword) {
     SaveImpl();
 }
 
-// ---- Listener механизм ----
+// ====================================================================
+// Listener-механизм уведомлений
+// ====================================================================
 
 uint64_t ConfigManager::AddListener(ConfigChangeListener callback) {
     std::lock_guard lock(m_listenersMutex);
@@ -184,7 +211,9 @@ void ConfigManager::RemoveListener(uint64_t listenerId) {
     m_listeners.erase(listenerId);
 }
 
-// ---- Приватные методы ----
+// ====================================================================
+// Приватные методы: LoadImpl / SaveImpl / CreateDefaultConfig
+// ====================================================================
 
 bool ConfigManager::LoadImpl() {
     try {
@@ -294,7 +323,9 @@ void ConfigManager::NotifyListeners(const Config& oldCfg, const Config& newCfg) 
     }
 }
 
-// ---- Сериализация/десериализация ----
+// ====================================================================
+// Сериализация / Десериализация (JSON ↔ структуры)
+// ====================================================================
 
 Config ConfigManager::JsonToConfig(const nlohmann::json& j) const {
     Config cfg;
@@ -373,7 +404,9 @@ nlohmann::json ConfigManager::RulesToJson(const std::vector<domain::Rule>& rules
     return arr;
 }
 
-// ---- DPAPI ----
+// ====================================================================
+// DPAPI: шифрование / дешифрование пароля
+// ====================================================================
 
 std::string ConfigManager::EncryptPassword(const std::wstring& plaintext) const {
     DATA_BLOB plainBlob;
@@ -461,7 +494,9 @@ std::vector<uint8_t> ConfigManager::Base64Decode(const std::string& data) {
     return result;
 }
 
-// ---- SecretsManager ----
+// ====================================================================
+// SecretsManager — реализация доменного порта ISecretsManager
+// ====================================================================
 
 std::vector<uint8_t> SecretsManager::Encrypt(const std::wstring& plaintext) {
     DATA_BLOB plainBlob;

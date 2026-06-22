@@ -267,7 +267,7 @@ private:
         hints.ai_protocol = IPPROTO_TCP;
         struct addrinfo* result = nullptr;
         if (getaddrinfo(m_proxyHost.c_str(), nullptr, &hints, &result) != 0 || !result) {
-            Log("[RELAY] Failed to resolve proxy: " + m_proxyHost);
+            Log("Failed to resolve proxy: " + m_proxyHost);
             closesocket(client_sock);
             closesocket(proxy_sock);
             if (result) freeaddrinfo(result);
@@ -282,7 +282,7 @@ private:
         freeaddrinfo(result);
 
         if (connect(proxy_sock, (sockaddr*)&proxy_addr, sizeof(proxy_addr)) != 0) {
-            Log("[RELAY] connect to proxy failed: " + std::to_string(WSAGetLastError()));
+            Log("connect to proxy failed: " + std::to_string(WSAGetLastError()));
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -306,7 +306,7 @@ private:
         connect_req += "Proxy-Connection: Keep-Alive\r\n\r\n";
 
         if (send(proxy_sock, connect_req.c_str(), (int)connect_req.length(), 0) == SOCKET_ERROR) {
-            Log("[RELAY] send CONNECT failed");
+            Log("send CONNECT failed");
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -315,7 +315,7 @@ private:
         char resp_buf[4096];
         int bytes = recv(proxy_sock, resp_buf, sizeof(resp_buf) - 1, 0);
         if (bytes <= 0) {
-            Log("[RELAY] no CONNECT response");
+            Log("no CONNECT response");
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -323,14 +323,14 @@ private:
         resp_buf[bytes] = '\0';
 
         if (strstr(resp_buf, "200") == nullptr) {
-            Log("[RELAY] CONNECT failed: " + std::string(resp_buf, 100));
+            Log("CONNECT failed: " + std::string(resp_buf, 100));
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
         }
 
-        Log("[RELAY] Tunnel established: " + std::string(ip_str) + ":" +
-            std::to_string(dest_port) + " -> proxy " + m_proxyHost + ":" +
+        Log("[RELAY] " + std::string(ip_str) + ":" +
+            std::to_string(dest_port) + " -> " + m_proxyHost + ":" +
             std::to_string(m_proxyPort));
 
         StartBridge(client_sock, proxy_sock);
