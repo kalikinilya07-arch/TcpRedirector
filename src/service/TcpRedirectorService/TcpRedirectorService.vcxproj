@@ -65,6 +65,8 @@
     <ClCompile Include="infrastructure\stats\StatsCollector.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="infrastructure\relay\ConnectionTable.h" />
+    <ClInclude Include="infrastructure\relay\TcpRelayServer.h" />
     <ClInclude Include="infrastructure\capture\WinDivertCapture.h" />
     <ClInclude Include="adapters\driven\ProxyEngine.h" />
     <ClInclude Include="adapters\driving\ServiceMain.h" />

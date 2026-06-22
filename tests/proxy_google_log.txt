@@ -1,0 +1,56 @@
+============================================================
+  MOCK_PROXY (test stub)
+  Listening: 0.0.0.0:3128, protocol: tcp
+  Press Ctrl+C to exit
+============================================================
+[MOCK_PROXY] TCP server started on port 3128. Waiting for connections...
+[MOCK_PROXY] --- Client #1 connected: 127.0.0.1:46389 ---
+[MOCK_PROXY] Client #1 -> received 126 bytes: CONNECT 142.250.154.138:80 HTTP/1.1
+Host: 142.250.154.138:80
+User-Agent: TcpRedirector/1.0
+Proxy-Connection: Keep-Alive
+
+
+[MOCK_PROXY] Client #1 <- sent CONNECT response
+[MOCK_PROXY] Client #1 recv timeout (5s), total: 126 bytes
+[MOCK_PROXY] --- Client #1 disconnected (total received: 126 bytes) ---
+[MOCK_PROXY] --- Client #2 connected: 127.0.0.1:46390 ---
+[MOCK_PROXY] Client #2 -> received 126 bytes: CONNECT 142.250.154.138:80 HTTP/1.1
+Host: 142.250.154.138:80
+User-Agent: TcpRedirector/1.0
+Proxy-Connection: Keep-Alive
+
+
+[MOCK_PROXY] Client #2 <- sent CONNECT response
+[MOCK_PROXY] Client #2 recv timeout (5s), total: 126 bytes
+[MOCK_PROXY] --- Client #2 disconnected (total received: 126 bytes) ---
+[MOCK_PROXY] --- Client #3 connected: 127.0.0.1:46391 ---
+[MOCK_PROXY] Client #3 -> received 126 bytes: CONNECT 142.250.154.138:80 HTTP/1.1
+Host: 142.250.154.138:80
+User-Agent: TcpRedirector/1.0
+Proxy-Connection: Keep-Alive
+
+
+[MOCK_PROXY] Client #3 <- sent CONNECT response
+[MOCK_PROXY] Client #3 recv timeout (5s), total: 126 bytes
+[MOCK_PROXY] --- Client #3 disconnected (total received: 126 bytes) ---
+[MOCK_PROXY] --- Client #4 connected: 127.0.0.1:46392 ---
+[MOCK_PROXY] Client #4 -> received 126 bytes: CONNECT 142.250.154.138:80 HTTP/1.1
+Host: 142.250.154.138:80
+User-Agent: TcpRedirector/1.0
+Proxy-Connection: Keep-Alive
+
+
+[MOCK_PROXY] Client #4 <- sent CONNECT response
+[MOCK_PROXY] Client #4 recv timeout (5s), total: 126 bytes
+[MOCK_PROXY] --- Client #4 disconnected (total received: 126 bytes) ---
+[MOCK_PROXY] --- Client #5 connected: 127.0.0.1:46393 ---
+[MOCK_PROXY] Client #5 -> received 126 bytes: CONNECT 142.250.154.138:80 HTTP/1.1
+Host: 142.250.154.138:80
+User-Agent: TcpRedirector/1.0
+Proxy-Connection: Keep-Alive
+
+
+[MOCK_PROXY] Client #5 <- sent CONNECT response
+[MOCK_PROXY] Client #5 connection reset (RST)
+[MOCK_PROXY] --- Client #5 disconnected (total received: 126 bytes) ---

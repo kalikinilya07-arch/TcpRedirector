@@ -20,14 +20,19 @@ bool Logger::Initialize(const std::filesystem::path& log_dir,
                          size_t max_file_size_mb,
                          size_t max_files) {
     try {
-        std::filesystem::create_directories(log_dir);
         m_logDir = log_dir;
         m_currentLevel.store(level, std::memory_order_relaxed);
         m_maxFileSize = max_file_size_mb * 1024ULL * 1024ULL;
         m_maxFiles = max_files;
 
-        if (!OpenLogFile()) {
-            return false;
+        // Пытаемся создать директорию и открыть лог-файл.
+        // Если не получается — не фатально, работаем без файлового лога.
+        std::error_code ec;
+        std::filesystem::create_directories(log_dir, ec);
+        if (!ec && OpenLogFile()) {
+            // всё хорошо
+        } else {
+            fprintf(stderr, "[WARN] Logger: cannot open log file (run as Admin), errno=%d\n", errno);
         }
 
         m_running = true;
@@ -60,7 +65,7 @@ void Logger::Shutdown() {
 
 void Logger::Log(domain::LogLevel level, const std::string& logger,
                   const std::string& message) {
-    if (level > m_currentLevel.load(std::memory_order_relaxed)) return;
+    if (level < m_currentLevel.load(std::memory_order_relaxed)) return;
 
     domain::LogEntry entry;
     entry.timestamp = std::chrono::system_clock::now();
@@ -79,7 +84,7 @@ void Logger::Log(domain::LogLevel level, const std::string& logger,
                   const std::string& message,
                   const std::string& file, int line,
                   const std::string& function) {
-    if (level > m_currentLevel.load(std::memory_order_relaxed)) return;
+    if (level < m_currentLevel.load(std::memory_order_relaxed)) return;
 
     domain::LogEntry entry;
     entry.timestamp = std::chrono::system_clock::now();

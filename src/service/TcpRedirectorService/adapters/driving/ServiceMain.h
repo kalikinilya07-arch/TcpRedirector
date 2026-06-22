@@ -9,6 +9,8 @@
 #include "../../domain/services/RuleEngine.h"
 #include "../../domain/services/ConnectionTracker.h"
 #include "../../infrastructure/capture/WinDivertCapture.h"
+#include "../../infrastructure/relay/ConnectionTable.h"
+#include "../../infrastructure/relay/TcpRelayServer.h"
 #include "../../infrastructure/ipc/PipeServer.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
@@ -27,13 +29,11 @@ public:
     ~TcpRedirectorService() { Stop(); }
 
     bool Initialize() {
-        // Initialize logging
+        // Initialize logging (не фатально если папка логов недоступна)
         m_logger = std::make_unique<infrastructure::Logger>();
-        if (!m_logger->Initialize(
-                std::filesystem::path(getenv("ProgramData")) / "TcpRedirector" / "logs",
-                domain::LogLevel::Info)) {
-            return false;
-        }
+        m_logger->Initialize(
+            std::filesystem::path(getenv("ProgramData")) / "TcpRedirector" / "logs",
+            domain::LogLevel::Info);
 
         m_logger->Info("service", "Initializing TcpRedirector Service...");
 
@@ -43,13 +43,10 @@ public:
             m_logger->Warn("service", "No config found, using defaults");
         }
 
-        // Default proxy config — restored from config.json on each start
-        // REPLACED with config: читаем из ConfigManager вместо хардкода
-        // ВАЖНО: НЕ вызываем SetProxyConfig — он затирает config.json через SaveImpl()
-        // ProxyConfig передаётся напрямую в ProxyEngine::Initialize
+        // Proxy config from ConfigManager
+        domain::ProxyConfig proxyCfg;
         {
             auto cfg = m_configManager->GetConfig();
-            domain::ProxyConfig proxyCfg;
             proxyCfg.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
             proxyCfg.port = cfg.proxy.port;
             proxyCfg.auth_required = cfg.auth.enabled;
@@ -57,17 +54,9 @@ public:
                 proxyCfg.login = std::wstring(cfg.auth.username.begin(), cfg.auth.username.end());
                 proxyCfg.has_password = !cfg.auth.encryptedPassword.empty();
             }
-            // Прямая передача в ProxyEngine (без сохранения в JSON)
             m_configManager->UpdateConfigNoSave(cfg);
             m_logger->Info("service", "Proxy set from config: " + cfg.proxy.host + ":" + std::to_string(cfg.proxy.port));
         }
-        // Старый хардкод (сохранён для совместимости):
-        // domain::ProxyConfig hardcoded;
-        // hardcoded.host = L"127.0.0.1";
-        // hardcoded.port = 8888;
-        // hardcoded.auth_required = false;
-        // m_configManager->SetProxyConfig(hardcoded);
-        // m_logger->Info("service", "Proxy set to 127.0.0.1:8888");
 
         // Initialize rule engine
         m_ruleEngine = std::make_unique<domain::services::RuleEngine>();
@@ -75,13 +64,13 @@ public:
         m_logger->Info("service", "Rules loaded: " +
             std::to_string(m_configManager->GetRules().size()) + " rules");
 
-        // Default rule: создаётся из ConfigManager (полный путь, ProcessPath — как в оригинале)
+        // Default rule from config
         {
             auto cfg = m_configManager->GetConfig();
             std::vector<domain::Rule> configRules;
             domain::Rule rule;
             rule.id = "capture-target";
-            rule.pattern = cfg.app.exePath; // полный путь, как в оригинальном хардкоде
+            rule.pattern = cfg.app.exePath;
             rule.description = L"Auto-generated from config: " + cfg.app.exePath;
             rule.priority = 1;
             rule.enabled = true;
@@ -95,35 +84,54 @@ public:
             m_logger->Info("service", "Rule set from config (ProcessPath): " + exePath +
                 ", proxy=" + (cfg.proxy.enabled ? "enabled" : "disabled"));
         }
-        // Старый хардкод (сохранён для совместимости):
-        // std::vector<domain::Rule> defaultRules;
-        // domain::Rule transfersRule;
-        // transfersRule.id = "packet-gen-test";
-        // transfersRule.pattern = L"packet_generator.exe";
-        // ...
 
         // Initialize connection tracker
         m_connectionTracker = std::make_unique<domain::services::ConnectionTracker>();
 
-        // Initialize proxy engine
+        // ProxyEngine не используется в DST-modification режиме,
+        // relay сам делает HTTP CONNECT. Оставлен для совместимости.
         m_proxyEngine = std::make_unique<infrastructure::ProxyEngine>();
         if (!m_proxyEngine->Initialize(m_configManager->GetProxyConfig())) {
-            m_logger->Error("service", "Failed to initialize proxy engine");
-            return false;
+            m_logger->Warn("service", "Proxy engine init skipped (not needed in DST-modification mode)");
+        } else {
+            m_logger->Info("service", "Proxy engine initialized");
         }
-        m_logger->Info("service", "Proxy engine initialized");
 
-        // Initialize WinDivert capture via ICapture port
-        m_capture = std::make_unique<infrastructure::WinDivertCapture>();
-        // Установить целевой процесс из конфига (замена хардкода)
-        {
-            auto cfg = m_configManager->GetConfig();
-            m_capture->SetTargetProcess(cfg.app.exePath);
-            m_logger->Info("service", "Target process set from config: " +
-                std::string(cfg.app.exePath.begin(), cfg.app.exePath.end()));
+        // Initialize ConnectionTable для DST modification
+        m_connTable = std::make_unique<infrastructure::ConnectionTable>();
+
+        // Initialize TcpRelayServer
+        uint16_t relayPort = 34010; // порт локального relay сервера
+        m_relayServer = std::make_unique<infrastructure::TcpRelayServer>(*m_connTable, relayPort);
+        m_relayServer->SetProxyConfig(proxyCfg, 1);
+        m_relayServer->SetLogCallback([this](const std::string& msg) {
+            m_logger->Debug("relay", msg);
+        });
+
+        if (!m_relayServer->Start()) {
+            m_logger->Error("service", "Failed to start TcpRelayServer");
+        } else {
+            m_logger->Info("service", "TcpRelayServer started on port " + std::to_string(relayPort));
         }
+
+        // Initialize WinDivert capture (DST-modification mode)
+        auto capture = std::make_unique<infrastructure::WinDivertCapture>();
+        {
+            auto appCfg = m_configManager->GetConfig();
+            capture->SetTargetProcess(appCfg.app.exePath);
+            capture->SetConnectionTable(m_connTable.get());
+            capture->SetRelayPort(relayPort);
+            capture->SetProxyConfig(
+                std::string(proxyCfg.host.begin(), proxyCfg.host.end()),
+                proxyCfg.port);
+            // exeName извлекается из exePath (последний компонент после \)
+            std::wstring exeName = appCfg.GetExeName();
+            std::string exeNameUtf8(exeName.begin(), exeName.end());
+            m_logger->Info("service", "Target process: " + exeNameUtf8);
+        }
+        m_capture = std::move(capture);
         if (m_capture->Open()) {
-            m_logger->Info("service", "WinDivert capture started");
+            m_logger->Info("service", "WinDivert capture started (DST-modification mode)");
         } else {
             m_logger->Warn("service", "WinDivert not available (place WinDivert.dll and WinDivert64.sys next to exe)");
         }
@@ -146,18 +154,17 @@ public:
 
     void Run() {
         m_running = true;
-        m_logger->Info("service", "Service is running");
+        m_logger->Info("service", "Service is running (DST-modification mode)");
 
+        // DST modification relay работает самостоятельно:
+        // - CaptureLoop модифицирует SYN и отправляет на relay
+        // - TcpRelayServer принимает соединения, делает CONNECT к прокси
+        // - Bidirectional bridge передаёт данные
+        // ServiceMain просто ждёт сигнала остановки.
         while (m_running) {
-            // Poll for redirect events from capture
-            if (m_capture && m_capture->IsOpen()) {
-                auto redirects = m_capture->GetPendingRedirects(100);
-                for (const auto& redirect : redirects) {
-                    HandleRedirect(redirect);
-                }
-            }
-
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            // Периодическая проверка — не делаем поллинг событий,
+            // relay и capture работают в своих потоках
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
     }
 
@@ -166,6 +173,17 @@ public:
         m_running = false;
 
         m_logger->Info("service", "Stopping TcpRedirector Service...");
+
+        // Остановить relay сервер
+        if (m_relayServer) {
+            m_relayServer->Stop();
+            m_logger->Info("service", "TcpRelayServer stopped");
+        }
+
+        // Очистить таблицу соединений
+        if (m_connTable) {
+            m_connTable->Clear();
+        }
 
         if (m_proxyEngine) {
             m_proxyEngine->Shutdown();
@@ -210,62 +228,8 @@ public:
     }
 
 private:
-    void HandleRedirect(const domain::RedirectEvent& redirect) {
-        std::wstring process_name;
-        std::wstring process_path = redirect.process_path;
-
-        auto pos = process_path.find_last_of(L'\\');
-        if (pos != std::wstring::npos) {
-            process_name = process_path.substr(pos + 1);
-        } else {
-            process_name = process_path;
-        }
-
-        if (!m_ruleEngine->ShouldRedirect(process_name, process_path)) {
-            if (m_capture) {
-                m_capture->AckRedirect(redirect.redirect_id);
-            }
-            m_logger->Debug("redirect",
-                "Skipped (direct): " + std::string(process_name.begin(), process_name.end()));
-            return;
-        }
-
-        // Create proxy session
-        auto session = m_proxyEngine->CreateSession(redirect,
-            [this, redirect](bool success, const std::string& error) {
-                if (success) {
-                    m_logger->Debug("proxy", "Tunnel established: PID " +
-                        std::to_string(redirect.pid) + " -> proxy");
-                } else {
-                    m_logger->Error("proxy", "Tunnel failed: " + error);
-                }
-            });
-
-        if (session) {
-            domain::ConnectionRecord record;
-            record.id = m_connectionTracker->GenerateId();
-            record.pid = redirect.pid;
-            record.process_path = redirect.process_path;
-            record.destination_ip = std::to_string(redirect.original_address_v4);
-            record.destination_port = redirect.original_port;
-            record.start_time = std::chrono::steady_clock::now();
-            record.state = domain::ConnectionState::Redirecting;
-            m_connectionTracker->AddConnection(record);
-
-            if (m_capture) {
-                m_capture->AckRedirect(redirect.redirect_id);
-            }
-
-            m_logger->Info("redirect",
-                "Redirected: " + std::string(process_name.begin(), process_name.end()) +
-                " (" + std::to_string(redirect.pid) + ") -> " +
-                std::to_string(redirect.original_address_v4) + ":" +
-                std::to_string(redirect.original_port));
-        } else {
-            m_logger->Error("redirect", "Failed to create proxy session for PID " +
-                std::to_string(redirect.pid));
-        }
-    }
+    // Удалён старый HandleRedirect — не используется в DST-modification архитектуре
+    // Relay сам обрабатывает перенаправление
 
     void SetupIpcHandlers() {
         m_pipeServer->SetOnRequest(
@@ -284,6 +248,10 @@ private:
     std::unique_ptr<domain::ports::ICapture> m_capture;
     std::unique_ptr<infrastructure::PipeServer> m_pipeServer;
     std::unique_ptr<adapters::IpcHandler> m_ipcHandler;
+
+    // DST modification relay
+    std::unique_ptr<infrastructure::ConnectionTable> m_connTable;
+    std::unique_ptr<infrastructure::TcpRelayServer> m_relayServer;
 
     SERVICE_STATUS m_status = {0};
     SERVICE_STATUS_HANDLE m_statusHandle;

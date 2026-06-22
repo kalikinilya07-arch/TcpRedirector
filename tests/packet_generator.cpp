@@ -1,7 +1,9 @@
 // packet_generator.cpp
 // Изолированная тестовая заглушка. Не имеет зависимостей от основного проекта.
 // Компиляция: g++ packet_generator.cpp -o packet_generator.exe -lws2_32
-// Использование: packet_generator.exe --dest_ip 127.0.0.1 --dest_port 3128 --protocol tcp --count 5
+// Использование:
+//   packet_generator.exe google.com 80
+//   packet_generator.exe --dest_ip 127.0.0.1 --dest_port 3128 --protocol tcp --count 5
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
@@ -20,6 +22,9 @@ int main(int argc, char* argv[]) {
     int count = 1;
 
     // Парсинг аргументов командной строки
+    // Поддерживаются как флаги (--dest_ip/--dest_port/...), так и позиционные аргументы:
+    //   packet_generator.exe <host> <port>
+    int positional_count = 0;
     for (int i = 1; i < argc; i++) {
         if (i + 1 < argc && strcmp(argv[i], "--dest_ip") == 0) {
             dest_ip = argv[++i];
@@ -29,11 +34,29 @@ int main(int argc, char* argv[]) {
             protocol = argv[++i];
         } else if (i + 1 < argc && strcmp(argv[i], "--count") == 0) {
             count = atoi(argv[++i]);
+        } else if (argv[i][0] != '-') {
+            // Позиционные аргументы: первый = host, второй = port
+            positional_count++;
+            if (positional_count == 1) {
+                dest_ip = argv[i];
+            } else if (positional_count == 2) {
+                dest_port = atoi(argv[i]);
+            } else {
+                fprintf(stderr, "Неизвестный аргумент: %s\n", argv[i]);
+                fprintf(stderr, "Использование: packet_generator.exe [<host> <port>] [--dest_ip IP] [--dest_port PORT] [--protocol tcp|udp] [--count N]\n");
+                return 1;
+            }
         } else {
             fprintf(stderr, "Неизвестный аргумент: %s\n", argv[i]);
-            fprintf(stderr, "Использование: packet_generator.exe --dest_ip IP --dest_port PORT --protocol tcp|udp --count N\n");
+            fprintf(stderr, "Использование: packet_generator.exe [<host> <port>] [--dest_ip IP] [--dest_port PORT] [--protocol tcp|udp] [--count N]\n");
             return 1;
         }
+    }
+
+    // Валидация protocol
+    if (strcmp(protocol, "tcp") != 0 && strcmp(protocol, "udp") != 0) {
+        fprintf(stderr, "ОШИБКА: Некорректный протокол '%s' (допустимо: tcp, udp)\n", protocol);
+        return 1;
     }
 
     if (dest_port <= 0 || dest_port > 65535) {
