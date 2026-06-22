@@ -6,11 +6,10 @@
 #include <atomic>
 #include <thread>
 #include "../../domain/ports/ICapture.h"
+#include "../../domain/ports/IRelayServer.h"
+#include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/services/RuleEngine.h"
 #include "../../domain/services/ConnectionTracker.h"
-#include "../../infrastructure/capture/WinDivertCapture.h"
-#include "../../infrastructure/relay/ConnectionTable.h"
-#include "../../infrastructure/relay/TcpRelayServer.h"
 #include "../../infrastructure/ipc/PipeServer.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
@@ -97,39 +96,31 @@ public:
             m_logger->Info("service", "Proxy engine initialized");
         }
 
-        // Initialize ConnectionTable для DST modification
-        m_connTable = std::make_unique<infrastructure::ConnectionTable>();
+        // Создаём все зависимости через CompositionRoot
+        {
+            service::CompositionRoot root;
+            auto deps = root.CreateFromConfig();
 
-        // Initialize TcpRelayServer
-        uint16_t relayPort = 34010; // порт локального relay сервера
-        m_relayServer = std::make_unique<infrastructure::TcpRelayServer>(*m_connTable, relayPort);
-        m_relayServer->SetProxyConfig(proxyCfg, 1);
-        m_relayServer->SetLogCallback([this](const std::string& msg) {
-            m_logger->Debug("relay", msg);
-        });
+            // Извлекаем из созданных зависимостей
+            m_connTable = std::move(deps.connTable);
+            m_relayServer = std::move(deps.relayServer);
+            m_capture = std::move(deps.capture);
 
+            // Настраиваем коллбэки для relay (через порт IRelayServer)
+            m_relayServer->SetLogCallback([this](const std::string& msg) {
+                m_logger->Debug("relay", msg);
+            });
+        }
+
+        // Start relay server
         if (!m_relayServer->Start()) {
             m_logger->Error("service", "Failed to start TcpRelayServer");
         } else {
-            m_logger->Info("service", "TcpRelayServer started on port " + std::to_string(relayPort));
+            m_logger->Info("service", "TcpRelayServer started on port " +
+                std::to_string(m_relayServer->GetPort()));
         }
 
-        // Initialize WinDivert capture (DST-modification mode)
-        auto capture = std::make_unique<infrastructure::WinDivertCapture>();
-        {
-            auto appCfg = m_configManager->GetConfig();
-            capture->SetTargetProcess(appCfg.app.exePath);
-            capture->SetConnectionTable(m_connTable.get());
-            capture->SetRelayPort(relayPort);
-            capture->SetProxyConfig(
-                std::string(proxyCfg.host.begin(), proxyCfg.host.end()),
-                proxyCfg.port);
-            // exeName извлекается из exePath (последний компонент после \)
-            std::wstring exeName = appCfg.GetExeName();
-            std::string exeNameUtf8(exeName.begin(), exeName.end());
-            m_logger->Info("service", "Target process: " + exeNameUtf8);
-        }
-        m_capture = std::move(capture);
+        // Start WinDivert capture
         if (m_capture->Open()) {
             m_logger->Info("service", "WinDivert capture started (DST-modification mode)");
         } else {
@@ -249,9 +240,9 @@ private:
     std::unique_ptr<infrastructure::PipeServer> m_pipeServer;
     std::unique_ptr<adapters::IpcHandler> m_ipcHandler;
 
-    // DST modification relay
-    std::unique_ptr<infrastructure::ConnectionTable> m_connTable;
-    std::unique_ptr<infrastructure::TcpRelayServer> m_relayServer;
+    // DST modification relay (храним через порты для injectable тестов)
+    std::unique_ptr<domain::ports::IConnectionTable> m_connTable;
+    std::unique_ptr<domain::ports::IRelayServer> m_relayServer;
 
     SERVICE_STATUS m_status = {0};
     SERVICE_STATUS_HANDLE m_statusHandle;

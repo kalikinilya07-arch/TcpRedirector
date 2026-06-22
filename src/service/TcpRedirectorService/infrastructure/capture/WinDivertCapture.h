@@ -30,48 +30,44 @@
 #include <memory>
 
 #include <windivert.h>
-#include "../../domain/ports/IDriverCommunicator.h"
 #include "../../domain/ports/ICapture.h"
-#include "../relay/ConnectionTable.h"
+#include "../../domain/ports/IConnectionTable.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
 
-class TcpRelayServer; // forward declaration
-
-class WinDivertCapture : public domain::ports::IDriverCommunicator,
-                          public domain::ports::ICapture {
+class WinDivertCapture : public domain::ports::ICapture {
 public:
     WinDivertCapture();
-    void SetTargetProcess(const std::wstring& exePath) {
-        m_targetProcessPath = exePath;
-        m_targetPid = 0;
-    }
-
-    // Для DST modification relay
-    void SetConnectionTable(ConnectionTable* table) { m_connTable = table; }
-    void SetRelayPort(uint16_t port) { m_relayPort = port; }
-
-    // Proxy config
-    void SetProxyConfig(const std::string& host, uint16_t port) {
-        m_proxyHost = host;
-        m_proxyPort = port;
-    }
-
     ~WinDivertCapture() override;
 
-    // IDriverCommunicator interface
+    // ICapture interface (через неё работают все клиенты)
     bool Open() override;
     void Close() override;
     bool IsOpen() const override;
 
-    // Старые методы (заглушки — не используются в DST-modification архитектуре)
+    void SetTargetProcess(const std::wstring& exePath) override {
+        m_targetProcessPath = exePath;
+        m_targetPid = 0;
+    }
+
+    void SetConnectionTable(domain::ports::IConnectionTable* table) override {
+        m_connTable = table;
+    }
+
+    void SetRelayPort(uint16_t port) override {
+        m_relayPort = port;
+    }
+
+    void SetProxyConfig(const std::string& host, uint16_t port) override {
+        m_proxyHost = host;
+        m_proxyPort = port;
+    }
+
     std::vector<domain::RedirectEvent> GetPendingRedirects(
         uint32_t timeout_ms = 1000) override;
     bool AckRedirect(uint64_t redirect_id) override;
-    bool UpdateRules(const std::vector<domain::Rule>& rules) override;
     domain::DriverStats GetStats() override;
-    std::optional<domain::ports::ProcessInfo> QueryProcess(uint32_t pid) override;
     void* GetEventHandle() const override;
 
 private:
@@ -96,8 +92,10 @@ private:
     //
     // Thread safety: InterlockedOr/And для записи; aligned 32-bit read для чтения
     // (x86/x64 aligned read атомарен)
-    static LONG m_portDecided[2048];
-    static LONG m_portDirect[2048];
+    // НЕ статические — каждый экземпляр WinDivertCapture имеет свой bitmap.
+    // static → non-static для тестируемости (глобальное состояние запрещено).
+    LONG m_portDecided[2048]{0};
+    LONG m_portDirect[2048]{0};
 
     // inline helpers для битмапов
     bool IsPortDecided(uint16_t port) const {
@@ -161,7 +159,7 @@ private:
     std::atomic<bool> m_localhostViaProxy{false};
 
     // DST modification relay
-    ConnectionTable* m_connTable = nullptr;
+    domain::ports::IConnectionTable* m_connTable = nullptr;
     uint16_t m_relayPort = 34010;
 
     // Stats
@@ -211,9 +209,8 @@ private:
         void Unload();
     } m_api;
 
-    // DEBUG log file
-    static FILE* s_logFile;
 };
+
 
 } // namespace infrastructure
 } // namespace tcp_redirector

@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "../../domain/ports/IConnectionTable.h"
+
 #ifndef CONNECTION_HASH_SIZE
 #define CONNECTION_HASH_SIZE 4096
 #endif
@@ -31,7 +33,7 @@ struct ConnectionEntry {
     ConnectionEntry* next;
 };
 
-class ConnectionTable {
+class ConnectionTable : public domain::ports::IConnectionTable {
 public:
     ConnectionTable() {
         InitializeSRWLock(&m_lock);

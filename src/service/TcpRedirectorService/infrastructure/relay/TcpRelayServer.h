@@ -19,7 +19,8 @@
 #include <functional>
 #include <cstring>
 
-#include "../relay/ConnectionTable.h"
+#include "../../domain/ports/IRelayServer.h"
+#include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/entities/ProxyConfig.h"
 
 namespace tcp_redirector {
@@ -37,9 +38,9 @@ using RelayLogCallback = std::function<void(const std::string&)>;
 using RelayConnCallback = std::function<void(const std::string& process_name, uint32_t pid,
     const std::string& dest_ip, uint16_t dest_port, const std::string& proxy_info)>;
 
-class TcpRelayServer {
+class TcpRelayServer : public domain::ports::IRelayServer {
 public:
-    TcpRelayServer(ConnectionTable& conn_table, uint16_t relay_port = 34010)
+    TcpRelayServer(domain::ports::IConnectionTable& conn_table, uint16_t relay_port = 34010)
         : m_connTable(conn_table)
         , m_relayPort(relay_port)
         , m_listenSock(INVALID_SOCKET)
@@ -148,7 +149,9 @@ public:
         Log("[RELAY] Stopped");
     }
 
-    bool IsRunning() const { return m_running; }
+    bool IsRunning() const override { return m_running; }
+
+    uint16_t GetPort() const override { return m_relayPort; }
 
 private:
     void AcceptLoop() {
@@ -435,7 +438,7 @@ private:
         if (m_logCb) m_logCb(msg);
     }
 
-    ConnectionTable& m_connTable;
+    domain::ports::IConnectionTable& m_connTable;
     uint16_t m_relayPort;
     uint32_t m_proxyConfigId = 1;
 

@@ -33,11 +33,6 @@ static FILE* g_wdLogFile = nullptr;
 namespace tcp_redirector {
 namespace infrastructure {
 
-// ---- статические члены ----
-FILE* WinDivertCapture::s_logFile = nullptr;
-LONG WinDivertCapture::m_portDecided[2048] = {0};
-LONG WinDivertCapture::m_portDirect[2048] = {0};
-
 // ---- WinDivert API dynamic loading ----
 bool WinDivertCapture::WinDivertApi::Load() {
     if (dll) return true;
@@ -81,7 +76,6 @@ WinDivertCapture::~WinDivertCapture() {
     Close();
     if (m_hEvent) { CloseHandle(m_hEvent); m_hEvent = nullptr; }
     if (g_wdLogFile) { fclose(g_wdLogFile); g_wdLogFile = nullptr; }
-    if (s_logFile) { fclose(s_logFile); s_logFile = nullptr; }
 }
 
 bool WinDivertCapture::Open() {
@@ -92,8 +86,7 @@ bool WinDivertCapture::Open() {
     }
 
     // Auto-init log file
-    if (!g_wdLogFile && !s_logFile) {
-        s_logFile = g_wdLogFile;
+    if (!g_wdLogFile) {
         wchar_t logPath[MAX_PATH] = {0};
         GetEnvironmentVariableW(L"ProgramData", logPath, MAX_PATH);
         wcscat_s(logPath, L"\\TcpRedirector\\logs\\windivert_debug.log");
@@ -101,7 +94,6 @@ bool WinDivertCapture::Open() {
             if (*p == L'\\') { *p = 0; CreateDirectoryW(logPath, nullptr); *p = L'\\'; }
         }
         g_wdLogFile = _wfopen(logPath, L"a");
-        s_logFile = g_wdLogFile;
         if (g_wdLogFile) {
             LOG("[LOG] Debug log opened: %ls\n", logPath);
         }
@@ -590,20 +582,10 @@ bool WinDivertCapture::AckRedirect(uint64_t redirect_id) {
     return true;
 }
 
-bool WinDivertCapture::UpdateRules(const std::vector<domain::Rule>& rules) {
-    (void)rules;
-    return true;
-}
-
 domain::DriverStats WinDivertCapture::GetStats() {
     domain::DriverStats stats;
     stats.total_redirects = m_redirects_emitted;
     return stats;
-}
-
-std::optional<domain::ports::ProcessInfo> WinDivertCapture::QueryProcess(uint32_t pid) {
-    (void)pid;
-    return std::nullopt;
 }
 
 void* WinDivertCapture::GetEventHandle() const {
