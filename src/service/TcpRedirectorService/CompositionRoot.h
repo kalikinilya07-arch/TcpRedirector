@@ -77,6 +77,7 @@ public:
             deps.proxyConfig.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
             deps.proxyConfig.port = cfg.proxy.port;
             deps.proxyConfig.auth_required = cfg.auth.enabled;
+            deps.proxyConfig.kerberos_auth = cfg.auth.kerberos;
             if (cfg.auth.enabled) {
                 deps.proxyConfig.login = std::wstring(cfg.auth.username.begin(), cfg.auth.username.end());
                 deps.proxyConfig.has_password = !cfg.auth.encryptedPassword.empty();

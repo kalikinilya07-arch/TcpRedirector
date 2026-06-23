@@ -22,6 +22,7 @@
 #include "../../domain/ports/IRelayServer.h"
 #include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/entities/ProxyConfig.h"
+#include "../../infrastructure/auth/auth_sspi.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -55,6 +56,7 @@ public:
         m_proxyHost = std::string(config.host.begin(), config.host.end());
         m_proxyPort = config.port;
         m_proxyAuthRequired = config.auth_required;
+        m_kerberosAuth = config.kerberos_auth;
         m_proxyConfigId = config_id;
     }
 
@@ -242,6 +244,10 @@ private:
         uint16_t dest_port = ctx->orig_dest_port;
         delete ctx;
 
+        // DEBUG: проверим, какие флаги реально приходят
+        Log("[AUTH-DEBUG] m_proxyAuthRequired=" + std::to_string(m_proxyAuthRequired) +
+            " m_kerberosAuth=" + std::to_string(m_kerberosAuth));
+
         SOCKET proxy_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (proxy_sock == INVALID_SOCKET) {
             Log("[RELAY] Failed to create proxy socket");
@@ -294,13 +300,45 @@ private:
         in.s_addr = dest_ip;
         inet_ntop(AF_INET, &in, ip_str, sizeof(ip_str));
 
+        // ---- SSPI/Kerberos: инициализация (только при первом CONNECT) ----
+        infrastructure::SspiContext sspiCtx;
+        std::string sspiToken;
+        bool sspiInitDone = false;
+        bool sspiAvailable = true;   // локальный флаг, НЕ классовый m_kerberosAuth
+        int authRetries = 0;
+
+    retry_connect:
+
         std::string connect_req = "CONNECT " + std::string(ip_str) + ":" +
             std::to_string(dest_port) + " HTTP/1.1\r\nHost: " +
             std::string(ip_str) + ":" + std::to_string(dest_port) + "\r\n";
 
-        if (m_proxyAuthRequired) {
+        if (m_proxyAuthRequired && !m_kerberosAuth) {
+            // Basic Auth (оригинальное поведение — без изменений)
             std::string basic = m_proxyUser + ":proxy_pass";
             connect_req += "Proxy-Authorization: Basic " + Base64Encode(basic) + "\r\n";
+        } else if (m_kerberosAuth && sspiAvailable) {
+            // Negotiate/Kerberos через SSPI
+            if (!sspiInitDone) {
+                Log("[SSPI] Acquiring credentials for " + m_proxyHost + "...");
+                auto r = infrastructure::SspiNegotiate(sspiCtx, "", sspiToken,
+                    infrastructure::MakeSpn(m_proxyHost));
+                if (r == infrastructure::SspiResult::NoCredentials) {
+                    Log("[SSPI] Kerberos/NTLM недоступен (SEC_E_NO_CREDENTIALS)");
+                    sspiAvailable = false; // локальный флаг, НЕ классовый
+                } else if (r == infrastructure::SspiResult::Error) {
+                    Log("[SSPI] Ошибка инициализации SSPI");
+                    sspiAvailable = false;
+                } else {
+                    Log("[SSPI] Token получен: " +
+                        (sspiToken.empty() ? std::string("empty") :
+                         std::to_string(sspiToken.size()) + " bytes"));
+                }
+                sspiInitDone = true;
+            }
+            if (!sspiToken.empty()) {
+                connect_req += "Proxy-Authorization: Negotiate " + sspiToken + "\r\n";
+            }
         }
 
         connect_req += "Proxy-Connection: Keep-Alive\r\n\r\n";
@@ -322,7 +360,44 @@ private:
         }
         resp_buf[bytes] = '\0';
 
-        if (strstr(resp_buf, "200") == nullptr) {
+        if (strstr(resp_buf, "200") != nullptr) {
+            // CONNECT успешен — выходим
+        }
+        else if (m_kerberosAuth && sspiAvailable && strstr(resp_buf, "407") != nullptr) {
+            // ---- 407 Proxy Auth Required — SSPI-цикл ----
+            std::string challenge = infrastructure::Parse407Challenge(resp_buf);
+            if (challenge.empty()) {
+                Log("CONNECT failed: 407 без Negotiate challenge");
+                closesocket(client_sock);
+                closesocket(proxy_sock);
+                return;
+            }
+            Log("[SSPI] Got 407 challenge (" + std::to_string(challenge.size()) + " bytes), continuing...");
+            auto r = infrastructure::SspiNegotiate(sspiCtx, challenge, sspiToken,
+                infrastructure::MakeSpn(m_proxyHost));
+            if (r == infrastructure::SspiResult::Error) {
+                Log("SSPI error after 407 challenge: " + std::string(resp_buf, 100));
+                closesocket(client_sock);
+                closesocket(proxy_sock);
+                return;
+            }
+            if (sspiToken.empty()) {
+                Log("CONNECT failed: SSPI не дал токен после 407");
+                closesocket(client_sock);
+                closesocket(proxy_sock);
+                return;
+            }
+            authRetries++;
+            if (authRetries > 5) {
+                Log("CONNECT failed: SSPI retry limit exceeded");
+                closesocket(client_sock);
+                closesocket(proxy_sock);
+                return;
+            }
+            Log("[SSPI] Retry CONNECT with new token (attempt " + std::to_string(authRetries) + ")");
+            goto retry_connect;
+        }
+        else {
             Log("CONNECT failed: " + std::string(resp_buf, 100));
             closesocket(client_sock);
             closesocket(proxy_sock);
@@ -445,6 +520,7 @@ private:
     std::string m_proxyHost;
     uint16_t m_proxyPort = 8888;
     bool m_proxyAuthRequired = false;
+    bool m_kerberosAuth = false;
     std::string m_proxyUser;
 
     SOCKET m_listenSock;

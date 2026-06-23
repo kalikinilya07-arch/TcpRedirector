@@ -30,6 +30,7 @@ struct ProxyConfig {
     std::wstring host;                      //!< Адрес прокси-сервера
     uint16_t port = 3128;                   //!< Порт прокси-сервера
     bool auth_required = false;             //!< Требуется ли авторизация
+    bool kerberos_auth = false;             //!< Использовать Negotiate/Kerberos вместо Basic
     std::wstring login;                     //!< Логин для Basic-авторизации
     std::vector<uint8_t> encrypted_password; //!< Пароль, зашифрованный через DPAPI
     bool has_password = false;              //!< Флаг наличия пароля
