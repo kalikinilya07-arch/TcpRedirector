@@ -63,6 +63,7 @@
     <ClCompile Include="infrastructure\config\ConfigManager.cpp" />
     <ClCompile Include="infrastructure\logging\Logger.cpp" />
     <ClCompile Include="infrastructure\stats\StatsCollector.cpp" />
+    <ClCompile Include="infrastructure\auth\auth_sspi.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="infrastructure\relay\ConnectionTable.h" />
@@ -84,6 +85,7 @@
     <ClInclude Include="infrastructure\config\ConfigManager.h" />
     <ClInclude Include="infrastructure\ipc\PipeServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />
+    <ClInclude Include="infrastructure\auth\auth_sspi.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

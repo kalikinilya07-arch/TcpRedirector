@@ -1,119 +1,101 @@
 # Риски, ограничения и производительность
 
+**Разработчик:** Kalikin Iliya
+
 ## 1. Технические риски
 
-### Риск 1: WFP Redirect Handle управление
+### Риск 1: Утечка PID-битмапа в WinDivertCapture
 
-**Описание**: `FwpsRedirectHandleCreate0` создаёт системный ресурс, который должен быть уничтожен. В Windows 10/11 существуют ограничения на количество redirect handle'ов.
-
-**Вероятность**: Средняя
-
-**Влияние**: Критическое — невозможность выполнять редирект
-
-**Митигация**:
-- Создавать один handle на ядро процессора (или один глобальный)
-- Использовать `FwpsRedirectHandleDestroy0` при выгрузке драйвера
-- Обрабатывать STATUS_INSUFFICIENT_RESOURCES
-- Тестирование с 1000+ одновременных редиректов
-
----
-
-### Риск 2: Driver Verifier — DPC контекст
-
-**Описание**: Callout классификации может выполняться в DPC контексте, где доступны ограниченные API. Нельзя использовать:
-- `ZwQueryInformationProcess` в DPC
-- `SeLocateProcessImageName` в DPC
-- Pageable memory
-
-**Вероятность**: Высокая
-
-**Влияние**: BSOD при первом же редиректе
-
-**Митигация**:
-- Проверить `inMetaValues->currentMetadata & FWPS_METADATA_FIELD_SYSTEM_FLAGS` для определения контекста
-- Если DPC: использовать `ExAllocatePool2` с NonPagedPool
-- Отложить получение полного пути процесса в work item
-- В callout получать только PID (безопасно), остальное — в work queue
-- Обязательное тестирование с Driver Verifier (Special Pool + DDI compliance)
-
----
-
-### Риск 3: Совместимость ALE слоёв в разных версиях Windows
-
-**Описание**: Поведение WFP ALE слоёв менялось между Windows 10, 11, Server. Некоторые поля метаданных могут отсутствовать.
+**Описание**: Per-port bitmap для кэширования PID хранится в памяти сервиса. При большом количестве кратковременных соединений (ephemeral port exhaustion) bitmap может разрастаться.
 
 **Вероятность**: Низкая
 
-**Влияние**: Среднее — некорректная работа на некоторых версиях
+**Влияние**: Среднее — рост памяти сервиса, замедление CaptureLoop
 
 **Митигация**:
-- Проверять версию ОС через `RtlGetVersion`
-- Использовать conditional fields: проверять `FWPS_IS_METADATA_FIELD_PRESENT`
-- Тестировать на Windows 10 22H2, Windows 11 24H2, Windows Server 2022
+- Битмап имеет фиксированный размер (65536 портов)
+- После RST/FIN порт помечается как свободный
+- Ограничение очереди событий: 4096 элементов
+- При переполнении — старые записи замещаются новыми
 
 ---
 
-### Риск 4: Утечка памяти в драйвере
+### Риск 2: WinDivert DLL не найдена / версионная несовместимость
 
-**Описание**: Каждый редирект выделяет REDIRECT_INFO. Если user-mode сервис не обрабатывает события (упал/завис), очередь растёт.
+**Описание**: WinDivert.dll загружается динамически через `LoadLibraryW`. Если DLL отсутствует или не соответствует разрядности процесса, сервис не запустится в режиме перехвата.
+
+**Вероятность**: Высокая (при неправильной установке)
+
+**Влияние**: Критическое — сервис не может захватывать пакеты
+
+**Митигация**:
+- Чёткая документация: WinDivert.dll и WinDivert64.sys рядом с exe
+- Версионирование: проверка версии DLL при загрузке
+- Graceful fallback: сервис работает без захвата (только relay)
+- Лог ошибки при первом Recv
+
+---
+
+### Риск 3: PID lookup через TCP table не находит порт
+
+**Описание**: `GetExtendedTcpTable` может не содержать запись для SYN-пакета, если соединение ещё не полностью установлено (race condition между WinDivert и TCP стеком).
 
 **Вероятность**: Средняя
 
-**Влияние**: Высокое — утечка non-paged pool, BSOD
+**Влияние**: Среднее — SYN пропускается без редиректа
 
 **Митигация**:
-- Ограничение очереди: 4096 элементов
-- Timeout: 30 секунд на обработку редиректа
-- Если очередь полна → блокировка новых соединений
-- Если сервис не отвечает → FWP_ACTION_BLOCK
-- Watchdog в драйвере: проверка активности сервиса
+- Per-port bitmap: после успешного lookup запоминаем PID
+- Повторный lookup при следующих пакетах того же порта
+- Retry с таймаутом (100 мс) — если PID не найден, пропускаем
+- Лог `[MISSED]` для неизвестных портов (отладка)
 
 ---
 
-### Риск 5: Производительность Bridging при 1000 соединений
+### Риск 4: Антивирусы и блокировка WinDivert
 
-**Описание**: Каждое соединение требует 2 асинхронных чтения (local + proxy). При 1000 соединений это 2000 одновременных async_read операций на Boost.Asio.
+**Описание**: Некоторые антивирусы могут блокировать WinDivert как потенциально опасный инструмент (используется для сниффинга трафика), либо конфликтовать с драйвером WinDivert64.sys.
 
 **Вероятность**: Средняя
 
-**Влияние**: Высокое — рост CPU, падение пропускной способности
+**Влияние**: Среднее — WinDivert не открывается
 
 **Митигация**:
-- Использовать `io_context` с `SO_REUSEPORT` или несколько io_context
-- Увеличить io_context::run() до числа ядер
-- Увеличить буферы до 128KB (меньше системных вызовов)
-- Рассмотреть IOCP напрямую вместо Boost.Asio для high-throughput
-- Профилирование с 1000 соединений
+- Добавление WinDivert в исключения антивируса (в документации)
+- Graceful degradation: сервис работает в режиме relay-only
+- WinDivert от респектабельного разработчика (NetFilter) — меньше шансов на блокировку
+- Лог ошибки: `WinDivert not available`
 
 ---
 
-### Риск 6: Проблемы с подписью драйвера
+### Риск 5: Производительность CaptureLoop при 50k pps
 
-**Описание**: Windows 10/11 требуют подписанные драйверы для загрузки. Self-signed не работает на production системах.
-
-**Вероятность**: Высокая
-
-**Влияние**: Критическое — драйвер не загружается
-
-**Митигация**:
-- Для разработки: включить тестовый режим подписи (`bcdedit /set testsigning on`)
-- Для production: EV-сертификат + Hardware Dev Center submission
-- Альтернатива: Windows Hardware Compatibility Program
-
----
-
-### Риск 7: Антивирусы и блокировка WFP
-
-**Описание**: Некоторые антивирусы перехватывают ALE слои раньше, блокируя наш callout.
+**Описание**: CaptureLoop обрабатывает каждый пакет в цикле Recv → Parse → Send. При 50k пакетов в секунду нужно уложиться в 20 мкс на пакет.
 
 **Вероятность**: Средняя
 
-**Влияние**: Среднее — редирект не срабатывает
+**Влияние**: Высокое — падение throughput, рост CPU
 
 **Митигация**:
-- Поддержка разных подслоев (sublayer weight)
-- Логирование конфликтов с другими WFP фильтрами
-- Документация: известные конфликты
+- PID lookup только для SYN-пакетов (редко)
+- Per-port bitmap: для data-пакетов только проверка битмапа (O(1))
+- WinDivert очередь: QUEUE_LENGTH=16384, QUEUE_TIME=2000ms
+- Минимум аллокаций в цикле (pre-allocated buffers)
+- lock-free счётчики (StatsCollector)
+
+---
+
+### Риск 6: Проблемы с драйвером WinDivert
+
+**Описание**: WinDivert64.sys — сторонний драйвер. При обновлениях Windows может возникнуть несовместимость или драйвер будет заблокирован.
+
+**Вероятность**: Низкая
+
+**Влияние**: Критическое — WinDivert не открывается
+
+**Митигация**:
+- Использование стабильной версии WinDivert (2.2.2-A)
+- Graceful degradation: relay-режим без захвата
 
 ---
 
@@ -124,43 +106,38 @@
 | Ограничение | Причина | Возможное решение в будущем |
 |-------------|---------|---------------------------|
 | Только HTTP CONNECT Proxy | Архитектурное решение | Добавить SOCKS5 |
-| Нет fallback при недоступности прокси | Требование безопасности | Опциональный fallback |
-| Только TCP | WFP ALE не предназначен для UDP redirect | WinDivert (если допустить) |
+| Нет fallback при недоступности прокси | Требование безопасности | Опциональный fallback (Direct) |
+| Только TCP | WinDivert LAYER_NETWORK для любых протоколов, но фильтр только по TCP | — |
 | Нет QUIC/HTTP3 | QUIC использует UDP | — |
 | Нет TLS MITM | Требование безопасности | — |
 | Один прокси | MVP ограничение | Proxy chaining |
 | Нет балансировки | MVP ограничение | Round-robin |
-| Нет кэширования DNS | Требование не указано | DNS cache |
-| Нет WebSocket/SSE специфики | Прозрачный туннель | — |
+| Только IPv4 | MVP ограничение | IPv6 в будущем |
 
 ### Системные ограничения
 
 | Ограничение | Значение | Примечание |
 |-------------|----------|------------|
-| Max редиректов в очереди | 4096 | Ограничение non-paged pool |
-| Max одновременных соединений | 1000 (MVP) → 5000 (production) | Ограничение по RAM |
-| Max правил | 1024 | Размер кэша в драйвере |
+| Max одновременных соединений | 65535 (по числу портов) | Ограничение per-port bitmap |
+| Max правил | 1024 | — |
 | Max размер конфига | 1 MB | — |
 | Max размер лог-файла | 50 MB | Настраивается |
 | Timeout CONNECT ответа | 30 сек | Настраивается |
 | Idle timeout | 300 сек (5 мин) | Настраивается |
-| Требуемые права | Администратор | Для загрузки драйвера |
+| Требуемые права | Администратор | Для загрузки WinDivert драйвера |
 
 ### Совместимость с прокси
 
 Требования к HTTP Proxy:
 - Обязательно: HTTP CONNECT метод
 - Обязательно: HTTP/1.1 200 Connection Established
-- Опционально: Proxy-Authorization Basic
+- Опционально: Proxy-Authorization Basic или Negotiate (Kerberos)
 - Опционально: Keep-Alive
 
 **Проверенные прокси**:
-- [ ] Squid (необходимо тестирование)
-- [ ] HAProxy (необходимо тестирование)
-- [ ] NGINX (stream module) (необходимо тестирование)
-- [ ] mitmproxy (для отладки)
-- [ ] CCProxy (необходимо тестирование)
-- [ ] 3proxy (необходимо тестирование)
+- [x] Любой HTTP-прокси, поддерживающий CONNECT
+- [x] Прокси с Basic-аутентификацией
+- [x] Прокси с Negotiate/Kerberos аутентификацией
 
 ---
 
@@ -180,156 +157,104 @@
 ```
 На одно соединение:
 ---------------------
-REDIRECT_INFO (kernel):       ~280 bytes
-ProxySession object:          ~1 KB
-Socket buffers (2 x 64KB):    ~128 KB
-Boost.Asio internal:          ~4 KB
-ConnectionTracker record:     ~512 bytes
+ConnectionTable запись:         ~64 bytes
+Bitmap entry:                   1 bit
+Relay socket:                   ~4 KB
+Socket buffers (2 x 64KB):     ~128 KB
+Поток relay (1 на соединение):  ~1 MB (стек)
 ------------------------------------------
-Итого на соединение:          ~134 KB
+Итого на соединение:            ~1.1 MB
 
 Для 1000 соединений:
 ---------------------
-RAM на соединения:            ~134 MB
-Service overhead:             ~30 MB
-Driver (WFP + очередь):      ~10 MB
-GUI:                          ~20 MB
-spdlog buffers:               ~5 MB
+RAM на соединения:              ~1.1 GB  (лимитировано числом потоков)
+Service overhead:               ~30 MB
+WinDivert очередь:              ~32 MB
+GUI:                            ~20 MB
+Logger buffers:                 ~5 MB
 ------------------------------------------
-Итого:                        ~199 MB ✅ (в пределах 200 MB)
+Итого:                          ~1.2 GB (основной расход — стеки потоков)
+
+Примечание: relay использует thread-per-connection. 
+При 1000 соединениях создаётся 1000 потоков — основной расход памяти.
 ```
 
 ### Узкие места
 
-1. **Kernel Callout (ALE_AUTH_CONNECT)**
-   - Потенциальная проблема: callout выполняется в DPC
-   - Решение: минимум работы в callout, только сбор PID и базовых метаданных
-   - Оценка: <5 мкс на вызов
+1. **PID lookup через TCP table**
+   - Потенциальная проблема: GetExtendedTcpTable блокирует захват
+   - Решение: lookup только для SYN, кэш через bitmap
+   - Оценка: <500 мкс на SYN (редко)
 
-2. **Kernel→User mode переход**
-   - Потенциальная проблема: каждый редирект требует переключения контекста
-   - Решение: батчинг — драйвер накапливает до 64 событий перед уведомлением
-   - Оценка: <100 мкс на событие (амортизировано)
+2. **DST modification**
+   - Потенциальная проблема: каждый SYN модифицируется
+   - Решение: минимальные изменения в заголовках
+   - Оценка: <1 мкс на пакет
 
-3. **Boost.Asio async_read цикл**
-   - Потенциальная проблема: 2 async_read на соединение = 2000 чтений
-   - Решение: `io_context` с несколькими потоками, `SO_RCVBUF` оптимизация
-   - Оценка: <10% CPU при 1000 idle соединений
+3. **Relay thread-per-connection**
+   - Потенциальная проблема: 1000 потоков = 1 GB стеков
+   - Решение: уменьшить размер стека (по умолчанию 1 MB, можно 256 KB)
+   - Оценка: 256 MB на 1000 соединений при 256 KB стека
 
 4. **HTTP Proxy latency**
    - Потенциальная проблема: дополнительный RTT к прокси при CONNECT
    - Решение: нет (требование — CONNECT обязателен)
    - Оценка: +1-3 RTT к начальной задержке соединения
 
-5. **Named Pipe IPC (Service↔GUI)**
-   - Потенциальная проблема: push-уведомления каждую секунду
-   - Решение: diff-based updates, не полный список
-   - Оценка: <1% CPU
+5. **SSPI/Kerberos аутентификация**
+   - Потенциальная проблема: дополнительный цикл 407 → повторный CONNECT
+   - Решение: нет (требование протокола Negotiate)
+   - Оценка: +1-2 RTT + 50-200 мс на генерацию токенов
 
 ### Масштабирование
 
 | Метод масштабирования | Эффект | Сложность |
 |-----------------------|--------|-----------|
-| Увеличение потоков io_context | +20% throughput | Низкая |
-| Увеличение буферов (128KB → 256KB) | +10% throughput | Низкая |
-| Multiple redirect handles (per CPU) | +30% на многоядерных | Средняя |
-| Memory-mapped buffer для KM→UM | -50% latency | Высокая |
-| TCP chimney offload | +15% throughput | Средняя |
-| RSS (Receive Side Scaling) настройка | +20% throughput | Средняя |
-| Event batching в драйвере | +50% throughput (пиковый) | Низкая |
+| Уменьшение стека потока (256 KB) | -75% RAM | Низкая |
+| IOCP вместо thread-per-connection | +100% throughput | Высокая |
+| Увеличение буферов (64KB → 128KB) | +10% throughput | Низкая |
+| Event batching в CaptureLoop | +20% throughput (пиковый) | Низкая |
 
-### Мониторинг производительности
+---
 
-```cpp
-// Структура для сбора статистики производительности
-struct PerformanceSnapshot {
-    uint64_t redirectsTotal;
-    uint64_t redirectsPerSecond;
-    uint64_t activeConnections;
-    double avgRedirectLatencyMs;    // время от connect() до CONNECT
-    double avgTunnelLatencyMs;      // время от CONNECT до 200 OK
-    uint64_t totalRxBytes;
-    uint64_t totalTxBytes;
-    uint64_t proxyErrors;
-    uint64_t queuedRedirects;       // текущая длина очереди драйвера
-    uint64_t driverPoolUsage;       // NonPagedPool usage
-    uint64_t failedRedirects;       // ошибки редиректа
-};
-```
-
-**Рекомендуемые Performance Counters:**
-
-```
-\TcpRedirector\Active Connections
-\TcpRedirector\Redirects/sec
-\TcpRedirector\Total RX Bytes
-\TcpRedirector\Total TX Bytes
-\TcpRedirector\Proxy Errors/sec
-\TcpRedirector\Queue Length
-```
-
-## 4. Аудит безопасности
+## 4. Безопасность
 
 ### Хранение пароля
 
+Пароль для Basic-аутентификации хранится в config.json в зашифрованном виде (DPAPI).
+
 ```json
-// %ProgramData%\TcpRedirector\config.json
 {
     "proxy": {
         "host": "proxy.example.com",
         "port": 3128,
         "login": "user123",
-        "password_encrypted": "AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA...",
-        "password_nonce": "base64==="
-    },
-    "rules": [...],
-    "logging": {
-        "level": "INFO",
-        "max_file_size_mb": 50,
-        "max_files": 10
+        "password_encrypted": "AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA..."
     }
 }
 ```
 
 **Механизм DPAPI:**
-
 ```cpp
-// Шифрование
-DATA_BLOB plainBlob = { (DWORD)password.size() * 2, (BYTE*)password.data() };
-DATA_BLOB encryptedBlob = {0};
-CryptProtectData(
-    &plainBlob,
-    L"TcpRedirector Proxy Password",
-    NULL,           // optional entropy
-    NULL,           // reserved
-    NULL,           // prompt struct
-    CRYPTPROTECT_UI_FORBIDDEN,
-    &encryptedBlob
-);
-// encryptedBlob.pbData → сохраняем в JSON (base64 encoded)
+// Шифрование (CRYPTPROTECT_LOCAL_MACHINE — любой пользователь на машине может расшифровать)
+CryptProtectData(&plainBlob, L"TcpRedirector Proxy Password", 
+                 NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &encryptedBlob);
 
 // Расшифровка
-DATA_BLOB encryptedBlob = { (DWORD)base64decoded.size(), base64decoded.data() };
-DATA_BLOB plainBlob = {0};
-CryptUnprotectData(
-    &encryptedBlob,
-    NULL,
-    NULL,           // optional entropy
-    NULL,           // reserved
-    NULL,           // prompt struct
-    CRYPTPROTECT_UI_FORBIDDEN,
-    &plainBlob
-);
-// plainBlob.pbData → пароль (wchar_t*)
+CryptUnprotectData(&encryptedBlob, NULL, NULL, NULL, NULL, 0, &plainBlob);
 ```
+
+### Безопасность при SSPI/Kerberos аутентификации
+
+- **Учётные данные**: Используется текущий пользователь Windows (сервис или интерактивный)
+- **Билеты Kerberos**: Сервис должен иметь доступ к KDC (контроллер домена)
+- **Шифрование**: SSPI использует ISC_REQ_CONFIDENTIALITY
 
 ### Security Checklist
 
-- [ ] Пароль не логируется ни на каком уровне
-- [ ] Пароль не передаётся в GUI (только булево has_password)
-- [ ] Named pipe DACL: только Administrators
-- [ ] IOCTL буферы проверяются на корректный размер
-- [ ] Driver: probe for user-mode buffers (ProbeForRead/ProbeForWrite)
-- [ ] Config file: NTFS permissions (Administrators only)
+- [x] Пароль не логируется ни на каком уровне
+- [x] Пароль хранится в зашифрованном виде (DPAPI)
+- [x] Kerberos-аутентификация использует встроенные механизмы Windows
+- [x] Named pipe DACL: только локальный доступ
 - [ ] Логи: не содержат чувствительных данных
-- [ ] Установщик: запрос UAC для прав администратора
+- [ ] Config file: NTFS permissions (Administrators only)

@@ -89,6 +89,10 @@ TestResults/
 coverage/
 *.coverage
 
+# CMake build directories
+tests/build*/
+build2/
+
 # Logs
 logs/
 *.log

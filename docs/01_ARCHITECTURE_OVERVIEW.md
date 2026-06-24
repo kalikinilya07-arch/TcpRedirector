@@ -1,5 +1,7 @@
 # Архитектура решения TcpRedirector
 
+**Разработчик:** Kalikin Iliya
+
 ## 1. Общая архитектура
 
 Система состоит из четырёх основных компонентов, взаимодействующих последовательно:
@@ -19,24 +21,25 @@
 │                   Windows Service (C++)                      │
 │                  TcpRedirectorService.exe                    │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐ │
-│  │ Config   │ │ Rules    │ │ Proxy    │ │  Monitoring    │ │
-│  │ Manager  │ │ Engine   │ │ Engine   │ │  & Statistics  │ │
+│  │ Config   │ │ Rules    │ │WinDivert │ │ TcpRelayServer │ │
+│  │ Manager  │ │ Engine   │ │ Capture  │ │ (HTTP CONNECT) │ │
 │  └──────────┘ └──────────┘ └──────────┘ └────────────────┘ │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │              Logging (spdlog)                        │   │
-│  └──────────────────────────────────────────────────────┘   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐     │
+│  │Connection│ │ Connection│ │      Logger              │     │
+│  │Tracker   │ │ Table     │ │  (Async + Ring Buffer)   │     │
+│  └──────────┘ └──────────┘ └──────────────────────────┘     │
 └──────────────────────┬──────────────────────────────────────┘
-                       │ IOCTL / Event Channel
+                       │ WinDivert API
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              WFP Redirect Driver (C++, WDK)                  │
-│                 TcpRedirectorDriver.sys                      │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐ │
-│  │ WFP      │ │ Callout  │ │ Redirect │ │  KM->UM        │ │
-│  │ Register │ │ ALE_CONNECT│  Engine  │ │  Communicator  │ │
-│  └──────────┘ └──────────┘ └──────────┘ └────────────────┘ │
+│              WinDivert (драйвер захвата пакетов)             │
+│                 WinDivert64.sys + WinDivert.dll              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  LAYER_NETWORK — перехват всех IP-пакетов            │   │
+│  │  DST modification — SYN → 127.0.0.1:relayPort       │   │
+│  └──────────────────────────────────────────────────────┘   │
 └──────────────────────┬──────────────────────────────────────┘
-                       │ WFP ALE Layer
+                       │
                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                 Пользовательские приложения                   │
@@ -46,86 +49,76 @@
 
 ## 2. Принцип работы
 
-1. **Перехват**: WFP драйвер регистрирует callout на слое `FWPM_LAYER_ALE_AUTH_CONNECT_V4` (и V6). При попытке приложения установить TCP-соединение, WFP вызывает callout драйвера.
+1. **Перехват**: WinDivert перехватывает все исходящие TCP-пакеты на слое `WINDIVERT_LAYER_NETWORK`.
 
-2. **Анализ**: Драйвер определяет процесс-инициатор (PID, имя процесса, полный путь). Проверяет, подпадает ли соединение под правила редиректа.
+2. **Определение процесса**: Для каждого SYN-пакета определяется PID через `GetExtendedTcpTable` (маппинг source_port → PID).
 
-3. **Редирект**: Если соединение подлежит перенаправлению, драйвер выполняет `FwpsRedirectHandleCreate0` / `FwpsAcquireClassifyHandle0` и устанавливает `FWP_ALE_FLAG_REDIRECT_TCP_CONNECTION` в классификационном контексте. Драйвер сохраняет оригинальный адрес назначения (IP:Port) и PID во внутренней таблице.
+3. **Проверка правил**: PID проверяется по `RuleEngine` — если процесс подпадает под правило с действием `Proxy`, то SYN-пакет модифицируется.
 
-4. **Уведомление сервиса**: Драйвер через очередь событий (семафор + shared memory или IOCTL с ожиданием) уведомляет пользовательский сервис о новом редиректе.
+4. **DST modification**: Целевой IP и порт в SYN-пакете заменяются на `127.0.0.1:relayPort` (34010). Оригинальный адрес сохраняется в `ConnectionTable`.
 
-5. **Обработка сервисом**: Windows Service получает событие, извлекает оригинальный адрес назначения, PID, имя процесса. Находит подходящее правило прокси.
+5. **Relay-сервер**: `TcpRelayServer` принимает соединение на relayPort, достаёт оригинальный адрес из таблицы, подключается к HTTP-прокси и отправляет `CONNECT original_host:original_port HTTP/1.1`.
 
-6. **CONNECT-туннель**: Proxy Engine сервиса устанавливает TCP-соединение к HTTP Proxy и отправляет `CONNECT original_host:original_port HTTP/1.1\r\n\r\n`.
+6. **Туннель**: После получения `200 Connection Established` от прокси, relay-сервер начинает двустороннюю пересылку данных (bridge) между клиентом и прокси.
 
-7. **Туннелирование**: После получения ответа `200 Connection Established` от прокси, сервис связывает перехваченное (редиректнутое) локальное соединение с туннелем к прокси и начинает двустороннюю пересылку данных.
-
-8. **Мониторинг**: Сервис отслеживает состояние соединений, собирает статистику (RX/TX bytes, длительность) и передаёт в GUI.
+7. **Мониторинг**: Сервис отслеживает состояние соединений, собирает статистику (RX/TX bytes, длительность) и передаёт в GUI.
 
 ## 3. Схема потоков данных
 
 ```
-Приложение                  WFP Driver              Service              Proxy Engine            HTTP Proxy
-(chrome.exe)                (kernel)                (user mode)          (user mode)            (remote)
-     │                         │                        │                    │                      │
-     │──TCP connect─────────►  │                        │                    │                      │
-     │   (example.com:443)     │                        │                    │                      │
-     │                         │──ALE Auth Connect────  │                    │                      │
-     │                         │   classify callout     │                    │                      │
-     │                         │                        │                    │                      │
-     │                         │──Save original addr──  │                    │                      │
-     │                         │──FwpsRedirect──        │                    │                      │
-     │                         │                        │                    │                      │
-     │                         │──Notify Service──────► │                    │                      │
-     │                         │   {PID, orig_ip:port}  │                    │                      │
-     │                         │                        │                    │                      │
-     │                         │                        │──Lookup process────│                      │
-     │                         │                        │   match rules      │                      │
-     │                         │                        │                    │                      │
-     │                         │◄────Accept redirect────│                    │                      │
-     │                         │   (bind redirect sock) │                    │                      │
-     │                         │                        │                    │                      │
-     │◄────SYN-ACK────────────  │                        │──TCP connect──────►│──TCP connect────────►│
-     │    (to proxy engine)     │                        │   to proxy:port    │   to proxy:port      │
-     │                         │                        │                    │                      │
-     │                         │                        │──CONNECT──────────►│──CONNECT────────────►│
-     │                         │                        │   example.com:443  │   example.com:443    │
-     │                         │                        │                    │                      │
-     │                         │                        │◄──200 OK───────────│◄──200 OK─────────────│
-     │                         │                        │                    │                      │
-     │                         │                        │──Tunnel established│                      │
-     │                         │                        │                    │                      │
-     │◄══data═════════════════►│◄══data══════════════►  │◄══data═══════════►│◄══data══════════════►│
-     │   TLS/HTTP traffic      │   via redirect socket  │   bidirectional    │   via proxy tunnel   │
+Приложение              WinDivert           TcpRelayServer          HTTP Proxy
+(chrome.exe)            (kernel)            (user-mode)             (remote)
+     │                      │                    │                      │
+     │──TCP SYN──────────►  │                    │                      │
+     │   (example.com:443)  │                    │                      │
+     │                      │──Find PID by─────  │                      │
+     │                      │   src_port         │                      │
+     │                      │──Check rules─────  │                      │
+     │                      │──Modify DST──────  │                      │
+     │                      │   127.0.0.1:34010  │                      │
+     │                      │──WinDivertSend───  │                      │
+     │                      │                    │                      │
+     │◄────SYN-ACK────────  │                    │                      │
+     │───ACK────────────────►│                    │                      │
+     │ (TCP handshake to    │                    │                      │
+     │  127.0.0.1:34010)    │                    │                      │
+     │                      │                    │                      │
+     │                      │                    │──accept────────      │
+     │                      │                    │──table.Lookup()────  │
+     │                      │                    │   srcPort→orig dst   │
+     │                      │                    │                      │
+     │                      │                    │──TCP connect────────►│
+     │                      │                    │   to proxy:port      │
+     │                      │                    │──CONNECT────────────►│
+     │                      │                    │   example.com:443    │
+     │                      │                    │◄──200 OK──────────── │
+     │                      │                    │                      │
+     │                      │                    │──Bridge established  │
+     │◄══data═══════════════►│◄══════════════════►════data═════════════►│
 ```
 
 ## 4. Компоненты и их ответственность
 
-### 4.1 WFP Redirect Driver (TcpRedirectorDriver.sys)
-- Регистрация WFP callout на слое ALE_AUTH_CONNECT
-- Перехват исходящих TCP-соединений
-- Определение процесса (PID, имя, путь)
-- Сохранение оригинального адреса назначения
-- Выполнение Connection Redirect через WFP API
-- Коммуникация с user-mode сервисом через IOCTL + событийный канал
+### 4.1 WinDivert Capture (WinDivertCapture)
+- Загрузка WinDivert.dll (динамическая через LoadLibrary)
+- Открытие WinDivert handle с фильтром "true" (все пакеты)
+- Цикл захвата: Recv → Parse → PID lookup → DST modify → Send
+- Per-port bitmap для кэширования PID-решений
+- Обработка SYN/RST/FIN для отслеживания соединений
 
 ### 4.2 Windows Service (TcpRedirectorService.exe)
-- Управление жизненным циклом драйвера (загрузка/выгрузка)
-- Приём событий редиректа от драйвера
-- Управление правилами маршрутизации
-- Управление конфигурацией прокси
-- Запуск и управление Proxy Engine
-- Сбор статистики и мониторинг соединений
+- Инициализация всех компонентов (ConfigManager, Logger, Relay, Capture)
+- Управление правилами маршрутизации (RuleEngine)
+- Управление конфигурацией прокси (ConfigManager)
 - IPC с GUI через Named Pipe
-- Логирование (spdlog)
+- Логирование (асинхронный Logger с ротацией)
 
-### 4.3 Proxy Engine (внутри Service)
-- Асинхронный TCP-клиент на Boost.Asio
-- Установка соединения с HTTP Proxy
-- Отправка HTTP CONNECT запроса
-- Обработка ответа прокси
+### 4.3 TcpRelayServer (HTTP CONNECT relay)
+- Приём TCP-соединений на relayPort (34010)
+- Определение оригинального адреса из ConnectionTable
+- HTTP CONNECT к прокси (Basic или Kerberos/Negotiate auth)
 - Двусторонняя пересылка данных (bridge mode)
-- Keepalive и обработка таймаутов
+- SSPI-аутентификация (Negotiate/Kerberos) через auth_sspi
 
 ### 4.4 GUI (TcpRedirectorGUI.exe)
 - Настройка параметров прокси
@@ -133,23 +126,19 @@
 - Мониторинг активных соединений в реальном времени
 - Просмотр логов с фильтрацией
 - Управление сервисом (start/stop/restart)
-- Визуализация статистики
 
 ## 5. Технологический стек
 
 | Компонент | Технология | Версия |
 |-----------|-----------|--------|
-| Драйвер | C++ / WDK (Windows Driver Kit) | WDK 10.0.26100+ |
-| WFP API | Windows SDK | fwpmk.h, fwpsk.h |
+| Захват пакетов | WinDivert | 2.2.2-A |
 | Сервис | C++20 / MSVC | Visual Studio 2022 |
-| Асинхронность | Boost.Asio | 1.86+ |
 | JSON | nlohmann/json | 3.11+ |
-| Логи | spdlog | 1.14+ |
-| IPC (Driver↔Service) | IOCTL | Windows DDK |
+| Авторизация | Windows SSPI | secur32.lib |
+| Шифрование пароля | Windows DPAPI | CryptProtectData |
 | IPC (Service↔GUI) | Named Pipe | Windows API |
 | GUI | C# / WPF / .NET | 8.0+ |
 | MVVM Toolkit | CommunityToolkit.Mvvm | 8.x |
-| Шифрование | Windows DPAPI | CryptProtectData |
 
 ## 6. Поддерживаемые платформы
 
@@ -162,12 +151,12 @@
 
 ## 7. Ограничения архитектуры
 
-1. **Только TCP** — UDP/QUIC не перехватываются (требование)
-2. **Только IPv4 и IPv6 TCP** — без пакетной модификации
+1. **Только TCP** — UDP/QUIC не перехватываются
+2. **Только IPv4** — IPv6 поддержка отсутствует
 3. **Только HTTP CONNECT Proxy** — SOCKS не поддерживается
 4. **Один прокси-сервер** — без цепочек и балансировки
 5. **Нет fallback** — при недоступности прокси соединения блокируются
 6. **Нет TLS MITM** — трафик проходит туннель без расшифровки
-7. **Требуются права администратора** — для загрузки драйвера
-8. **Требуется подпись драйвера** — EV-сертификат для Windows Hardware Dev Center
-9. **WFP работает на уровне ALE** — соединения перехватываются на стадии установки
+7. **Требуются права администратора** — для загрузки драйвера WinDivert
+8. **WinDivert.dll и WinDivert64.sys** — должны находиться рядом с exe-файлом
+9. **DST modification** — модифицируется только SYN-пакет, все остальные пакеты проходят прозрачно

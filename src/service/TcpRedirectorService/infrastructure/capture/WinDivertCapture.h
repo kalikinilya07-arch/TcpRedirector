@@ -1,16 +1,16 @@
 #pragma once
 
 //
-// WinDivertCapture — captures TCP packets via WinDivert, identifies target process,
-// performs DST modification to redirect to local relay server (TcpRelayServer).
+// WinDivertCapture — перехват TCP-пакетов через WinDivert, идентификация
+// целевого процесса, модификация DST для редиректа на локальный relay-сервер
+// (TcpRelayServer).
 //
-// АРХИТЕКТУРА (v2 — PID fix):
+// АРХИТЕКТУРА (v2 — исправление PID):
 // В отличие от v1, где PID проверялся ТОЛЬКО для SYN (что давало PID=0),
 // v2 проверяет PID для КАЖДОГО untracked outbound TCP-пакета, используя
 // per-port bitmap для кэширования решения (DIRECT/PROXY/BLOCK).
 //
-// Вдохновлено ProxyBridge (https://github.com/InterceptSuite/ProxyBridge).
-// Анализ и план: docs/PID_FIX_PLAN.md
+// Разработчик: Kalikin Iliya
 //
 
 #define WIN32_LEAN_AND_MEAN

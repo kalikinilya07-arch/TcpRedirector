@@ -52,6 +52,7 @@ public:
             proxyCfg.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
             proxyCfg.port = cfg.proxy.port;
             proxyCfg.auth_required = cfg.auth.enabled;
+            proxyCfg.kerberos_auth = cfg.auth.kerberos;
             if (cfg.auth.enabled) {
                 proxyCfg.login = std::wstring(cfg.auth.username.begin(), cfg.auth.username.end());
                 proxyCfg.has_password = !cfg.auth.encryptedPassword.empty();
@@ -73,7 +74,7 @@ public:
             domain::Rule rule;
             rule.id = "capture-target";
             rule.pattern = cfg.app.exePath;
-            rule.description = L"Auto-generated from config: " + cfg.app.exePath;
+            rule.description = L"Rule from config: " + cfg.app.exePath;
             rule.priority = 1;
             rule.enabled = true;
             rule.type = domain::RuleType::ProcessPath;
