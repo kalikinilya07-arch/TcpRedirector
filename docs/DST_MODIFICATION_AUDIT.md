@@ -4,8 +4,7 @@
 
 ## Источники:
 1. **TcpRedirector_11_06** — версия от 11 июня (рабочая, shouldBlock=true)
-2. **ProxyBridge** (github.com/InterceptSuite/ProxyBridge) — эталонная реализация
-3. **PACKET_INJECTION_TASK.md** — задание на DST modification (пережило потерю кода)
+2. **PACKET_INJECTION_TASK.md** — задание на DST modification (пережило потерю кода)
 
 ---
 
