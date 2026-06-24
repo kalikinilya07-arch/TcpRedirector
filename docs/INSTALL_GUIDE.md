@@ -34,7 +34,6 @@
 |-----------|--------|
 | Windows | 10 x64 (22H2+) / 11 x64 (24H2+) / Server 2022 |
 | Права | **Администратор** (обязательно) |
-| Подпись драйвера | Test Signing Mode (для тестовой сборки) |
 
 ### 1.3. Комплект поставки
 
@@ -68,27 +67,7 @@ WinDivert64.sys            — драйвер WinDivert (x64)
    - `WinDivert.dll`
    - `WinDivert64.sys`
 
-### 2.2. Включение тестовой подписи драйвера (если используется тестовый билд)
-
-Если драйвер WinDivert не имеет EV-сертификата, включите тестовый режим:
-
-```batch
-@echo off
-REM Запустить от имени Администратора!
-
-REM Включить тестовую подпись
-bcdedit /set testsigning on
-
-REM Перезагрузить компьютер
-shutdown /r /t 5
-```
-
-После перезагрузки в правом нижнем углу экрана появится надпись:
-**"Test Mode Windows 10/11 Build XXXXX"**
-
-> **Для production-сборки:** Получите EV-сертификат для подписи драйвера через Windows Hardware Dev Center.
-
-### 2.3. Проверка прав администратора
+### 2.2. Проверка прав администратора
 
 Убедитесь, что вы запускаете командную строку (CMD) или PowerShell **от имени Администратора**:
 
@@ -366,15 +345,6 @@ Service uninstalled successfully
 ```batch
 rmdir /S /Q "C:\Program Files\TcpRedirector"
 rmdir /S /Q "%ProgramData%\TcpRedirector"
-```
-
-### 8.3. Отключение тестовой подписи (опционально)
-
-Если использовался Test Signing Mode:
-
-```batch
-bcdedit /set testsigning off
-shutdown /r /t 5
 ```
 
 ---
