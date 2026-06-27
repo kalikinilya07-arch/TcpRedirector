@@ -8,6 +8,15 @@ public class ProxyConfig
     public string Login { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
     public bool HasPassword { get; set; }
+
+    // Capture target — путь к приложению, чей трафик перехватывается
+    // (WinDivert фильтрует по этому пути, НЕ через RuleEngine)
+    public string ExePath { get; set; } = string.Empty;
+
+    // Authentication (Kerberos/SSPI)
+    public bool AuthEnabled { get; set; } = true;
+    public bool KerberosEnabled { get; set; }
+    public string AuthUsername { get; set; } = string.Empty;
 }
 
 public enum RuleType

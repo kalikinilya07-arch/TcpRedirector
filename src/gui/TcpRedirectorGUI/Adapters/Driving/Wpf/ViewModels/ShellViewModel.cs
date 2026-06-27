@@ -1,159 +1,270 @@
 using System.Collections.ObjectModel;
-using System.IO;
+using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using TcpRedirectorGUI.Domain.Entities;
 using TcpRedirectorGUI.Domain.Ports;
 using TcpRedirectorGUI.Infrastructure.Ipc;
-using TcpRedirectorGUI.Infrastructure.Scm;
 
 namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 
-public partial class ShellViewModel : ObservableObject
+/// <summary>
+/// Orchestrates the entire UI: service lifecycle, polling, navigation.
+/// Does NOT handle settings/config — that's SettingsViewModel's job.
+/// </summary>
+public partial class ShellViewModel : ObservableObject, IDisposable
 {
     private readonly ITcpRedirectorService _svc;
     private readonly IServiceController _scm;
+    private CancellationTokenSource? _timerCts;
+    private bool _disposed;
 
-    public ShellViewModel(ITcpRedirectorService svc, IServiceController scm)
+    public ShellViewModel(
+        ITcpRedirectorService svc,
+        IServiceController scm,
+        SettingsViewModel settings,
+        StatsViewModel stats)
     {
         _svc = svc;
         _scm = scm;
-        _svc.ConnectionStateChanged += v => { IsConnected = v; StatusText = v ? "Connected" : "Disconnected"; };
-        Proxy = new ProxySettingsVM(_svc);
-        Rules = new RulesVM(_svc);
-        Service = new ServiceVM(_svc, _scm);
-        _ = Init();
+        Settings = settings;
+        Stats = stats;
+
+        // React to connection state changes
+        _svc.ConnectionStateChanged += OnConnectionStateChanged;
+
+        // Load config from disk synchronously (blocking in ctor is OK — tiny file)
+        Settings.LoadFromConfig();
+        StatusText = "Configured";
+
+        // Async connect to service if running
+        _ = TryConnectAsync();
     }
 
-    [ObservableProperty] private bool _isConnected;
-    [ObservableProperty] private string _statusText = "Starting...";
-    [ObservableProperty] private bool _isServiceRunning;
-    [ObservableProperty] private string _activeView = "Settings";
-    [ObservableProperty] private uint _activeConnections;
-    [ObservableProperty] private string _totalTraffic = "0 B";
-    [ObservableProperty] private ObservableCollection<ConnectionRecord> _connList = new();
+    // ── Navigation ───────────────────────────────────
 
-    public ProxySettingsVM Proxy { get; }
-    public RulesVM Rules { get; }
-    public ServiceVM Service { get; }
+    [ObservableProperty]
+    private string _activeTab = "Settings";
 
-    private async Task Init()
+    [RelayCommand]
+    private void Nav(string tab) => ActiveTab = tab;
+
+    // ── Status ───────────────────────────────────────
+
+    [ObservableProperty]
+    private bool _isConnected;
+
+    [ObservableProperty]
+    private string _statusText = "Loading...";
+
+    [ObservableProperty]
+    private string _svcStatus = "Stopped";
+
+    [ObservableProperty]
+    private string _svcMsg = "";
+
+    // ── Stats (top-level) ────────────────────────────
+
+    [ObservableProperty]
+    private uint _activeConnections;
+
+    [ObservableProperty]
+    private string _totalTraffic = "0 B";
+
+    // ── Child ViewModels ─────────────────────────────
+
+    public SettingsViewModel Settings { get; }
+    public StatsViewModel Stats { get; }
+
+    // ── Service lifecycle ────────────────────────────
+
+    [RelayCommand]
+    private async Task StartService()
+    {
+        try
+        {
+            SvcStatus = "Starting";
+            SvcMsg = "";
+
+            StopTimer();
+
+            var ok = await _scm.StartServiceAsync();
+            if (!ok)
+            {
+                SvcStatus = "Failed";
+                SvcMsg = "\u2717 Start failed";
+                return;
+            }
+
+            await _svc.ConnectAsync();
+            StartTimer();
+            SvcStatus = "Running";
+            SvcMsg = "\u2713 Started";
+        }
+        catch (Exception ex)
+        {
+            SvcStatus = "Error";
+            SvcMsg = $"\u2717 {ex.Message}";
+        }
+        finally
+        {
+            _ = ClearMsgAfterDelay();
+        }
+    }
+
+    [RelayCommand]
+    private async Task StopService()
+    {
+        try
+        {
+            SvcStatus = "Stopping";
+            SvcMsg = "";
+
+            StopTimer();
+            _svc.Disconnect();
+
+            // Graceful stop with timeout; force-kill if timeout exceeded
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var ok = await Task.Run(() => _scm.StopServiceAsync(), cts.Token);
+                SvcStatus = ok ? "Stopped" : "Failed";
+                SvcMsg = ok ? "\u2713 Stopped" : "\u2717 Stop failed";
+            }
+            catch (OperationCanceledException)
+            {
+                // Service is stuck — force kill
+                KillServiceProcess();
+                SvcStatus = "Stopped";
+                SvcMsg = "\u2713 Stopped (forced)";
+            }
+        }
+        catch
+        {
+            SvcStatus = "Error";
+        }
+        finally
+        {
+            _ = ClearMsgAfterDelay();
+        }
+    }
+
+    // ── Initialization ───────────────────────────────
+
+    private async Task TryConnectAsync()
     {
         try
         {
             await _svc.ConnectAsync();
-            if (_svc.IsConnected) await Proxy.Load();
-            _ = RunTimer();
+            if (_svc.IsConnected)
+            {
+                StatusText = "Connected";
+                StartTimer();
+            }
         }
-        catch { StatusText = "Connection failed"; }
+        catch
+        {
+            // Service not running — that's fine
+        }
     }
 
-    private async Task RunTimer()
+    // ── Polling timer ────────────────────────────────
+
+    private void StartTimer()
     {
-        while (true)
+        StopTimer();
+        _timerCts = new CancellationTokenSource();
+        _ = PollLoopAsync(_timerCts.Token);
+    }
+
+    private void StopTimer()
+    {
+        try { _timerCts?.Cancel(); } catch { }
+        _timerCts?.Dispose();
+        _timerCts = null;
+    }
+
+    private async Task PollLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(2000);
-                if (!_svc.IsConnected) { await _svc.ConnectAsync(); continue; }
-                var s = await _svc.GetStatsAsync();
-                if (s != null) { ActiveConnections = s.ActiveConnections; TotalTraffic = Fmt(s.TotalRxBytes + s.TotalTxBytes); }
-                var c = await _svc.GetConnectionsAsync();
-                if (c.Count > 0) { ConnList.Clear(); foreach (var x in c) ConnList.Add(x); }
-                var st = await _svc.GetServiceStatusAsync();
-                if (st != null) IsServiceRunning = st.Running;
+                await Task.Delay(2000, ct);
+                if (!_svc.IsConnected) continue;
+
+                var stats = await _svc.GetStatsAsync();
+                if (stats is not null)
+                {
+                    ActiveConnections = stats.ActiveConnections;
+                    TotalTraffic = FormatBytes(stats.TotalRxBytes + stats.TotalTxBytes);
+                    Stats.PushStats(stats);
+                }
+
+                var status = await _svc.GetServiceStatusAsync();
+                if (status is not null)
+                    SvcStatus = status.Running ? "Running" : "Stopped";
+
+                var logs = await _svc.GetLogsAsync();
+                if (logs.Count > 0)
+                    Stats.PushLogs(logs);
             }
-            catch { }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Transient IPC errors — retry on next poll
+            }
         }
     }
 
-    [RelayCommand] private void Nav(string v) => ActiveView = v;
-    private static string Fmt(ulong b) => b >= 1073741824 ? $"{b/1073741824.0:F1} GB" : b >= 1048576 ? $"{b/1048576.0:F1} MB" : b >= 1024 ? $"{b/1024.0:F1} KB" : $"{b} B";
-}
+    // ── Helpers ──────────────────────────────────────
 
-public partial class ProxySettingsVM : ObservableObject
-{
-    private readonly ITcpRedirectorService _svc;
-    public ProxySettingsVM(ITcpRedirectorService svc) { _svc = svc; }
-    [ObservableProperty] private string _host = "";
-    [ObservableProperty] private int _port = 3128;
-    [ObservableProperty] private bool _auth;
-    [ObservableProperty] private string _login = "";
-    public string Password { get; set; } = "";
-    [ObservableProperty] private string _msg = "";
+    private void OnConnectionStateChanged(bool connected)
+    {
+        IsConnected = connected;
+        StatusText = connected ? "Connected" : "Disconnected";
+    }
 
-    public async Task Load()
+    private static void KillServiceProcess()
     {
         try
         {
-            var c = await _svc.GetConfigAsync();
-            if (c != null) { Host = c.Host; Port = c.Port; Auth = c.AuthRequired; Login = c.Login; }
+            Process.Start("taskkill", "/f /im TcpRedirectorService.exe");
         }
-        catch { Msg = "Load error"; }
-    }
-
-    [RelayCommand]
-    private async Task Save()
-    {
-        try
+        catch
         {
-            var ok = await _svc.SetConfigAsync(new ProxyConfig { Host = Host, Port = Port, AuthRequired = Auth, Login = Login, Password = Password });
-            Msg = ok ? "\u2713 Saved" : "\u2717 Error";
-            Password = "";
-            await Task.Delay(3000);
-            if (Msg.Contains("Saved")) Msg = "";
+            // Best-effort
         }
-        catch { Msg = "\u2717 Error"; }
     }
-}
 
-public partial class RulesVM : ObservableObject
-{
-    private readonly ITcpRedirectorService _svc;
-    public RulesVM(ITcpRedirectorService svc) { _svc = svc; }
-    [ObservableProperty] private ObservableCollection<Rule> _rules = new();
-    [ObservableProperty] private Rule? _sel;
-    [ObservableProperty] private string _msg = "";
-
-    public void Add(string path)
+    private async Task ClearMsgAfterDelay()
     {
-        try
-        {
-            Rules.Add(new Rule { Id = Guid.NewGuid().ToString(), Pattern = path, Description = Path.GetFileName(path), Priority = Rules.Count + 1, Enabled = true });
-            _ = Save();
-        }
-        catch { }
+        await Task.Delay(5000);
+        if (SvcMsg.Contains('\u2713'))
+            SvcMsg = "";
     }
 
-    [RelayCommand] private async Task Load() { try { var l = await _svc.GetRulesAsync(); Rules.Clear(); foreach (var r in l) Rules.Add(r); } catch { } }
-
-    [RelayCommand]
-    private async Task Save()
+    private static string FormatBytes(ulong b) => b switch
     {
-        try
-        {
-            await _svc.SetRulesAsync(Rules.ToList());
-            Msg = "\u2713 Saved";
-            await Task.Delay(3000);
-            if (Msg.Contains("Saved")) Msg = "";
-        }
-        catch { Msg = "\u2717 Error"; }
+        >= 1_073_741_824 => $"{b / 1_073_741_824.0:F1} GB",
+        >= 1_048_576 => $"{b / 1_048_576.0:F1} MB",
+        >= 1_024 => $"{b / 1_024.0:F1} KB",
+        _ => $"{b} B"
+    };
+
+    // ── IDisposable ──────────────────────────────────
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _svc.ConnectionStateChanged -= OnConnectionStateChanged;
+        StopTimer();
+        _svc.Disconnect();
+        GC.SuppressFinalize(this);
     }
-
-    [RelayCommand] private async Task Delete(Rule? r) { if (r == null) return; try { Rules.Remove(r); await _svc.SetRulesAsync(Rules.ToList()); } catch { } }
-}
-
-public partial class ServiceVM : ObservableObject
-{
-    private readonly ITcpRedirectorService _svc;
-    private readonly IServiceController _scm;
-    public ServiceVM(ITcpRedirectorService svc, IServiceController scm) { _svc = svc; _scm = scm; }
-    [ObservableProperty] private string _status = "Unknown";
-    [ObservableProperty] private string _msg = "";
-
-    [RelayCommand] private async Task Start() { try { Status = "Starting"; Status = await _scm.StartServiceAsync() ? "Running" : "Failed"; Msg = Status == "Running" ? "\u2713 Started" : "\u2717 Failed"; await ClearMsg(); } catch { Status = "Error"; } }
-    [RelayCommand] private async Task Stop() { try { Status = "Stopping"; Status = await _scm.StopServiceAsync() ? "Stopped" : "Failed"; Msg = Status == "Stopped" ? "\u2713 Stopped" : "\u2717 Failed"; await ClearMsg(); } catch { Status = "Error"; } }
-    [RelayCommand] private async Task Restart() { try { Status = "Restarting"; Status = await _scm.RestartServiceAsync() ? "Running" : "Failed"; Msg = Status == "Running" ? "\u2713 Restarted" : "\u2717 Failed"; await ClearMsg(); } catch { Status = "Error"; } }
-
-    private async Task ClearMsg() { await Task.Delay(3000); if (Msg.Contains("\u2713")) Msg = ""; }
 }

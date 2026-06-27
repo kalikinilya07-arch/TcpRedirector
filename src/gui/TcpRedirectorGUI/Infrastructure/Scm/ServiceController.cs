@@ -15,7 +15,6 @@ public class ServiceController : IServiceController
 {
     private const string ServiceName = "TcpRedirectorService";
     private const string ProcessName = "TcpRedirectorService";
-    private Process? _process;
 
     public bool IsAdministrator()
     {
@@ -41,39 +40,32 @@ public class ServiceController : IServiceController
     {
         try
         {
-            // If installed as Windows Service, use SCM
-            if (IsServiceInstalled())
+            // ВСЕГДА запускаем как --console, даже если сервис установлен в SCM.
+            // Причина: SCM запускает сервис в session 0, а test_proxy.py (прокси)
+            // работает в session 1. Loopback (127.0.0.1) изолирован по сессиям,
+            // поэтому relay НЕ может соединиться с прокси из session 0.
+            // Console-mode запускает сервис в той же сессии, что и GUI.
+            return await Task.Run(() =>
             {
-                using var controller = new System.ServiceProcess.ServiceController(ServiceName);
-                if (controller.Status == ServiceControllerStatus.Stopped)
+                if (IsProcessRunning()) return true;
+
+                var exePath = FindServiceExe();
+                if (exePath == null) return false;
+
+                var proc = new Process
                 {
-                    controller.Start();
-                    await Task.Run(() => controller.WaitForStatus(
-                        ServiceControllerStatus.Running, TimeSpan.FromSeconds(30)));
-                }
-                return controller.Status == ServiceControllerStatus.Running;
-            }
-
-            // Console mode — start process directly
-            if (IsProcessRunning()) return true;
-
-            var exePath = FindServiceExe();
-            if (exePath == null) return false;
-
-            _process = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = exePath,
-                    Arguments = "--console",
-                    UseShellExecute = true,
-                    CreateNoWindow = false
-                }
-            };
-            _process.Start();
-            // Give it a moment to initialize
-            await Task.Delay(2000);
-            return IsProcessRunning();
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = exePath,
+                        Arguments = "--console",
+                        UseShellExecute = true,
+                        CreateNoWindow = false
+                    }
+                };
+                proc.Start();
+                Thread.Sleep(2000);
+                return IsProcessRunning();
+            });
         }
         catch { return false; }
     }
@@ -82,27 +74,18 @@ public class ServiceController : IServiceController
     {
         try
         {
-            // If installed as Windows Service, use SCM
-            if (IsServiceInstalled())
+            // ВСЕГДА убиваем процесс напрямую (console mode).
+            // См. StartServiceAsync — сервис всегда запускается как --console.
+            return await Task.Run(() =>
             {
-                using var controller = new System.ServiceProcess.ServiceController(ServiceName);
-                if (controller.Status == ServiceControllerStatus.Running)
+                var procs = Process.GetProcessesByName(ProcessName);
+                foreach (var p in procs)
                 {
-                    controller.Stop();
-                    await Task.Run(() => controller.WaitForStatus(
-                        ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(30)));
+                    p.Kill();
+                    p.WaitForExit(5000);
                 }
-                return controller.Status == ServiceControllerStatus.Stopped;
-            }
-
-            // Console mode — kill process
-            var procs = Process.GetProcessesByName(ProcessName);
-            foreach (var p in procs)
-            {
-                p.Kill();
-                await Task.Run(() => p.WaitForExit(5000));
-            }
-            return !IsProcessRunning();
+                return !IsProcessRunning();
+            });
         }
         catch { return false; }
     }
@@ -121,20 +104,24 @@ public class ServiceController : IServiceController
     {
         try
         {
-            if (IsServiceInstalled())
+            // IsServiceInstalled() на thread pool — не блокируем UI
+            return await Task.Run(() =>
             {
-                using var controller = new System.ServiceProcess.ServiceController(ServiceName);
-                return await Task.FromResult(controller.Status switch
+                if (IsServiceInstalled())
                 {
-                    ServiceControllerStatus.Running => ServiceState.Running,
-                    ServiceControllerStatus.StartPending => ServiceState.Starting,
-                    ServiceControllerStatus.StopPending => ServiceState.Stopping,
-                    ServiceControllerStatus.Stopped => ServiceState.Stopped,
-                    _ => ServiceState.Error
-                });
-            }
+                    using var controller = new System.ServiceProcess.ServiceController(ServiceName);
+                    return controller.Status switch
+                    {
+                        ServiceControllerStatus.Running => ServiceState.Running,
+                        ServiceControllerStatus.StartPending => ServiceState.Starting,
+                        ServiceControllerStatus.StopPending => ServiceState.Stopping,
+                        ServiceControllerStatus.Stopped => ServiceState.Stopped,
+                        _ => ServiceState.Error
+                    };
+                }
 
-            return IsProcessRunning() ? ServiceState.Running : ServiceState.Stopped;
+                return IsProcessRunning() ? ServiceState.Running : ServiceState.Stopped;
+            });
         }
         catch { return ServiceState.Stopped; }
     }
@@ -150,12 +137,16 @@ public class ServiceController : IServiceController
         // Search near the GUI executable
         var guiDir = AppDomain.CurrentDomain.BaseDirectory;
 
-        // Try build/service/ relative to GUI
         var paths = new[]
         {
-            Path.Combine(guiDir, "..", "service", "TcpRedirectorService.exe"),
-            Path.Combine(guiDir, "..", "..", "build", "service", "TcpRedirectorService.exe"),
+            // Same dir as GUI (e.g. deploy_new/ or build/gui/)
             Path.Combine(guiDir, "TcpRedirectorService.exe"),
+            // Parent dir (e.g. build/ when GUI is in build/gui/)
+            Path.Combine(guiDir, "..", "TcpRedirectorService.exe"),
+            // build/ dir — новейшая сборка (приоритет выше deploy/)
+            Path.Combine(guiDir, "..", "..", "build", "TcpRedirectorService.exe"),
+            // deploy/ dir — старая сборка (фолбэк)
+            Path.Combine(guiDir, "..", "..", "deploy", "TcpRedirectorService.exe"),
         };
 
         foreach (var p in paths)

@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
-using Microsoft.Win32;
 using TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 
 namespace TcpRedirectorGUI;
@@ -16,29 +16,51 @@ public partial class MainWindow : Window
         InitializeComponent();
         _vm = vm;
         DataContext = vm;
-    }
 
-    private void SaveProxy_Click(object sender, RoutedEventArgs e)
-    {
-        _vm.Proxy.Password = PwdBox.Password;
-        _vm.Proxy.SaveCommand.Execute(null);
-    }
+        PwdBox.PasswordChanged += (_, _) =>
+        {
+            _vm.Settings.Password = PwdBox.Password;
+        };
 
-    private void AddRule_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFileDialog { Title = "Select Application", Filter = "Executables (*.exe)|*.exe|All files (*.*)|*.*", CheckFileExists = true };
-        if (dlg.ShowDialog() == true) _vm.Rules.Add(dlg.FileName);
+        // Clear PasswordBox when Password is set to empty after Save
+        _vm.Settings.Saved += () =>
+        {
+            PwdBox.Clear();
+        };
     }
 }
 
+/// <summary>
+/// Converts active tab name to Visibility.
+/// Usage: Visibility="{Binding ActiveTab, Converter={StaticResource ViewToVis}, ConverterParameter=Settings}"
+/// </summary>
 public class ViewToVisConverter : IValueConverter
 {
-    public object Convert(object value, Type t, object p, CultureInfo c) => value is string s && p is string v && s == v ? Visibility.Visible : Visibility.Collapsed;
-    public object ConvertBack(object value, Type t, object p, CultureInfo c) => throw new NotImplementedException();
+    public object Convert(object value, Type t, object p, CultureInfo c)
+    {
+        if (value is string s && p is string v)
+        {
+            return s == v ? Visibility.Visible : Visibility.Collapsed;
+        }
+        return Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type t, object p, CultureInfo c)
+        => throw new NotImplementedException();
 }
 
+/// <summary>
+/// Converts bool (connected) to color (green/red).
+/// </summary>
 public class BoolToColorConverter : IValueConverter
 {
-    public object Convert(object value, Type t, object p, CultureInfo c) => (value is bool b && b) ? Color.FromRgb(0x10, 0x7C, 0x10) : Color.FromRgb(0xD1, 0x34, 0x38);
-    public object ConvertBack(object value, Type t, object p, CultureInfo c) => throw new NotImplementedException();
+    public object Convert(object value, Type t, object p, CultureInfo c)
+    {
+        return (value is bool b && b)
+            ? Color.FromRgb(0x4E, 0xC9, 0xB0)  // green
+            : Color.FromRgb(0xF4, 0x47, 0x47); // red
+    }
+
+    public object ConvertBack(object value, Type t, object p, CultureInfo c)
+        => throw new NotImplementedException();
 }
