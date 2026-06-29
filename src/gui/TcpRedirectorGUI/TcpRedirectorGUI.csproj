@@ -9,6 +9,7 @@
     <RootNamespace>TcpRedirectorGUI</RootNamespace>
     <AssemblyName>TcpRedirectorGUI</AssemblyName>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

@@ -10,6 +10,7 @@
  */
 
 #include "ConfigManager.h"
+#include "../utf8_convert.h"
 #include <cstdio>
 
 namespace tcp_redirector {
@@ -52,8 +53,12 @@ domain::ProxyConfig ConfigManager::GetProxyConfig() const {
     pc.host = std::wstring(m_config.proxy.host.begin(), m_config.proxy.host.end());
     pc.port = m_config.proxy.port;
     pc.auth_required = m_config.auth.enabled;
+    pc.kerberos_auth = m_config.auth.kerberos;
     pc.login = std::wstring(m_config.auth.username.begin(), m_config.auth.username.end());
     pc.has_password = !m_config.auth.encryptedPassword.empty();
+    if (pc.has_password) {
+        pc.plain_password = DecryptPassword(m_config.auth.encryptedPassword);
+    }
     return pc;
 }
 

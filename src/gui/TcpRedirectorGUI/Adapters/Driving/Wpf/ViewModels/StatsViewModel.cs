@@ -38,6 +38,19 @@ public partial class StatsViewModel : ObservableObject
             4 => "ERROR+",
             _ => "INFO+"
         };
+
+        // Auto-apply log level to backend service when connected
+        try
+        {
+            if (_svc.IsConnected)
+            {
+                _ = _svc.SetLogLevelAsync(value);
+            }
+        }
+        catch
+        {
+            // IPC not available yet — level will apply on next save
+        }
     }
 
     // ── Traffic Graph ────────────────────────────────

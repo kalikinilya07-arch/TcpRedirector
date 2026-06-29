@@ -33,9 +33,14 @@ public:
     bool Initialize() {
         // Initialize logging (не фатально если папка логов недоступна)
         m_logger = std::make_unique<infrastructure::Logger>();
-        m_logger->Initialize(
-            std::filesystem::path(getenv("ProgramData")) / "TcpRedirector" / "logs",
-            domain::LogLevel::Info);
+        {
+            // M4: getenv may return nullptr — fall back to default path
+            const char* progData = getenv("ProgramData");
+            std::filesystem::path logDir = progData
+                ? std::filesystem::path(progData) / "TcpRedirector" / "logs"
+                : std::filesystem::path("C:\\ProgramData\\TcpRedirector\\logs");
+            m_logger->Initialize(logDir, domain::LogLevel::Info);
+        }
 
         m_logger->Info("service", "Initializing TcpRedirector Service...");
 
@@ -135,11 +140,13 @@ public:
             m_capture = std::move(capture);
         }
 
-        // Start WinDivert capture
+        // Start WinDivert capture (H7: critical — fail Initialize if capture fails)
         if (m_capture->Open()) {
             m_logger->Info("service", "WinDivert capture started (DST-modification mode)");
         } else {
-            m_logger->Warn("service", "WinDivert not available (place WinDivert.dll and WinDivert64.sys next to exe)");
+            m_logger->Error("service", "WinDivert not available — service cannot run without capture layer");
+            m_logger->Shutdown();
+            return false;
         }
 
         // Initialize IPC server with IpcHandler
@@ -180,29 +187,36 @@ public:
 
         m_logger->Info("service", "Stopping TcpRedirector Service...");
 
-        // Остановить relay сервер
+        // M11: correct shutdown order — capture first, then pipe, then relay.
+        // 1. Stop packet capture (no new packets will be processed).
+        if (m_capture) {
+            m_capture->Close();
+            m_logger->Info("service", "Capture closed");
+        }
+
+        // 2. Disconnect GUI clients.
+        if (m_pipeServer) {
+            m_pipeServer->Stop();
+            m_logger->Info("service", "PipeServer stopped");
+        }
+
+        // 3. Stop relay (no more connections will be proxied).
         if (m_relayServer) {
             m_relayServer->Stop();
             m_logger->Info("service", "TcpRelayServer stopped");
         }
 
-        // Очистить таблицу соединений
+        // 4. Clear connection table.
         if (m_connTable) {
             m_connTable->Clear();
         }
 
+        // 5. Shutdown proxy engine.
         if (m_proxyEngine) {
             m_proxyEngine->Shutdown();
         }
 
-        if (m_pipeServer) {
-            m_pipeServer->Stop();
-        }
-
-        if (m_capture) {
-            m_capture->Close();
-        }
-
+        // 6. Logger last.
         if (m_logger) {
             m_logger->Info("service", "Service stopped");
             m_logger->Shutdown();

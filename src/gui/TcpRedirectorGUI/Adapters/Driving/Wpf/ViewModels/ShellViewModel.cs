@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using TcpRedirectorGUI.Domain.Entities;
@@ -10,13 +11,15 @@ namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 
 /// <summary>
 /// Orchestrates the entire UI: service lifecycle, polling, navigation.
-/// Does NOT handle settings/config — that's SettingsViewModel's job.
+/// On startup, finds and launches the backend (TcpRedirectorService.exe --console)
+/// automatically — no manual service installation needed.
 /// </summary>
 public partial class ShellViewModel : ObservableObject, IDisposable
 {
     private readonly ITcpRedirectorService _svc;
     private readonly IServiceController _scm;
     private CancellationTokenSource? _timerCts;
+    private Process? _backendProcess;
     private bool _disposed;
 
     public ShellViewModel(
@@ -37,8 +40,8 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         Settings.LoadFromConfig();
         StatusText = "Configured";
 
-        // Async connect to service if running
-        _ = TryConnectAsync();
+        // Auto-start backend and connect
+        _ = AutoStartAndConnectAsync();
     }
 
     // ── Navigation ───────────────────────────────────
@@ -149,23 +152,115 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         }
     }
 
-    // ── Initialization ───────────────────────────────
+    // ── Auto-start backend ───────────────────────────
 
-    private async Task TryConnectAsync()
+    /// <summary>
+    /// Tries to connect to a running backend. If none is found,
+    /// locates TcpRedirectorService.exe next to the GUI (or one level up)
+    /// and launches it in console mode, then connects.
+    /// </summary>
+    private async Task AutoStartAndConnectAsync()
     {
+        // 1. Try connecting to an already-running service
         try
         {
             await _svc.ConnectAsync();
             if (_svc.IsConnected)
             {
-                StatusText = "Connected";
+                StatusText = "Connected (existing)";
+                SvcStatus = "Running";
                 StartTimer();
+                return;
             }
         }
         catch
         {
-            // Service not running — that's fine
+            // Not running — proceed to launch
         }
+
+        // 2. Find the backend exe
+        var exePath = FindBackendExe();
+        if (string.IsNullOrEmpty(exePath))
+        {
+            StatusText = "Backend not found";
+            SvcStatus = "Error";
+            SvcMsg = "TcpRedirectorService.exe not found";
+            return;
+        }
+
+        // 3. Launch backend process
+        try
+        {
+            SvcStatus = "Starting";
+            StatusText = "Starting backend...";
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = "--console",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            _backendProcess = new Process { StartInfo = psi };
+            _backendProcess.Start();
+
+            // 4. Wait for the pipe to become available (max 10 seconds)
+            for (int i = 0; i < 20; i++)
+            {
+                await Task.Delay(500);
+                try
+                {
+                    await _svc.ConnectAsync();
+                    if (_svc.IsConnected)
+                    {
+                        StatusText = "Connected";
+                        SvcStatus = "Running";
+                        StartTimer();
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Not ready yet
+                }
+            }
+
+            // Timed out
+            SvcStatus = "Error";
+            StatusText = "Backend not responding";
+            SvcMsg = "Service started but IPC connection failed";
+        }
+        catch (Exception ex)
+        {
+            SvcStatus = "Error";
+            StatusText = "Start failed";
+            SvcMsg = ex.Message;
+        }
+    }
+
+    private static string? FindBackendExe()
+    {
+        // Look next to GUI executable first
+        var guiDir = AppDomain.CurrentDomain.BaseDirectory;
+        var candidates = new[]
+        {
+            Path.Combine(guiDir, "TcpRedirectorService.exe"),
+            Path.Combine(guiDir, "..", "TcpRedirectorService.exe"),
+            Path.Combine(guiDir, "..", "..", "TcpRedirectorService.exe"),
+        };
+
+        foreach (var c in candidates)
+        {
+            var full = Path.GetFullPath(c);
+            if (File.Exists(full))
+                return full;
+        }
+
+        return null;
     }
 
     // ── Polling timer ────────────────────────────────
@@ -265,6 +360,15 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         _svc.ConnectionStateChanged -= OnConnectionStateChanged;
         StopTimer();
         _svc.Disconnect();
+
+        // Kill the backend process we started
+        if (_backendProcess is not null && !_backendProcess.HasExited)
+        {
+            try { _backendProcess.Kill(); } catch { }
+            _backendProcess.Dispose();
+            _backendProcess = null;
+        }
+
         GC.SuppressFinalize(this);
     }
 }

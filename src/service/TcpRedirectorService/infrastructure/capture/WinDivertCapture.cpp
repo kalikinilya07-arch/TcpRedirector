@@ -120,8 +120,8 @@ bool WinDivertCapture::Open() {
 
     LOG("[WinDivert] Handle opened: %p\n", (void*)m_handle);
 
-    // Configure queue parameters
-    if (m_api.SetParam) {
+    // Configure queue parameters (H5: check handle validity before use)
+    if (m_api.SetParam && m_handle && m_handle != INVALID_HANDLE_VALUE) {
         m_api.SetParam(m_handle, WINDIVERT_PARAM_QUEUE_LENGTH, 16384);
         m_api.SetParam(m_handle, WINDIVERT_PARAM_QUEUE_TIME, 2000);
         m_api.SetParam(m_handle, WINDIVERT_PARAM_QUEUE_SIZE, 33553920);

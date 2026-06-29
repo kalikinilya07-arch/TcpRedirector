@@ -3,21 +3,47 @@
 #include <windows.h>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <memory>
 #include <atomic>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <sddl.h>
 #include "../../domain/ports/IConnectionMonitor.h"
+
+#pragma comment(lib, "advapi32.lib")
 
 namespace tcp_redirector {
 namespace infrastructure {
 
+//
+// RAII deleter for SECURITY_DESCRIPTOR allocated by
+// ConvertStringSecurityDescriptorToSecurityDescriptorW (LocalAlloc).
+//
+struct LocalFreeDeleter {
+    void operator()(PSECURITY_DESCRIPTOR p) const noexcept {
+        if (p) ::LocalFree(p);
+    }
+};
+using SdPtr = std::unique_ptr<std::remove_pointer_t<PSECURITY_DESCRIPTOR>, LocalFreeDeleter>;
+
+//
+// Named-pipe server that handles exactly ONE GUI client at a time.
+//   - Security: only BUILTIN\Administrators and LOCAL_SYSTEM may connect.
+//   - Re-entrant: after a client disconnects, a new pipe instance is created
+//     automatically so the GUI can reconnect.
+//   - Thread-safe: m_hPipe is protected by a mutex; all Send*() methods
+//     are safe to call from any thread (e.g. the capture or logger thread).
+//
 class PipeServer : public domain::ports::IGUIIpc {
 public:
-    PipeServer() : m_hPipe(INVALID_HANDLE_VALUE) {}
+    PipeServer() noexcept : m_hPipe(INVALID_HANDLE_VALUE) {}
 
     ~PipeServer() override {
         Stop();
     }
+
+    // ---- IGUIIpc ----
 
     bool Start() override {
         m_running = true;
@@ -27,17 +53,32 @@ public:
 
     void Stop() override {
         m_running = false;
-        if (m_hPipe != INVALID_HANDLE_VALUE) {
-            DisconnectNamedPipe(m_hPipe);
-            CloseHandle(m_hPipe);
-            m_hPipe = INVALID_HANDLE_VALUE;
+
+        // Cancel any pending I/O on the pipe handle so PipeThread can exit.
+        HANDLE pipeToCancel;
+        {
+            std::lock_guard<std::mutex> lock(m_pipeMutex);
+            pipeToCancel = m_hPipe;
         }
+        if (pipeToCancel != INVALID_HANDLE_VALUE) {
+            CancelIoEx(pipeToCancel, nullptr);
+        }
+
         if (m_thread.joinable()) {
             m_thread.join();
         }
+
+        // Close the handle under the mutex.
+        std::lock_guard<std::mutex> lock(m_pipeMutex);
+        if (m_hPipe != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_hPipe);
+            m_hPipe = INVALID_HANDLE_VALUE;
+        }
     }
 
-    bool IsConnected() const override { return m_connected; }
+    bool IsConnected() const override {
+        return m_connected.load(std::memory_order_acquire);
+    }
 
     void SendConnections(const std::vector<domain::ConnectionRecord>& connections) override {
         nlohmann::json j = nlohmann::json::array();
@@ -80,102 +121,191 @@ public:
         SendMessage("push", "stats", j.dump());
     }
 
-    void SendConfig(const domain::ProxyConfig& config) override {}
-    void SendRules(const std::vector<domain::Rule>& rules) override {}
+    void SendConfig(const domain::ProxyConfig& /*config*/) override {}
+    void SendRules(const std::vector<domain::Rule>& /*rules*/) override {}
 
     void SetOnRequest(RequestCallback callback) override {
-        m_requestCallback = callback;
+        m_requestCallback = std::move(callback);
     }
 
 private:
+    // ---- SECURITY ----------------------------------------------------------
+    // Create a SECURITY_ATTRIBUTES that only allows Administrators and
+    // LOCAL_SYSTEM to access the named pipe.
+    // SDDL: D:(A;;GA;;;BA)(A;;GA;;;SY)
+    //   BA = Built-in Administrators, SY = Local System, GA = GENERIC_ALL
+    // The returned SdPtr owns the memory (LocalFree on destruction).
+    static std::pair<SECURITY_ATTRIBUTES, SdPtr> MakeAdminOnlySA() noexcept {
+        SECURITY_ATTRIBUTES sa = {};
+        sa.nLength = sizeof(sa);
+        sa.bInheritHandle = FALSE;
+
+        PSECURITY_DESCRIPTOR raw = nullptr;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:(A;;GA;;;BA)(A;;GA;;;SY)",
+                SDDL_REVISION_1,
+                &raw,
+                nullptr)) {
+            return {sa, nullptr};
+        }
+
+        SdPtr sd(raw);
+        sa.lpSecurityDescriptor = sd.get();
+        return {sa, std::move(sd)};
+    }
+
+    // ---- Pipe thread (runs for the lifetime of the server) -----------------
     void PipeThread() {
-        while (m_running) {
-            m_hPipe = CreateNamedPipeW(
+        bool isFirstInstance = true;
+
+        while (m_running.load(std::memory_order_relaxed)) {
+            auto [secAttr, sdOwner] = MakeAdminOnlySA();
+            DWORD pipeFlags = PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT;
+            if (isFirstInstance) {
+                pipeFlags |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+            }
+
+            HANDLE newPipe = CreateNamedPipeW(
                 L"\\\\.\\pipe\\TcpRedirectorService",
                 PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                pipeFlags,
                 PIPE_UNLIMITED_INSTANCES,
                 65536, 65536,
                 5000,
-                NULL);
+                secAttr.lpSecurityDescriptor ? &secAttr : nullptr);
 
-            if (m_hPipe == INVALID_HANDLE_VALUE) {
+            // sdOwner is kept alive until after CreateNamedPipeW returns
+            // (the SECURITY_DESCRIPTOR must remain valid for the call).
+            // It will be destroyed by the unique_ptr at the end of this scope.
+
+            if (newPipe == INVALID_HANDLE_VALUE) {
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 continue;
             }
 
-            m_connected = ConnectNamedPipe(m_hPipe, NULL) ||
-                          GetLastError() == ERROR_PIPE_CONNECTED;
+            // Swap the new handle into place under the mutex.
+            HANDLE oldPipe;
+            {
+                std::lock_guard<std::mutex> lock(m_pipeMutex);
+                oldPipe = m_hPipe;
+                m_hPipe = newPipe;
+            }
+            if (oldPipe != INVALID_HANDLE_VALUE) {
+                CancelIoEx(oldPipe, nullptr);
+                DisconnectNamedPipe(oldPipe);
+                CloseHandle(oldPipe);
+            }
 
-            if (!m_connected) {
-                CloseHandle(m_hPipe);
-                m_hPipe = INVALID_HANDLE_VALUE;
+            isFirstInstance = false;
+
+            // Wait for a client to connect.
+            BOOL connected = ConnectNamedPipe(newPipe, nullptr);
+            if (!connected && GetLastError() == ERROR_PIPE_CONNECTED) {
+                connected = TRUE;
+            }
+
+            if (!connected) {
+                // Client failed to connect — close and retry.
+                {
+                    std::lock_guard<std::mutex> lock(m_pipeMutex);
+                    if (m_hPipe == newPipe) {
+                        m_hPipe = INVALID_HANDLE_VALUE;
+                    }
+                }
+                DisconnectNamedPipe(newPipe);
+                CloseHandle(newPipe);
+                m_connected.store(false, std::memory_order_release);
                 continue;
             }
 
-            // Handle client communication
+            m_connected.store(true, std::memory_order_release);
+
+            // ---- Client I/O loop -------------------------------------------
             char buffer[65536];
-            DWORD bytes_read;
+            DWORD bytesRead = 0;
 
-            while (m_running && m_connected) {
-                BOOL success = ReadFile(m_hPipe, buffer, sizeof(buffer) - 1,
-                                       &bytes_read, NULL);
-
-                if (!success || bytes_read == 0) {
-                    m_connected = false;
-                    break;
+            while (m_running.load(std::memory_order_relaxed)) {
+                BOOL ok = ReadFile(newPipe, buffer, sizeof(buffer) - 1,
+                                   &bytesRead, nullptr);
+                if (!ok || bytesRead == 0) {
+                    break;  // client disconnected or error
                 }
 
-                buffer[bytes_read] = '\0';
-                std::string request(buffer, bytes_read);
+                buffer[bytesRead] = '\0';
+                std::string request(buffer, bytesRead);
 
                 try {
                     auto j = nlohmann::json::parse(request);
                     std::string method = j.value("method", "");
                     std::string params = j.value("params", "");
-                    std::string response;
 
+                    std::string response;
                     if (m_requestCallback) {
                         m_requestCallback(method, params, response);
                     } else {
-                        response = "{\"status\":\"error\",\"error\":\"not_ready\"}";
+                        response = R"({"status":"error","error":"not_ready"})";
                     }
 
-                    DWORD bytes_written;
-                    WriteFile(m_hPipe, response.c_str(),
-                             (DWORD)response.size(), &bytes_written, NULL);
-                    FlushFileBuffers(m_hPipe);
+                    DWORD bytesWritten = 0;
+                    WriteFile(newPipe, response.data(),
+                              static_cast<DWORD>(response.size()),
+                              &bytesWritten, nullptr);
+                    FlushFileBuffers(newPipe);
                 }
                 catch (...) {
-                    std::string error = "{\"status\":\"error\",\"error\":\"parse_error\"}";
-                    DWORD bytes_written;
-                    WriteFile(m_hPipe, error.c_str(),
-                             (DWORD)error.size(), &bytes_written, NULL);
+                    std::string err = R"({"status":"error","error":"parse_error"})";
+                    DWORD bytesWritten = 0;
+                    WriteFile(newPipe, err.data(),
+                              static_cast<DWORD>(err.size()),
+                              &bytesWritten, nullptr);
                 }
             }
 
-            DisconnectNamedPipe(m_hPipe);
-            CloseHandle(m_hPipe);
-            m_hPipe = INVALID_HANDLE_VALUE;
+            // Client gone — clean up the pipe instance.
+            m_connected.store(false, std::memory_order_release);
+
+            {
+                std::lock_guard<std::mutex> lock(m_pipeMutex);
+                if (m_hPipe == newPipe) {
+                    m_hPipe = INVALID_HANDLE_VALUE;
+                }
+            }
+            DisconnectNamedPipe(newPipe);
+            CloseHandle(newPipe);
+
+            // Allow the next iteration to create a fresh pipe instance
+            // with FILE_FLAG_FIRST_PIPE_INSTANCE again.
+            isFirstInstance = true;
         }
     }
 
+    // ---- Send a push notification to the connected client ------------------
     void SendMessage(const std::string& type, const std::string& event,
                      const std::string& data) {
-        if (!m_connected || m_hPipe == INVALID_HANDLE_VALUE) return;
+        if (!m_connected.load(std::memory_order_acquire)) {
+            return;
+        }
 
         nlohmann::json j = {
             {"type", type},
             {"event", event},
             {"data", nlohmann::json::parse(data)}
         };
-
         std::string msg = j.dump();
-        DWORD bytes_written;
-        WriteFile(m_hPipe, msg.c_str(), (DWORD)msg.size(), &bytes_written, NULL);
+
+        std::lock_guard<std::mutex> lock(m_pipeMutex);
+        if (m_hPipe == INVALID_HANDLE_VALUE) {
+            return;
+        }
+
+        DWORD bytesWritten = 0;
+        WriteFile(m_hPipe, msg.data(), static_cast<DWORD>(msg.size()),
+                  &bytesWritten, nullptr);
     }
 
-    HANDLE m_hPipe;
+    // ---- Members -----------------------------------------------------------
+    HANDLE m_hPipe;                                  // guarded by m_pipeMutex
+    std::mutex m_pipeMutex;                          // protects m_hPipe
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};

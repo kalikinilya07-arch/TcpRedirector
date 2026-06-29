@@ -61,9 +61,14 @@ public:
 
         // 1. Logging
         deps.logger = std::make_unique<infrastructure::Logger>();
-        deps.logger->Initialize(
-            std::filesystem::path(getenv("ProgramData")) / "TcpRedirector" / "logs",
-            domain::LogLevel::Info);
+        {
+            // M4: getenv may return nullptr — fall back to default path
+            const char* progData = getenv("ProgramData");
+            std::filesystem::path logDir = progData
+                ? std::filesystem::path(progData) / "TcpRedirector" / "logs"
+                : std::filesystem::path("C:\\ProgramData\\TcpRedirector\\logs");
+            deps.logger->Initialize(logDir, domain::LogLevel::Info);
+        }
 
         // 2. Config
         deps.configManager = std::make_unique<infrastructure::ConfigManager>();

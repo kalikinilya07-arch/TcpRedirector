@@ -17,39 +17,62 @@ public:
     ConnectionTracker() = default;
 
     void AddConnection(const ConnectionRecord& record) override {
-        std::unique_lock lock(m_mutex);
-        m_connections[record.id] = record;
-        m_stats.active_connections = static_cast<uint32_t>(m_connections.size());
-        m_stats.total_connections++;
-        NotifyChanged();
+        std::vector<ConnectionRecord> snapshot;
+        {
+            std::unique_lock lock(m_mutex);
+            m_connections[record.id] = record;
+            m_stats.active_connections = static_cast<uint32_t>(m_connections.size());
+            m_stats.total_connections++;
+            if (m_callback) {
+                snapshot = BuildSnapshotLocked();
+            }
+        }
+        if (!snapshot.empty() && m_callback) {
+            m_callback(snapshot);
+        }
     }
 
     void UpdateConnection(uint64_t id, const ConnectionRecord& updates) override {
-        std::unique_lock lock(m_mutex);
-        auto it = m_connections.find(id);
-        if (it != m_connections.end()) {
-            // Preserve fields that shouldn't be overwritten
-            if (updates.rx_bytes > 0 || updates.tx_bytes > 0) {
-                m_stats.total_rx_bytes += (updates.rx_bytes - it->second.rx_bytes);
-                m_stats.total_tx_bytes += (updates.tx_bytes - it->second.tx_bytes);
-            }
-            it->second = updates;
-            it->second.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - it->second.start_time);
+        std::vector<ConnectionRecord> snapshot;
+        {
+            std::unique_lock lock(m_mutex);
+            auto it = m_connections.find(id);
+            if (it != m_connections.end()) {
+                if (updates.rx_bytes > 0 || updates.tx_bytes > 0) {
+                    m_stats.total_rx_bytes += (updates.rx_bytes - it->second.rx_bytes);
+                    m_stats.total_tx_bytes += (updates.tx_bytes - it->second.tx_bytes);
+                }
+                it->second = updates;
+                it->second.duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - it->second.start_time);
 
-            if (updates.state == ConnectionState::Closed ||
-                updates.state == ConnectionState::Error) {
-                m_stats.active_connections = static_cast<uint32_t>(m_connections.size()) - 1;
+                if (updates.state == ConnectionState::Closed ||
+                    updates.state == ConnectionState::Error) {
+                    m_stats.active_connections = static_cast<uint32_t>(m_connections.size()) - 1;
+                }
+                if (m_callback) {
+                    snapshot = BuildSnapshotLocked();
+                }
             }
-            NotifyChanged();
+        }
+        if (!snapshot.empty() && m_callback) {
+            m_callback(snapshot);
         }
     }
 
     void RemoveConnection(uint64_t id) override {
-        std::unique_lock lock(m_mutex);
-        m_connections.erase(id);
-        m_stats.active_connections = static_cast<uint32_t>(m_connections.size());
-        NotifyChanged();
+        std::vector<ConnectionRecord> snapshot;
+        {
+            std::unique_lock lock(m_mutex);
+            m_connections.erase(id);
+            m_stats.active_connections = static_cast<uint32_t>(m_connections.size());
+            if (m_callback) {
+                snapshot = BuildSnapshotLocked();
+            }
+        }
+        if (!snapshot.empty() && m_callback) {
+            m_callback(snapshot);
+        }
     }
 
     std::vector<ConnectionRecord> GetActiveConnections() const override {
@@ -124,11 +147,16 @@ private:
     uint64_t m_next_id = 1;
     ConnectionsCallback m_callback;
 
-    void NotifyChanged() {
-        if (m_callback) {
-            auto connections = GetActiveConnections();
-            m_callback(connections);
+    // Build a snapshot of connections (caller MUST hold m_mutex).
+    // M8: avoids recursive shared_lock deadlock by never calling
+    // GetActiveConnections() from within a locked context.
+    std::vector<ConnectionRecord> BuildSnapshotLocked() const {
+        std::vector<ConnectionRecord> result;
+        result.reserve(m_connections.size());
+        for (const auto& [id, conn] : m_connections) {
+            result.push_back(conn);
         }
+        return result;
     }
 
 public:

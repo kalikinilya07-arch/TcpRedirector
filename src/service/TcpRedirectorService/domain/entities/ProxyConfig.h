@@ -34,6 +34,7 @@ struct ProxyConfig {
     std::wstring login;                     //!< Логин для Basic-авторизации
     std::vector<uint8_t> encrypted_password; //!< Пароль, зашифрованный через DPAPI
     bool has_password = false;              //!< Флаг наличия пароля
+    std::wstring plain_password;            //!< Расшифрованный пароль (заполняется ConfigManager)
 };
 
 /**

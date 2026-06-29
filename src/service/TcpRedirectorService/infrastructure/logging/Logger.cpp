@@ -126,10 +126,44 @@ std::vector<domain::LogEntry> Logger::GetRecentEntries(size_t max_count) const {
     if (total == 0) return {};
 
     std::vector<domain::LogEntry> result;
-    size_t start = (total > max_count) ? total - max_count : 0;
-    for (size_t i = start; i < total; i++) {
-        result.push_back(m_ringBuffer[i]);
+    result.reserve(max_count < total ? max_count : total);
+
+    // Ring buffer wrap-around: data may not be contiguous.
+    // The physical layout is:
+    //   [ idx % N  ...  N-1 ]  (older if idx >= N)
+    //   [    0     ...  idx % N - 1 ] (newer)
+    // We want the *last* `max_count` entries in chronological order.
+
+    if (idx < RING_BUFFER_SIZE) {
+        // Linear case: 0 .. idx-1
+        size_t start = (total > max_count) ? total - max_count : 0;
+        for (size_t i = start; i < total; i++) {
+            result.push_back(m_ringBuffer[i]);
+        }
+    } else {
+        // Circular case: physical layout is [wrap..N-1] then [0..wrap-1]
+        size_t wrap = idx % RING_BUFFER_SIZE;
+        size_t available = total;
+
+        if (available <= max_count) {
+            // Return everything
+            for (size_t i = wrap; i < RING_BUFFER_SIZE; i++) {
+                result.push_back(m_ringBuffer[i]);
+            }
+            for (size_t i = 0; i < wrap; i++) {
+                result.push_back(m_ringBuffer[i]);
+            }
+        } else {
+            // Return only the last `max_count` entries
+            size_t skip = available - max_count;
+            size_t i = (wrap + skip) % RING_BUFFER_SIZE;
+            for (size_t count = 0; count < max_count; count++) {
+                result.push_back(m_ringBuffer[i]);
+                i = (i + 1) % RING_BUFFER_SIZE;
+            }
+        }
     }
+
     return result;
 }
 

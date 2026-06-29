@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.Windows;
 using System.Windows.Media;
 
@@ -6,17 +7,20 @@ namespace TcpRedirectorGUI.Adapters.Driving.Wpf.Controls;
 /// <summary>
 /// Lightweight WPF control that renders a real-time RX/TX traffic chart
 /// using DrawingContext (no external charting library required).
+/// Subscribes to INotifyCollectionChanged to auto-refresh when points are added.
 /// </summary>
 public class TrafficGraph : FrameworkElement
 {
     // ── Data ──────────────────────────────────────────
     public static readonly DependencyProperty RxDataProperty =
         DependencyProperty.Register(nameof(RxData), typeof(IList<TrafficPoint>),
-            typeof(TrafficGraph), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+            typeof(TrafficGraph), new FrameworkPropertyMetadata(null,
+                FrameworkPropertyMetadataOptions.AffectsRender, OnDataChanged));
 
     public static readonly DependencyProperty TxDataProperty =
         DependencyProperty.Register(nameof(TxData), typeof(IList<TrafficPoint>),
-            typeof(TrafficGraph), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+            typeof(TrafficGraph), new FrameworkPropertyMetadata(null,
+                FrameworkPropertyMetadataOptions.AffectsRender, OnDataChanged));
 
     public IList<TrafficPoint>? RxData
     {
@@ -28,6 +32,24 @@ public class TrafficGraph : FrameworkElement
     {
         get => (IList<TrafficPoint>?)GetValue(TxDataProperty);
         set => SetValue(TxDataProperty, value);
+    }
+
+    /// <summary>
+    /// When RxData/TxData changes, subscribe to CollectionChanged
+    /// so InvalidateVisual is called automatically on every add/remove.
+    /// </summary>
+    private static void OnDataChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var ctrl = (TrafficGraph)d;
+        if (e.OldValue is INotifyCollectionChanged oldColl)
+            oldColl.CollectionChanged -= ctrl.OnCollectionChanged;
+        if (e.NewValue is INotifyCollectionChanged newColl)
+            newColl.CollectionChanged += ctrl.OnCollectionChanged;
+    }
+
+    private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        InvalidateVisual();
     }
 
     // ── Drawing ───────────────────────────────────────
