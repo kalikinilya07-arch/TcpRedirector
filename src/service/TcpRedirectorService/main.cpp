@@ -52,10 +52,12 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
         g_Service.Run();
         g_Service.ReportStatus(SERVICE_STOPPED);
     } catch (const std::exception& e) {
-        UNREFERENCED_PARAMETER(e);
-        // Logging may not be available; exit silently.
+        // Logger IS available at this point (initialized inside Initialize())
+        // Access via global g_Service if needed; fallback to stderr.
+        fprintf(stderr, "ServiceMain fatal error: %s\n", e.what());
         g_Service.ReportStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR);
     } catch (...) {
+        fprintf(stderr, "ServiceMain fatal unknown error\n");
         g_Service.ReportStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR);
     }
 }

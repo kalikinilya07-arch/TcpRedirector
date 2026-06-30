@@ -32,6 +32,7 @@
 #include <windivert.h>
 #include "../../domain/ports/ICapture.h"
 #include "../../domain/ports/IConnectionTable.h"
+#include "../../domain/ports/IConnectionMonitor.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -64,6 +65,8 @@ public:
         m_proxyPort = port;
     }
 
+    void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }
+
     std::vector<domain::RedirectEvent> GetPendingRedirects(
         uint32_t timeout_ms = 1000) override;
     bool AckRedirect(uint64_t redirect_id) override;
@@ -71,6 +74,8 @@ public:
     void* GetEventHandle() const override;
 
 private:
+    void WdLog(domain::LogLevel level, const char* fmt, ...);
+
     bool LoadWinDivertApi();
     void CaptureLoop();
 
@@ -218,6 +223,9 @@ private:
         bool Load();
         void Unload();
     } m_api;
+
+    // Logger integration
+    domain::ports::ILogSink* m_logSink = nullptr;
 
 };
 

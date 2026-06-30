@@ -39,6 +39,8 @@ class PipeServer : public domain::ports::IGUIIpc {
 public:
     PipeServer() noexcept : m_hPipe(INVALID_HANDLE_VALUE) {}
 
+    void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }
+
     ~PipeServer() override {
         Stop();
     }
@@ -219,6 +221,7 @@ private:
             }
 
             m_connected.store(true, std::memory_order_release);
+            IpcLog(domain::LogLevel::Debug, "GUI client connected");
 
             // ---- Client I/O loop -------------------------------------------
             char buffer[65536];
@@ -263,6 +266,7 @@ private:
 
             // Client gone — clean up the pipe instance.
             m_connected.store(false, std::memory_order_release);
+            IpcLog(domain::LogLevel::Debug, "GUI client disconnected");
 
             {
                 std::lock_guard<std::mutex> lock(m_pipeMutex);
@@ -306,6 +310,13 @@ private:
     // ---- Members -----------------------------------------------------------
     HANDLE m_hPipe;                                  // guarded by m_pipeMutex
     std::mutex m_pipeMutex;                          // protects m_hPipe
+    void IpcLog(domain::LogLevel level, const std::string& msg) {
+        if (m_logSink) {
+            m_logSink->Log(level, "pipe", msg);
+        }
+    }
+
+    domain::ports::ILogSink* m_logSink = nullptr;
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};

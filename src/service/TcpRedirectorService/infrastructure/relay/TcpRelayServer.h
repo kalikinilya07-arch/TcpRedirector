@@ -21,6 +21,7 @@
 
 #include "../../domain/ports/IRelayServer.h"
 #include "../../domain/ports/IConnectionTable.h"
+#include "../../domain/ports/IConnectionMonitor.h"
 #include "../../domain/entities/ProxyConfig.h"
 #include "../../infrastructure/auth/auth_sspi.h"
 
@@ -63,6 +64,7 @@ public:
         m_proxyPassword = std::string(config.plain_password.begin(), config.plain_password.end());
     }
 
+    void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }
     void SetLogCallback(RelayLogCallback cb) { m_logCb = std::move(cb); }
     void SetConnCallback(RelayConnCallback cb) { m_connCb = std::move(cb); }
 
@@ -71,13 +73,13 @@ public:
 
         WSADATA wsa;
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-            Log("[RELAY] WSAStartup failed");
+            Log(domain::LogLevel::Error, "WSAStartup failed");
             return false;
         }
 
         m_listenSock = socket(AF_INET, SOCK_STREAM, 0);
         if (m_listenSock == INVALID_SOCKET) {
-            Log("[RELAY] socket() failed: " + std::to_string(WSAGetLastError()));
+            Log(domain::LogLevel::Error, "socket() failed: " + std::to_string(WSAGetLastError()));
             WSACleanup();
             return false;
         }
@@ -93,7 +95,7 @@ public:
         addr.sin_port = htons(m_relayPort);
 
         if (bind(m_listenSock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-            Log("[RELAY] bind(" + std::to_string(m_relayPort) + ") failed: " + std::to_string(WSAGetLastError()));
+            Log(domain::LogLevel::Error, "bind(" + std::to_string(m_relayPort) + ") failed: " + std::to_string(WSAGetLastError()));
             closesocket(m_listenSock);
             m_listenSock = INVALID_SOCKET;
             WSACleanup();
@@ -101,7 +103,7 @@ public:
         }
 
         if (listen(m_listenSock, SOMAXCONN) == SOCKET_ERROR) {
-            Log("[RELAY] listen() failed: " + std::to_string(WSAGetLastError()));
+            Log(domain::LogLevel::Error, "listen() failed: " + std::to_string(WSAGetLastError()));
             closesocket(m_listenSock);
             m_listenSock = INVALID_SOCKET;
             WSACleanup();
@@ -128,7 +130,7 @@ public:
         m_running = true;
         m_acceptThread = std::thread(&TcpRelayServer::AcceptLoop, this);
 
-        Log("[RELAY] Listening on 0.0.0.0:" + std::to_string(m_relayPort));
+        Log(domain::LogLevel::Info, "Listening on 0.0.0.0:" + std::to_string(m_relayPort));
         return true;
     }
 
@@ -151,7 +153,7 @@ public:
             m_acceptThread.join();
 
         WSACleanup();
-        Log("[RELAY] Stopped");
+        Log(domain::LogLevel::Info, "Stopped");
     }
 
     bool IsRunning() const override { return m_running; }
@@ -198,7 +200,7 @@ private:
         uint16_t orig_dest_port = 0;
 
         if (!m_connTable.Get(client_port, &orig_dest_ip, &orig_dest_port)) {
-            Log("[RELAY] No connection record for port " + std::to_string(client_port));
+            Log(domain::LogLevel::Debug, "No connection record for port " + std::to_string(client_port));
             closesocket(client_sock);
             return;
         }
@@ -248,12 +250,12 @@ private:
         delete ctx;
 
         // DEBUG: проверим, какие флаги реально приходят
-        Log("[AUTH-DEBUG] m_proxyAuthRequired=" + std::to_string(m_proxyAuthRequired) +
+        Log(domain::LogLevel::Debug, "m_proxyAuthRequired=" + std::to_string(m_proxyAuthRequired) +
             " m_kerberosAuth=" + std::to_string(m_kerberosAuth));
 
         SOCKET proxy_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (proxy_sock == INVALID_SOCKET) {
-            Log("[RELAY] Failed to create proxy socket");
+            Log(domain::LogLevel::Error, "Failed to create proxy socket");
             closesocket(client_sock);
             return;
         }
@@ -276,7 +278,7 @@ private:
         hints.ai_protocol = IPPROTO_TCP;
         struct addrinfo* result = nullptr;
         if (getaddrinfo(m_proxyHost.c_str(), nullptr, &hints, &result) != 0 || !result) {
-            Log("Failed to resolve proxy: " + m_proxyHost);
+            Log(domain::LogLevel::Error, "Failed to resolve proxy: " + m_proxyHost);
             closesocket(client_sock);
             closesocket(proxy_sock);
             if (result) freeaddrinfo(result);
@@ -291,7 +293,7 @@ private:
         freeaddrinfo(result);
 
         if (connect(proxy_sock, (sockaddr*)&proxy_addr, sizeof(proxy_addr)) != 0) {
-            Log("connect to proxy failed: " + std::to_string(WSAGetLastError()));
+            Log(domain::LogLevel::Error, "connect to proxy failed: " + std::to_string(WSAGetLastError()));
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -324,17 +326,17 @@ private:
         } else if (m_kerberosAuth && sspiAvailable) {
             // Negotiate/Kerberos через SSPI
             if (!sspiInitDone) {
-                Log("[SSPI] Acquiring credentials for " + m_proxyHost + "...");
+                Log(domain::LogLevel::Debug, "Acquiring credentials for " + m_proxyHost + "...");
                 auto r = infrastructure::SspiNegotiate(sspiCtx, "", sspiToken,
                     infrastructure::MakeSpn(m_proxyHost));
                 if (r == infrastructure::SspiResult::NoCredentials) {
-                    Log("[SSPI] Kerberos/NTLM недоступен (SEC_E_NO_CREDENTIALS)");
+                    Log(domain::LogLevel::Warn, "Kerberos/NTLM недоступен (SEC_E_NO_CREDENTIALS)");
                     sspiAvailable = false; // локальный флаг, НЕ классовый
                 } else if (r == infrastructure::SspiResult::Error) {
-                    Log("[SSPI] Ошибка инициализации SSPI");
+                    Log(domain::LogLevel::Warn, "Ошибка инициализации SSPI");
                     sspiAvailable = false;
                 } else {
-                    Log("[SSPI] Token получен: " +
+                    Log(domain::LogLevel::Debug, "Token получен: " +
                         (sspiToken.empty() ? std::string("empty") :
                          std::to_string(sspiToken.size()) + " bytes"));
                 }
@@ -348,7 +350,7 @@ private:
         connect_req += "Proxy-Connection: Keep-Alive\r\n\r\n";
 
         if (send(proxy_sock, connect_req.c_str(), (int)connect_req.length(), 0) == SOCKET_ERROR) {
-            Log("send CONNECT failed");
+            Log(domain::LogLevel::Error, "send CONNECT failed");
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -357,7 +359,7 @@ private:
         char resp_buf[4096];
         int bytes = recv(proxy_sock, resp_buf, sizeof(resp_buf) - 1, 0);
         if (bytes <= 0) {
-            Log("no CONNECT response");
+            Log(domain::LogLevel::Error, "no CONNECT response");
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -369,49 +371,50 @@ private:
             strstr(resp_buf, "200 Connection Established") != nullptr ||
             strstr(resp_buf, "200 OK") != nullptr) {
             // CONNECT успешен — выходим
+            Log(domain::LogLevel::Debug, "CONNECT response: 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
         }
         else if (m_kerberosAuth && sspiAvailable && strstr(resp_buf, "407") != nullptr) {
             // ---- 407 Proxy Auth Required — SSPI-цикл ----
             std::string challenge = infrastructure::Parse407Challenge(resp_buf);
             if (challenge.empty()) {
-                Log("CONNECT failed: 407 без Negotiate challenge");
+                Log(domain::LogLevel::Warn, "CONNECT failed: 407 без Negotiate challenge");
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
-            Log("[SSPI] Got 407 challenge (" + std::to_string(challenge.size()) + " bytes), continuing...");
+            Log(domain::LogLevel::Debug, "Got 407 challenge (" + std::to_string(challenge.size()) + " bytes), continuing...");
             auto r = infrastructure::SspiNegotiate(sspiCtx, challenge, sspiToken,
                 infrastructure::MakeSpn(m_proxyHost));
             if (r == infrastructure::SspiResult::Error) {
-                Log("SSPI error after 407 challenge: " + std::string(resp_buf, 100));
+                Log(domain::LogLevel::Error, "SSPI error after 407 challenge: " + std::string(resp_buf, 100));
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
             if (sspiToken.empty()) {
-                Log("CONNECT failed: SSPI не дал токен после 407");
+                Log(domain::LogLevel::Warn, "CONNECT failed: SSPI не дал токен после 407");
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
             authRetries++;
             if (authRetries > 5) {
-                Log("CONNECT failed: SSPI retry limit exceeded");
+                Log(domain::LogLevel::Warn, "CONNECT failed: SSPI retry limit exceeded");
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
-            Log("[SSPI] Retry CONNECT with new token (attempt " + std::to_string(authRetries) + ")");
+            Log(domain::LogLevel::Debug, "Retry CONNECT with new token (attempt " + std::to_string(authRetries) + ")");
             goto retry_connect;
         }
         else {
-            Log("CONNECT failed: " + std::string(resp_buf, 100));
+            Log(domain::LogLevel::Warn, "CONNECT failed: " + std::string(resp_buf, 100));
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
         }
 
-        Log("[RELAY] " + std::string(ip_str) + ":" +
+        Log(domain::LogLevel::Debug, std::string(ip_str) + ":" +
             std::to_string(dest_port) + " -> " + m_proxyHost + ":" +
             std::to_string(m_proxyPort));
 
@@ -515,8 +518,12 @@ private:
         return out;
     }
 
-    void Log(const std::string& msg) {
-        printf("[%s] %s\n", "RELAY", msg.c_str());
+    void Log(domain::LogLevel level, const std::string& msg) {
+        if (m_logSink) {
+            m_logSink->Log(level, "relay", msg);
+        } else {
+            printf("[%s] %s\n", "RELAY", msg.c_str());
+        }
         if (m_logCb) m_logCb(msg);
     }
 
@@ -536,6 +543,7 @@ private:
     std::thread m_acceptThread;
     std::atomic<bool> m_running{false};
 
+    domain::ports::ILogSink* m_logSink = nullptr;
     RelayLogCallback m_logCb;
     RelayConnCallback m_connCb;
 };

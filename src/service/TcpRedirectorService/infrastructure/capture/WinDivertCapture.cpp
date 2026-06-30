@@ -1,5 +1,6 @@
 #include "WinDivertCapture.h"
 #include <cstdio>
+#include <cstdarg>
 #include <cstring>
 #include <iphlpapi.h>
 #include <tcpmib.h>
@@ -15,23 +16,39 @@
 
 // File logging — пишем в windivert_debug.log
 static FILE* g_wdLogFile = nullptr;
-#define LOG(...) do { \
-    SYSTEMTIME st__; GetLocalTime(&st__); \
-    printf("[%04u-%02u-%02u %02u:%02u:%02u.%03u] ", \
-        st__.wYear, st__.wMonth, st__.wDay, \
-        st__.wHour, st__.wMinute, st__.wSecond, st__.wMilliseconds); \
-    printf(__VA_ARGS__); \
-    if (g_wdLogFile) { \
-        fprintf(g_wdLogFile, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] ", \
-            st__.wYear, st__.wMonth, st__.wDay, \
-            st__.wHour, st__.wMinute, st__.wSecond, st__.wMilliseconds); \
-        fprintf(g_wdLogFile, __VA_ARGS__); \
-        fflush(g_wdLogFile); \
-    } \
-} while(0)
+
+// Log level macros for WinDivert capture logging
+#define WD_ERROR(...) WdLog(domain::LogLevel::Error, __VA_ARGS__)
+#define WD_WARN(...)  WdLog(domain::LogLevel::Warn, __VA_ARGS__)
+#define WD_INFO(...)  WdLog(domain::LogLevel::Info, __VA_ARGS__)
+#define WD_DEBUG(...) WdLog(domain::LogLevel::Debug, __VA_ARGS__)
+#define WD_TRACE(...) WdLog(domain::LogLevel::Trace, __VA_ARGS__)
 
 namespace tcp_redirector {
 namespace infrastructure {
+
+// ---- WdLog: write to debug file + forward to ILogSink ----
+void WinDivertCapture::WdLog(domain::LogLevel level, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char buf[2048];
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    // Always write to debug file
+    if (g_wdLogFile) {
+        SYSTEMTIME st; GetLocalTime(&st);
+        fprintf(g_wdLogFile, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] %s",
+            st.wYear, st.wMonth, st.wDay,
+            st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
+        fflush(g_wdLogFile);
+    }
+
+    // Log through ILogSink if available
+    if (m_logSink) {
+        m_logSink->Log(level, "windivert", std::string(buf));
+    }
+}
 
 // ---- WinDivert API dynamic loading ----
 bool WinDivertCapture::WinDivertApi::Load() {
@@ -81,7 +98,7 @@ WinDivertCapture::~WinDivertCapture() {
 bool WinDivertCapture::Open() {
     if (m_running) return true;
     if (!LoadWinDivertApi()) {
-        LOG("[WinDivert] FAILED to load WinDivert.dll!\n");
+        WD_ERROR("[WinDivert] FAILED to load WinDivert.dll!\n");
         return false;
     }
 
@@ -95,7 +112,7 @@ bool WinDivertCapture::Open() {
         }
         g_wdLogFile = _wfopen(logPath, L"a");
         if (g_wdLogFile) {
-            LOG("[LOG] Debug log opened: %ls\n", logPath);
+            WD_DEBUG("[LOG] Debug log opened: %ls\n", logPath);
         }
     }
 
@@ -105,27 +122,27 @@ bool WinDivertCapture::Open() {
         "(tcp and (outbound or loopback or (tcp.DstPort == %d or tcp.SrcPort == %d)))",
         m_relayPort, m_relayPort);
 
-    LOG("[WinDivert] Opening handle with filter: \"%s\" ...\n", filter);
+    WD_INFO("[WinDivert] Opening handle with filter: \"%s\" ...\n", filter);
     m_handle = m_api.Open(filter, WINDIVERT_LAYER_NETWORK, 0, 0);
 
     if (!m_handle || m_handle == INVALID_HANDLE_VALUE) {
-        LOG("[WinDivert] Failed (err=%lu). Falling back to \"true\"\n", GetLastError());
+        WD_WARN("[WinDivert] Failed (err=%lu). Falling back to \"true\"\n", GetLastError());
         m_handle = m_api.Open("true", WINDIVERT_LAYER_NETWORK, 0, 0);
         if (!m_handle || m_handle == INVALID_HANDLE_VALUE) {
-            LOG("[WinDivert] Failed with \"true\" too (err=%lu).\n", GetLastError());
+            WD_ERROR("[WinDivert] Failed with \"true\" too (err=%lu).\n", GetLastError());
             m_api.Unload();
             return false;
         }
     }
 
-    LOG("[WinDivert] Handle opened: %p\n", (void*)m_handle);
+    WD_INFO("[WinDivert] Handle opened: %p\n", (void*)m_handle);
 
     // Configure queue parameters (H5: check handle validity before use)
     if (m_api.SetParam && m_handle && m_handle != INVALID_HANDLE_VALUE) {
         m_api.SetParam(m_handle, WINDIVERT_PARAM_QUEUE_LENGTH, 16384);
         m_api.SetParam(m_handle, WINDIVERT_PARAM_QUEUE_TIME, 2000);
         m_api.SetParam(m_handle, WINDIVERT_PARAM_QUEUE_SIZE, 33553920);
-        LOG("[WinDivert] Queue configured\n");
+        WD_DEBUG("[WinDivert] Queue configured\n");
     }
 
     // Pre-find target PID if process is already running
@@ -162,7 +179,7 @@ bool WinDivertCapture::IsOpen() const { return m_initialized && m_running; }
 // Шаг 4: Untracked → CheckProcessRule → DIRECT/PROXY/BLOCK
 // =====================================================================
 void WinDivertCapture::CaptureLoop() {
-    LOG("[WD] CaptureLoop started (relayPort=%u, proxy=%s:%u)\n",
+    WD_INFO("[WD] CaptureLoop started (relayPort=%u, proxy=%s:%u)\n",
         m_relayPort, m_proxyHost.c_str(), m_proxyPort);
 
     uint8_t* packet = (uint8_t*)malloc(0xFFFF);
@@ -171,7 +188,7 @@ void WinDivertCapture::CaptureLoop() {
     uint64_t pktCount = 0;
 
     if (!packet) {
-        LOG("[WD] FATAL: malloc failed\n");
+        WD_ERROR("[WD] FATAL: malloc failed\n");
         return;
     }
 
@@ -179,7 +196,7 @@ void WinDivertCapture::CaptureLoop() {
         if (!m_api.Recv(m_handle, (PVOID)packet, 0xFFFF, &recvLen, &addr)) {
             DWORD err = GetLastError();
             if (err == ERROR_NO_MORE_ITEMS) {
-                LOG("[WD] ERROR_NO_MORE_ITEMS\n");
+                WD_ERROR("[WD] ERROR_NO_MORE_ITEMS\n");
                 break;
             }
             Sleep(10);
@@ -242,7 +259,7 @@ void WinDivertCapture::CaptureLoop() {
                     // Log connection summary
                     domain::ports::ConnectionInfo info;
                     if (m_connTable->GetInfo(dstPort, &info)) {
-                        LOG("[PROXIED] %ls (srcPort=%u) closed: up=%llu down=%llu total=%llu\n",
+                        WD_DEBUG("[PROXIED] %ls (srcPort=%u) closed: up=%llu down=%llu total=%llu\n",
                             ShortName(info.proc_path), dstPort,
                             info.bytes_up, info.bytes_down,
                             info.bytes_up + info.bytes_down);
@@ -263,7 +280,7 @@ void WinDivertCapture::CaptureLoop() {
                 // Log connection summary
                 domain::ports::ConnectionInfo info;
                 if (m_connTable->GetInfo(srcPort, &info)) {
-                    LOG("[PROXIED] %ls (srcPort=%u) closed: up=%llu down=%llu total=%llu\n",
+                    WD_DEBUG("[PROXIED] %ls (srcPort=%u) closed: up=%llu down=%llu total=%llu\n",
                         ShortName(info.proc_path), srcPort,
                         info.bytes_up, info.bytes_down,
                         info.bytes_up + info.bytes_down);
@@ -295,7 +312,7 @@ void WinDivertCapture::CaptureLoop() {
                 m_api.Send(m_handle, (PVOID)packet, recvLen, nullptr, &addr);
                 const wchar_t* name = procPath[0] ? ShortName(procPath) : nullptr;
                 if (name) {
-                    LOG("[MISSED] %ls srcPort=%u\n", name, srcPort);
+                    WD_TRACE("[MISSED] %ls srcPort=%u\n", name, srcPort);
                 }
                 continue;
             }
@@ -323,7 +340,7 @@ void WinDivertCapture::CaptureLoop() {
                 snprintf(dstIP, sizeof(dstIP), "%u.%u.%u.%u",
                     (origDestIp >> 0) & 0xFF, (origDestIp >> 8) & 0xFF,
                     (origDestIp >> 16) & 0xFF, (origDestIp >> 24) & 0xFF);
-                LOG("[PROXIED] %ls srcPort=%u %s:%u bytes=%u to %s:%u\n",
+                WD_TRACE("[PROXIED] %ls srcPort=%u %s:%u bytes=%u to %s:%u\n",
                     ShortName(procPath), srcPort, dstIP, origDestPort, recvLen,
                     m_proxyHost.c_str(), m_proxyPort);
             }
@@ -337,13 +354,13 @@ void WinDivertCapture::CaptureLoop() {
         }
         if (!m_api.Send(m_handle, (PVOID)packet, recvLen, nullptr, &addr)) {
             if (pktCount % 1000 == 0) {
-                LOG("[WD] SEND FAIL #%llu err=%lu\n", pktCount, GetLastError());
+                WD_WARN("[WD] SEND FAIL #%llu err=%lu\n", pktCount, GetLastError());
             }
         }
     }
 
     free(packet);
-    LOG("[WD] Capture loop ended (%llu packets, %llu redirected)\n",
+    WD_INFO("[WD] Capture loop ended (%llu packets, %llu redirected)\n",
         pktCount, m_redirects_emitted.load());
 }
 

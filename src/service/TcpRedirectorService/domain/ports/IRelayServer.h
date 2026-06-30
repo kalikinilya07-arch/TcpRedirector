@@ -14,6 +14,7 @@
 #include <functional>
 #include <cstdint>
 #include "../entities/ProxyConfig.h"
+#include "IConnectionMonitor.h"
 
 namespace tcp_redirector {
 namespace domain {
@@ -47,6 +48,7 @@ public:
      * @brief Установить коллбэк для логирования.
      * @param cb Функция обратного вызова для сообщений лога.
      */
+    virtual void SetLogSink(ILogSink* sink) = 0;
     virtual void SetLogCallback(RelayLogCallback cb) = 0;
 
     /**

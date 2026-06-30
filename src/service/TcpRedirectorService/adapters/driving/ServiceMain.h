@@ -111,6 +111,7 @@ public:
         uint16_t relayPort = 34010;
         m_relayServer = std::make_unique<infrastructure::TcpRelayServer>(*m_connTable, relayPort);
         m_relayServer->SetProxyConfig(proxyCfg, 1);
+        m_relayServer->SetLogSink(m_logger.get());
         m_relayServer->SetLogCallback([this](const std::string& msg) {
             m_logger->Debug("relay", msg);
         });
@@ -136,6 +137,7 @@ public:
             std::wstring exeName = appCfg.GetExeName();
             std::string exeNameUtf8(exeName.begin(), exeName.end());
             m_logger->Info("service", "Target process: " + exeNameUtf8);
+            capture->SetLogSink(m_logger.get());
             m_capture = std::move(capture);
         }
 
