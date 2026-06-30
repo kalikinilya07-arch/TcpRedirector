@@ -200,23 +200,30 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                 Arguments = "--console",
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                // Redirect stderr only for diagnostics; stdout goes to the console/void
-                // (redirecting stdout without reading it fills the pipe buffer and hangs the backend)
-                RedirectStandardOutput = false,
+                // Redirect both stdout and stderr for diagnostics;
+                // stdout is read and discarded to prevent pipe buffer from filling.
+                RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
                 WorkingDirectory = Path.GetDirectoryName(exePath)
             };
 
             _backendProcess = new Process { StartInfo = psi };
-            // Capture stderr asynchronously for diagnostics
-            var stderrBuilder = new System.Text.StringBuilder();
+            // Capture both stdout and stderr asynchronously for diagnostics
+            var outBuilder = new System.Text.StringBuilder();
+            var errBuilder = new System.Text.StringBuilder();
+            _backendProcess.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    lock (outBuilder) outBuilder.AppendLine(e.Data);
+            };
             _backendProcess.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data != null)
-                    lock (stderrBuilder) stderrBuilder.AppendLine(e.Data);
+                    lock (errBuilder) errBuilder.AppendLine(e.Data);
             };
             _backendProcess.Start();
+            _backendProcess.BeginOutputReadLine();
             _backendProcess.BeginErrorReadLine();
 
             // 4. Wait for the pipe to become available (max 10 seconds)
@@ -240,9 +247,15 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                 }
             }
 
-            // Timed out — read stderr for diagnosis
+            // Timed out — read stdout + stderr for diagnosis
             string diag;
-            lock (stderrBuilder) diag = stderrBuilder.ToString();
+            lock (errBuilder) diag = errBuilder.ToString();
+            lock (outBuilder)
+            {
+                var outText = outBuilder.ToString();
+                if (!string.IsNullOrWhiteSpace(outText))
+                    diag = (string.IsNullOrWhiteSpace(diag) ? "" : diag + "\n") + outText.TrimEnd();
+            }
             if (!string.IsNullOrWhiteSpace(diag))
             {
                 SvcMsg = diag.TrimEnd();
