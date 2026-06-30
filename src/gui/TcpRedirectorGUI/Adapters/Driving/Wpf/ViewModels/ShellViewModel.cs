@@ -200,9 +200,12 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                 Arguments = "--console",
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                RedirectStandardOutput = true,
+                // Redirect stderr only for diagnostics; stdout goes to the console/void
+                // (redirecting stdout without reading it fills the pipe buffer and hangs the backend)
+                RedirectStandardOutput = false,
                 RedirectStandardError = true,
-                WindowStyle = ProcessWindowStyle.Hidden
+                WindowStyle = ProcessWindowStyle.Hidden,
+                WorkingDirectory = Path.GetDirectoryName(exePath)
             };
 
             _backendProcess = new Process { StartInfo = psi };
