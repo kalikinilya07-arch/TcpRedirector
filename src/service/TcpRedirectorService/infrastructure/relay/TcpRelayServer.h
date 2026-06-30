@@ -58,6 +58,9 @@ public:
         m_proxyAuthRequired = config.auth_required;
         m_kerberosAuth = config.kerberos_auth;
         m_proxyConfigId = config_id;
+        // H1: store decrypted password from ConfigManager
+        m_proxyUser = std::string(config.login.begin(), config.login.end());
+        m_proxyPassword = std::string(config.plain_password.begin(), config.plain_password.end());
     }
 
     void SetLogCallback(RelayLogCallback cb) { m_logCb = std::move(cb); }
@@ -315,7 +318,8 @@ private:
 
         if (m_proxyAuthRequired && !m_kerberosAuth) {
             // Basic Auth (оригинальное поведение — без изменений)
-            std::string basic = m_proxyUser + ":proxy_pass";
+            // H1: use configured password instead of hardcoded ":proxy_pass"
+            std::string basic = m_proxyUser + ":" + m_proxyPassword;
             connect_req += "Proxy-Authorization: Basic " + Base64Encode(basic) + "\r\n";
         } else if (m_kerberosAuth && sspiAvailable) {
             // Negotiate/Kerberos через SSPI
@@ -360,7 +364,10 @@ private:
         }
         resp_buf[bytes] = '\0';
 
-        if (strstr(resp_buf, "200") != nullptr) {
+        // M2: check full "200 Connection established" phrase, not bare "200"
+        if (strstr(resp_buf, "200 Connection established") != nullptr ||
+            strstr(resp_buf, "200 Connection Established") != nullptr ||
+            strstr(resp_buf, "200 OK") != nullptr) {
             // CONNECT успешен — выходим
         }
         else if (m_kerberosAuth && sspiAvailable && strstr(resp_buf, "407") != nullptr) {
@@ -522,6 +529,7 @@ private:
     bool m_proxyAuthRequired = false;
     bool m_kerberosAuth = false;
     std::string m_proxyUser;
+    std::string m_proxyPassword;
 
     SOCKET m_listenSock;
     SOCKET m_listenSock6;

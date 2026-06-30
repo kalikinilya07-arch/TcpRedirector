@@ -29,7 +29,6 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _authRequired;
 
     // ── Auth ─────────────────────────────────────────
-    [ObservableProperty] private bool _authEnabled = true;
     [ObservableProperty] private string _login = "";
     [ObservableProperty] private string _password = "";
     [ObservableProperty] private bool _kerberosEnabled;
@@ -51,7 +50,6 @@ public partial class SettingsViewModel : ObservableObject
         var portStr = _config.ReadString("proxy", "port", "3128");
         Port = int.TryParse(portStr, out var p) ? p : 3128;
         AuthRequired = _config.ReadBool("auth", "enabled");
-        AuthEnabled = _config.ReadBool("auth", "kerberos");
         KerberosEnabled = _config.ReadBool("auth", "kerberos");
         Login = _config.ReadString("auth", "username");
         Password = "";
@@ -133,7 +131,6 @@ public partial class SettingsViewModel : ObservableObject
                         AuthRequired = AuthRequired,
                         Login = Login,
                         Password = currentPwd,
-                        AuthEnabled = AuthEnabled,
                         KerberosEnabled = KerberosEnabled
                     });
                 }
@@ -151,7 +148,6 @@ public partial class SettingsViewModel : ObservableObject
                     Port = Port,
                     AuthRequired = AuthRequired,
                     Login = Login,
-                    AuthEnabled = AuthEnabled,
                     KerberosEnabled = KerberosEnabled
                 },
                 exePath ?? "",

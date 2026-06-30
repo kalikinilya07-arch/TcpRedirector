@@ -50,17 +50,16 @@ public:
             m_logger->Warn("service", "No config found, using defaults");
         }
 
-        // Proxy config from ConfigManager
-        domain::ProxyConfig proxyCfg;
+        // Proxy config from ConfigManager — uses GetProxyConfig() to get decrypted password
+        domain::ProxyConfig proxyCfg = m_configManager->GetProxyConfig();
         {
             auto cfg = m_configManager->GetConfig();
-            proxyCfg.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
-            proxyCfg.port = cfg.proxy.port;
-            proxyCfg.auth_required = cfg.auth.enabled;
-            proxyCfg.kerberos_auth = cfg.auth.kerberos;
-            if (cfg.auth.enabled) {
+            if (proxyCfg.host.empty()) {
+                proxyCfg.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
+                proxyCfg.port = cfg.proxy.port;
+                proxyCfg.auth_required = cfg.auth.enabled;
+                proxyCfg.kerberos_auth = cfg.auth.kerberos;
                 proxyCfg.login = std::wstring(cfg.auth.username.begin(), cfg.auth.username.end());
-                proxyCfg.has_password = !cfg.auth.encryptedPassword.empty();
             }
             m_configManager->UpdateConfigNoSave(cfg);
             m_logger->Info("service", "Proxy set from config: " + cfg.proxy.host + ":" + std::to_string(cfg.proxy.port));

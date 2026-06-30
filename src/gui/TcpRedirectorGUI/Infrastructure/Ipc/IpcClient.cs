@@ -78,7 +78,6 @@ public class IpcClient : ITcpRedirectorService, IDisposable
 
         // Backend IPC doesn't return login/auth fields — read from config.json
         cfg.Login = _config.ReadString("auth", "username");
-        cfg.AuthEnabled = _config.ReadBool("auth", "enabled", true);
         cfg.KerberosEnabled = _config.ReadBool("auth", "kerberos");
         return cfg;
     }
@@ -93,7 +92,6 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             login = config.Login,
             set_password = !string.IsNullOrEmpty(config.Password),
             password = config.Password,
-            auth_enabled = config.AuthEnabled,
             kerberos = config.KerberosEnabled,
             auth_username = config.Login
         });

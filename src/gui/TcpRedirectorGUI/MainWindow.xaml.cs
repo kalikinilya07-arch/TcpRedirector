@@ -64,3 +64,17 @@ public class BoolToColorConverter : IValueConverter
     public object ConvertBack(object value, Type t, object p, CultureInfo c)
         => throw new NotImplementedException();
 }
+
+/// <summary>
+/// Converts bool to Visibility. true=Visible, false=Collapsed.
+/// </summary>
+public class BoolToVisConverter : IValueConverter
+{
+    public object Convert(object value, Type t, object p, CultureInfo c)
+    {
+        return (value is bool b && b) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type t, object p, CultureInfo c)
+        => throw new NotImplementedException();
+}

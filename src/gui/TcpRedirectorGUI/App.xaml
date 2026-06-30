@@ -6,6 +6,7 @@
         <ResourceDictionary>
             <local:ViewToVisConverter x:Key="ViewToVis" />
             <local:BoolToColorConverter x:Key="BoolToColor" />
+            <local:BoolToVisConverter x:Key="BoolToVis" />
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Adapters/Driving/Wpf/Styles/AppTheme.xaml" />
             </ResourceDictionary.MergedDictionaries>
