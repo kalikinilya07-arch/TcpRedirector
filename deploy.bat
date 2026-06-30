@@ -164,7 +164,7 @@ echo :: Try to install WinDivert driver first (required for capture^)
 echo sc start WinDivert ^>nul 2^>^&1
 echo if errorlevel 1 ^(
 echo     echo [INFO] Installing WinDivert driver...
-echo     sc create WinDivirt binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
+echo     sc create WinDivert binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
 echo     sc start WinDivert ^>nul 2^>^&1
 echo     if errorlevel 1 echo [WARN] Could not install WinDivert driver. Trying auto-load...
 echo ^)

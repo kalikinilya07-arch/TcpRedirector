@@ -5,7 +5,7 @@ title TcpRedirector (console)
 sc start WinDivert >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Installing WinDivert driver...
-    sc create WinDivirt binPath="%~dp0WinDivert64.sys" type=kernel start=demand >nul 2>&1
+    sc create WinDivert binPath="%~dp0WinDivert64.sys" type=kernel start=demand >nul 2>&1
     sc start WinDivert >nul 2>&1
     if errorlevel 1 echo [WARN] Could not install WinDivert driver. Trying auto-load...
 )
