@@ -44,12 +44,12 @@ RuleEngineTest.exe 2>&1
 if errorlevel 1 echo [FAIL] Tests failed! & pause & exit /b 1
 echo [PASS]
 
-:: Step 2: GUI
-echo [2/3] Building GUI...
+:: Step 2: GUI — self-contained publish (no .NET runtime required on target)
+echo [2/3] Building GUI (self-contained, ~70 MB)...
 cd /d "%ROOT%\src\gui\TcpRedirectorGUI"
-dotnet build TcpRedirectorGUI.csproj -c Release --nologo 2>&1
+if exist "%ROOT%\build\gui" rmdir /S /Q "%ROOT%\build\gui" >nul 2>&1
+dotnet publish TcpRedirectorGUI.csproj -c Release --self-contained true -r win-x64 --nologo -o "%ROOT%\build\gui\" 2>&1
 if errorlevel 1 echo [FAIL] & pause & exit /b 1
-xcopy /Y /I "bin\Release\net10.0-windows\*" "%ROOT%\build\gui\" >nul 2>&1
 echo [OK]
 
 :: Step 3: Service
