@@ -117,6 +117,27 @@ echo echo Service installed and started.
 echo pause
 ) > "%DEPLOY_DIR%\install_service.bat"
 
+:: Create WinDivert install helper
+(
+echo @echo off
+echo title Install WinDivert Driver
+echo.
+echo :: Must run as Administrator
+echo openfiles ^>nul 2^>^&1 ^|^| ^(echo This script must be run as Administrator! ^& pause ^& exit /b 1^)
+echo.
+echo :: Install WinDivert driver as a kernel service
+echo sc create WinDivirt binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
+echo sc start WinDivert ^>nul 2^>^&1
+echo if errorlevel 1 ^(
+echo     echo [WARN] Failed to install WinDivert driver. Trying API-PPA method...
+echo     echo The service will attempt to auto-load WinDivert64.sys from its directory.
+echo ^) else ^(
+echo     echo [OK] WinDivert driver installed successfully
+echo ^)
+echo.
+echo pause
+) > "%DEPLOY_DIR%\install_windivert.bat"
+
 :: Create uninstall script
 echo [6] Creating uninstall_service.bat...
 (
@@ -138,6 +159,15 @@ echo [7] Creating run_console.bat...
 (
 echo @echo off
 echo title TcpRedirector ^(console^)
+echo.
+echo :: Try to install WinDivert driver first (required for capture^)
+echo sc start WinDivert ^>nul 2^>^&1
+echo if errorlevel 1 ^(
+echo     echo [INFO] Installing WinDivert driver...
+echo     sc create WinDivirt binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
+echo     sc start WinDivert ^>nul 2^>^&1
+echo     if errorlevel 1 echo [WARN] Could not install WinDivert driver. Trying auto-load...
+echo ^)
 echo.
 echo "%%~dp0TcpRedirectorService.exe" --console
 echo pause
