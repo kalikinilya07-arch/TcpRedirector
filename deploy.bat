@@ -2,6 +2,7 @@
 title TcpRedirector — Deploy
 cd /d "%~dp0"
 
+set PROJECT_DIR=%~dp0
 set DEPLOY_DIR=.\deploy
 set BUILD_DIR=.\build
 
