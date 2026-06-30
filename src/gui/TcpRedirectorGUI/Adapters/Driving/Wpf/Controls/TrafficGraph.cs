@@ -45,11 +45,24 @@ public class TrafficGraph : FrameworkElement
             oldColl.CollectionChanged -= ctrl.OnCollectionChanged;
         if (e.NewValue is INotifyCollectionChanged newColl)
             newColl.CollectionChanged += ctrl.OnCollectionChanged;
+        // Force an initial render pass
+        ctrl.InvalidateVisual();
     }
 
     private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Ensure the element gets non-zero layout space.
+    /// </summary>
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        // If parent provides infinite size, use a minimum
+        var w = double.IsFinite(availableSize.Width) ? availableSize.Width : 200;
+        var h = double.IsFinite(availableSize.Height) ? availableSize.Height : 100;
+        return new Size(w, h);
     }
 
     // ── Drawing ───────────────────────────────────────

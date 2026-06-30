@@ -338,6 +338,14 @@
                                 <ComboBoxItem Content="WARN+"/>
                                 <ComboBoxItem Content="ERROR+"/>
                             </ComboBox>
+                            <Button Content="Save"
+                                    Command="{Binding Stats.SaveLogLevelCommand}"
+                                    Padding="12,4" Margin="8,0,0,0"
+                                    FontSize="12"/>
+                            <TextBlock Text="{Binding Stats.Msg, Mode=OneWay}"
+                                       Foreground="#4EC9B0" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       Margin="8,0,0,0"/>
                         </StackPanel>
                     </Grid>
 

@@ -57,6 +57,19 @@ public sealed class JsonConfigRepository : IConfigRepository
         return int.TryParse(s, out var p) ? p : defaultValue;
     }
 
+    public int ReadInt(string section, string key, int defaultValue = 0)
+    {
+        try
+        {
+            var j = Load();
+            return j[section]?[key]?.GetValue<int>() ?? defaultValue;
+        }
+        catch
+        {
+            return defaultValue;
+        }
+    }
+
     public List<Rule> ReadRules()
     {
         try
@@ -96,6 +109,9 @@ public sealed class JsonConfigRepository : IConfigRepository
     {
         try
         {
+            // Preserve existing log level from current config
+            var logLevel = ReadInt("log", "level", 2);
+
             var j = new JsonObject
             {
                 ["app"] = new JsonObject { ["exePath"] = exePath },
@@ -113,7 +129,7 @@ public sealed class JsonConfigRepository : IConfigRepository
                 },
                 ["log"] = new JsonObject
                 {
-                    ["level"] = 2,
+                    ["level"] = logLevel,
                     ["fileEnabled"] = true,
                     ["maxSizeMB"] = 10
                 },
@@ -160,6 +176,22 @@ public sealed class JsonConfigRepository : IConfigRepository
         catch
         {
             // File I/O errors are non-fatal; caller handles silently
+        }
+    }
+
+    public void WriteInt(string section, string key, int value)
+    {
+        try
+        {
+            var j = Load();
+            if (j[section] is null)
+                j[section] = new JsonObject();
+            j[section]![key] = value;
+            Save(j);
+        }
+        catch
+        {
+            // File I/O errors are non-fatal
         }
     }
 

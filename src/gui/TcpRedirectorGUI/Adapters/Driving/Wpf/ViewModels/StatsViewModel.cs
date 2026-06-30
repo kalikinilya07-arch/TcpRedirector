@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using TcpRedirectorGUI.Adapters.Driving.Wpf.Controls;
 using TcpRedirectorGUI.Domain.Entities;
 using TcpRedirectorGUI.Domain.Ports;
@@ -9,12 +10,40 @@ namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 public partial class StatsViewModel : ObservableObject
 {
     private readonly ITcpRedirectorService _svc;
+    private readonly IConfigRepository _config;
     private const int MaxLogEntries = 500;
     private const int MaxGraphPoints = 60; // 60 seconds @ 1 point/sec
 
-    public StatsViewModel(ITcpRedirectorService svc)
+    public StatsViewModel(ITcpRedirectorService svc, IConfigRepository config)
     {
         _svc = svc;
+        _config = config;
+
+        // Load saved log level from config.json
+        LogLevelFilter = _config.ReadInt("log", "level", 2);
+    }
+
+    [ObservableProperty]
+    private string _msg = "";
+
+    [RelayCommand]
+    private async Task SaveLogLevelAsync()
+    {
+        _config.WriteInt("log", "level", LogLevelFilter);
+        try
+        {
+            if (_svc.IsConnected)
+                await _svc.SetLogLevelAsync(LogLevelFilter);
+        }
+        catch { }
+        Msg = "✓ Saved";
+        _ = ClearMsgAfterDelay();
+    }
+
+    private async Task ClearMsgAfterDelay()
+    {
+        await Task.Delay(3000);
+        Msg = "";
     }
 
     // ── Logs ─────────────────────────────────────────
@@ -39,6 +68,9 @@ public partial class StatsViewModel : ObservableObject
             _ => "INFO+"
         };
 
+        // Persist to config.json
+        _config.WriteInt("log", "level", value);
+
         // Auto-apply log level to backend service when connected
         try
         {
@@ -49,7 +81,7 @@ public partial class StatsViewModel : ObservableObject
         }
         catch
         {
-            // IPC not available yet — level will apply on next save
+            // IPC not available yet — level will apply on next IPC call
         }
     }
 
