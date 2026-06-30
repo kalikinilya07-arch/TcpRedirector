@@ -62,6 +62,13 @@ echo [OK]
 
 copy /Y "build\service\x64\Release\*.exe" "%ROOT%\build\" >nul 2>&1
 
+:: Copy WinDivert.dll to build directory so LoadLibrary finds it
+if exist "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" (
+    copy /Y "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
+) else if exist "%ROOT%\deploy\WinDivert.dll" (
+    copy /Y "%ROOT%\deploy\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
+)
+
 echo.
 echo ========================================
 echo  Build complete!
