@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -39,9 +38,6 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         // Load config from disk synchronously (blocking in ctor is OK — tiny file)
         Settings.LoadFromConfig();
         StatusText = "Configured";
-
-        // Auto-start backend and connect
-        _ = AutoStartAndConnectAsync();
     }
 
     // ── Navigation ───────────────────────────────────
@@ -277,13 +273,15 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     private static string? FindBackendExe()
     {
-        // Look next to GUI executable first
         var guiDir = AppDomain.CurrentDomain.BaseDirectory;
+        // Build directory takes priority
+        var buildDir = Path.GetFullPath(Path.Combine(guiDir, "..", "..", "build"));
         var candidates = new[]
         {
-            Path.Combine(guiDir, "TcpRedirectorService.exe"),
-            Path.Combine(guiDir, "..", "TcpRedirectorService.exe"),
-            Path.Combine(guiDir, "..", "..", "TcpRedirectorService.exe"),
+            Path.Combine(buildDir, "TcpRedirectorService.exe"),      // build\ first
+            Path.Combine(guiDir, "TcpRedirectorService.exe"),         // deploy\gui\
+            Path.Combine(guiDir, "..", "TcpRedirectorService.exe"),   // deploy\
+            Path.Combine(guiDir, "..", "..", "TcpRedirectorService.exe"), // project root
         };
 
         foreach (var c in candidates)
@@ -332,10 +330,6 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                 var status = await _svc.GetServiceStatusAsync();
                 if (status is not null)
                     SvcStatus = status.Running ? "Running" : "Stopped";
-
-                var logs = await _svc.GetLogsAsync();
-                if (logs.Count > 0)
-                    Stats.PushLogs(logs);
             }
             catch (OperationCanceledException)
             {

@@ -37,6 +37,60 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private ObservableCollection<Rule> _rules = [];
     [ObservableProperty] private Rule? _selectedRule;
 
+    // ── Log Level ────────────────────────────────────
+    [ObservableProperty] private int _logLevelFilter = 2; // 0=TRACE..4=ERROR
+    [ObservableProperty] private string _logFilterLabel = "INFO+";
+    [ObservableProperty] private string _logMsg = "";
+
+    partial void OnLogLevelFilterChanged(int value)
+    {
+        LogFilterLabel = value switch
+        {
+            0 => "TRACE+",
+            1 => "DEBUG+",
+            2 => "INFO+",
+            3 => "WARN+",
+            4 => "ERROR+",
+            _ => "INFO+"
+        };
+
+        // Persist to config.json
+        _config.WriteInt("log", "level", value);
+
+        // Auto-apply log level to backend service when connected
+        try
+        {
+            if (_svc is { IsConnected: true })
+            {
+                _ = _svc.SetLogLevelAsync(value);
+            }
+        }
+        catch
+        {
+            // IPC not available yet — level will apply on next IPC call
+        }
+    }
+
+    [RelayCommand]
+    private async Task SaveLogLevelAsync()
+    {
+        _config.WriteInt("log", "level", LogLevelFilter);
+        try
+        {
+            if (_svc is { IsConnected: true })
+                await _svc.SetLogLevelAsync(LogLevelFilter);
+        }
+        catch { }
+        LogMsg = "✓ Saved";
+        _ = ClearLogMsgAfterDelay();
+    }
+
+    private async Task ClearLogMsgAfterDelay()
+    {
+        await Task.Delay(3000);
+        LogMsg = "";
+    }
+
     // ── Status ───────────────────────────────────────
     [ObservableProperty] private string _msg = "";
 
@@ -53,6 +107,9 @@ public partial class SettingsViewModel : ObservableObject
         KerberosEnabled = _config.ReadBool("auth", "kerberos");
         Login = _config.ReadString("auth", "username");
         Password = "";
+
+        // Load log level from config
+        LogLevelFilter = _config.ReadInt("log", "level", 2);
 
         var fileRules = _config.ReadRules();
         Rules.Clear();
