@@ -27,7 +27,7 @@ static FILE* g_wdLogFile = nullptr;
 namespace tcp_redirector {
 namespace infrastructure {
 
-// ---- WdLog: write to debug file + forward to ILogSink ----
+// ---- WdLog: write to console, debug file + forward to ILogSink ----
 void WinDivertCapture::WdLog(domain::LogLevel level, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -35,9 +35,15 @@ void WinDivertCapture::WdLog(domain::LogLevel level, const char* fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
+    // Always write to console (--console mode needs this)
+    SYSTEMTIME st; GetLocalTime(&st);
+    fprintf(stdout, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] %s",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
+    fflush(stdout);
+
     // Always write to debug file
     if (g_wdLogFile) {
-        SYSTEMTIME st; GetLocalTime(&st);
         fprintf(g_wdLogFile, "[%04u-%02u-%02u %02u:%02u:%02u.%03u] %s",
             st.wYear, st.wMonth, st.wDay,
             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);

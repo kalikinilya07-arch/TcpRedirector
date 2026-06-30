@@ -168,16 +168,21 @@ echo     powershell -Command "Start-Process '%%~f0' -Verb RunAs"
 echo     exit /b
 echo ^)
 echo.
-echo :: Ensure WinDivert driver is installed
+echo :: Ensure WinDivert driver is installed AND running
 echo echo [INFO] Checking WinDivert driver...
-echo sc query WinDivert ^>nul 2^>^&1
+echo sc query WinDivert ^| find "RUNNING" ^>nul 2^>^&1
 echo if errorlevel 1 ^(
-echo     echo [INFO] Installing WinDivert driver...
+echo     echo [INFO] Installing/starting WinDivert driver...
 echo     sc create WinDivert binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
 echo     sc start WinDivert ^>nul 2^>^&1
+echo     sc query WinDivert ^| find "RUNNING" ^>nul 2^>^&1
 echo     if errorlevel 1 ^(
-echo         echo [WARN] sc install failed. Trying auto-load via API-PPA...
+echo         echo [WARN] Could not start WinDivert. Trying auto-load via API-PPA...
+echo     ^) else ^(
+echo         echo [OK] WinDivert driver is RUNNING
 echo     ^)
+echo ^) else ^(
+echo     echo [OK] WinDivert driver is RUNNING
 echo ^)
 echo.
 echo "%%~dp0TcpRedirectorService.exe" --console
