@@ -51,14 +51,24 @@ if exist "%BUILD_DIR%\gui" (
 
 :: Copy WinDivert (required for capture)
 echo [3] Copying WinDivert (required)...
+set "WD64_SRC=%PROJECT_DIR%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll"
+set "WD64_SYS_SRC=%PROJECT_DIR%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert64.sys"
 if exist "%BUILD_DIR%\WinDivert.dll" (
     copy /Y "%BUILD_DIR%\WinDivert.dll" "%DEPLOY_DIR%\" >nul 2>&1
+) else if exist "%WD64_SRC%" (
+    copy /Y "%WD64_SRC%" "%DEPLOY_DIR%\" >nul 2>&1
+    echo     [OK] from external\WinDivert
 ) else (
-    echo     [INFO] Place WinDivert.dll and WinDivert64.sys in %DEPLOY_DIR%\
-    echo     Download from: https://github.com/nickhutchinson/libdivert/releases
+    echo     [WARN] WinDivert.dll not found! Place in %DEPLOY_DIR%\
+    echo     Download: https://github.com/nickhutchinson/libdivert/releases
 )
 if exist "%BUILD_DIR%\WinDivert64.sys" (
     copy /Y "%BUILD_DIR%\WinDivert64.sys" "%DEPLOY_DIR%\" >nul 2>&1
+) else if exist "%WD64_SYS_SRC%" (
+    copy /Y "%WD64_SYS_SRC%" "%DEPLOY_DIR%\" >nul 2>&1
+)
+if exist "%DEPLOY_DIR%\WinDivert.dll" (
+    echo     [OK] WinDivert.dll ready
 )
 
 :: Create default config.json
