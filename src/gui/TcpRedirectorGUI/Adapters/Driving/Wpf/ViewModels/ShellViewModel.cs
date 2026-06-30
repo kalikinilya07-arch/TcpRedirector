@@ -305,7 +305,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         {
             try
             {
-                await Task.Delay(2000, ct);
+                await Task.Delay(1000, ct);
                 if (!_svc.IsConnected) continue;
 
                 var stats = await _svc.GetStatsAsync();
@@ -328,9 +328,10 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
-                // Transient IPC errors — retry on next poll
+                // Show IPC errors in status bar for diagnostics
+                SvcMsg = $"IPC err: {ex.GetType().Name}";
             }
         }
     }

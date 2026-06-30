@@ -42,6 +42,8 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             _pipe = new NamedPipeClientStream(".", "TcpRedirectorService",
                 PipeDirection.InOut, PipeOptions.Asynchronous);
             await _pipe.ConnectAsync(2000);
+            // Must match server's PIPE_READMODE_MESSAGE
+            _pipe.ReadMode = System.IO.Pipes.PipeTransmissionMode.Message;
             ConnectionStateChanged?.Invoke(true);
         }
         catch
