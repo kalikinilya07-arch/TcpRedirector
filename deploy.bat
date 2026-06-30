@@ -160,13 +160,24 @@ echo [7] Creating run_console.bat...
 echo @echo off
 echo title TcpRedirector ^(console^)
 echo.
-echo :: Try to install WinDivert driver first (required for capture^)
-echo sc start WinDivert ^>nul 2^>^&1
+echo :: Auto-elevate if not running as Administrator
+echo net session ^>nul 2^>^&1
+echo if errorlevel 1 ^(
+echo     echo [INFO] Restarting with Administrator privileges...
+echo     powershell -Command "Start-Process '%%~f0' -Verb RunAs"
+echo     exit /b
+echo ^)
+echo.
+echo :: Ensure WinDivert driver is installed
+echo echo [INFO] Checking WinDivert driver...
+echo sc query WinDivert ^>nul 2^>^&1
 echo if errorlevel 1 ^(
 echo     echo [INFO] Installing WinDivert driver...
 echo     sc create WinDivert binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
 echo     sc start WinDivert ^>nul 2^>^&1
-echo     if errorlevel 1 echo [WARN] Could not install WinDivert driver. Trying auto-load...
+echo     if errorlevel 1 ^(
+echo         echo [WARN] sc install failed. Trying auto-load via API-PPA...
+echo     ^)
 echo ^)
 echo.
 echo "%%~dp0TcpRedirectorService.exe" --console
