@@ -28,7 +28,25 @@ if exist "%BUILD_DIR%\TcpRedirectorService.exe" (
 echo [2] Copying GUI...
 if exist "%BUILD_DIR%\gui" (
     xcopy /Y /E /I "%BUILD_DIR%\gui\*" "%DEPLOY_DIR%\gui\" >nul 2>&1
-    echo     OK
+
+    :: Remove unnecessary files from self-contained publish
+    :: 1. Debug symbols
+    if exist "%DEPLOY_DIR%\gui\*.pdb" del /Q "%DEPLOY_DIR%\gui\*.pdb"
+    :: 2. Debug/ETW DLLs
+    if exist "%DEPLOY_DIR%\gui\clretwrc.dll" del "%DEPLOY_DIR%\gui\clretwrc.dll"
+    if exist "%DEPLOY_DIR%\gui\mscordaccore.dll" del "%DEPLOY_DIR%\gui\mscordaccore.dll"
+    if exist "%DEPLOY_DIR%\gui\mscordaccore_amd64*.dll" del "%DEPLOY_DIR%\gui\mscordaccore_amd64*.dll"
+    if exist "%DEPLOY_DIR%\gui\mscordbi.dll" del "%DEPLOY_DIR%\gui\mscordbi.dll"
+    if exist "%DEPLOY_DIR%\gui\createdump.exe" del "%DEPLOY_DIR%\gui\createdump.exe"
+    if exist "%DEPLOY_DIR%\gui\Microsoft.DiaSymReader.Native.*.dll" del "%DEPLOY_DIR%\gui\Microsoft.DiaSymReader.Native.*.dll"
+    :: 3. QUIC (HTTP/3) — не используется
+    if exist "%DEPLOY_DIR%\gui\msquic.dll" del "%DEPLOY_DIR%\gui\msquic.dll"
+    :: 4. Language folders — оставить только ru и en (invariant)
+    for /d %%d in ("%DEPLOY_DIR%\gui\cs" "%DEPLOY_DIR%\gui\de" "%DEPLOY_DIR%\gui\es" "%DEPLOY_DIR%\gui\fr" "%DEPLOY_DIR%\gui\it" "%DEPLOY_DIR%\gui\ja" "%DEPLOY_DIR%\gui\ko" "%DEPLOY_DIR%\gui\pl" "%DEPLOY_DIR%\gui\pt-BR" "%DEPLOY_DIR%\gui\tr" "%DEPLOY_DIR%\gui\zh-Hans" "%DEPLOY_DIR%\gui\zh-Hant") do (
+        if exist "%%d" rmdir /S /Q "%%d" >nul 2>&1
+    )
+
+    echo     OK (%DEPLOY_DIR%\gui\)
 )
 
 :: Copy WinDivert (required for capture)
