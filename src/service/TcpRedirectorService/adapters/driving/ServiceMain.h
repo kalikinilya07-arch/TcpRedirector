@@ -143,7 +143,7 @@ public:
         if (m_capture->Open()) {
             m_logger->Info("service", "WinDivert capture started (DST-modification mode)");
         } else {
-            m_logger->Error("service", "WinDivert not available — service cannot run without capture layer");
+            m_logger->Error("service", "CRITICAL: WinDivert not available — install WinDivert driver first");
             m_logger->Shutdown();
             return false;
         }

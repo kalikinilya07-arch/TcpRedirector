@@ -118,7 +118,8 @@ int main(int argc, char* argv[]) {
                     printf("Service initialized. Press Ctrl+C to stop.\n");
                     g_Service.Run();
                 } else {
-                    printf("Failed to initialize service\n");
+                    fprintf(stderr, "FATAL: Failed to initialize service — WinDivert driver not loaded or config error\n");
+                    fprintf(stderr, "FATAL: Ensure WinDivert64.sys and WinDivert.dll are in the same directory\n");
                 }
                 return 0;
             }

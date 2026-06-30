@@ -206,7 +206,15 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             };
 
             _backendProcess = new Process { StartInfo = psi };
+            // Capture stderr asynchronously for diagnostics
+            var stderrBuilder = new System.Text.StringBuilder();
+            _backendProcess.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data != null)
+                    lock (stderrBuilder) stderrBuilder.AppendLine(e.Data);
+            };
             _backendProcess.Start();
+            _backendProcess.BeginErrorReadLine();
 
             // 4. Wait for the pipe to become available (max 10 seconds)
             for (int i = 0; i < 20; i++)
@@ -229,10 +237,19 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                 }
             }
 
-            // Timed out
+            // Timed out — read stderr for diagnosis
+            string diag;
+            lock (stderrBuilder) diag = stderrBuilder.ToString();
+            if (!string.IsNullOrWhiteSpace(diag))
+            {
+                SvcMsg = diag.TrimEnd();
+            }
+            else
+            {
+                SvcMsg = "Backend exited without error message. Check WinDivert driver installation.";
+            }
             SvcStatus = "Error";
-            StatusText = "Backend not responding";
-            SvcMsg = "Service started but IPC connection failed";
+            StatusText = "Start failed";
         }
         catch (Exception ex)
         {
