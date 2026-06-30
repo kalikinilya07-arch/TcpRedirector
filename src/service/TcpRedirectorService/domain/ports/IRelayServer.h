@@ -73,6 +73,18 @@ public:
      * @return Номер порта.
      */
     virtual uint16_t GetPort() const = 0;
+
+    /**
+     * @brief Получить общее количество принятых байт (RX).
+     * @return Количество байт, принятых от клиентов (client→proxy).
+     */
+    virtual uint64_t GetTotalRxBytes() const = 0;
+
+    /**
+     * @brief Получить общее количество переданных байт (TX).
+     * @return Количество байт, переданных клиентам (proxy→client).
+     */
+    virtual uint64_t GetTotalTxBytes() const = 0;
 };
 
 } // namespace ports

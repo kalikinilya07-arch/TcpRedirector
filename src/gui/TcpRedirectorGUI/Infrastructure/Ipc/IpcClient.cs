@@ -1,4 +1,5 @@
-using System.IO.Pipes;
+using System.IO;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using TcpRedirectorGUI.Domain.Entities;
@@ -7,14 +8,15 @@ using TcpRedirectorGUI.Domain.Ports;
 namespace TcpRedirectorGUI.Infrastructure.Ipc;
 
 /// <summary>
-/// Thread-safe Named Pipe client for communicating with the TcpRedirector service.
-/// All pipe operations are serialized via SemaphoreSlim.
-/// Config file operations are delegated to IConfigRepository.
+/// Thread-safe TCP client for communicating with the TcpRedirector service.
+/// Protocol: newline-delimited JSON over TCP (127.0.0.1:34011).
+/// All I/O operations are serialized via SemaphoreSlim.
 /// </summary>
 public class IpcClient : ITcpRedirectorService, IDisposable
 {
     private readonly IConfigRepository _config;
-    private NamedPipeClientStream? _pipe;
+    private TcpClient? _tcp;
+    private NetworkStream? _stream;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly JsonSerializerOptions _json = new()
     {
@@ -22,32 +24,48 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         PropertyNameCaseInsensitive = true
     };
 
+    private const string Host = "127.0.0.1";
+    private const int Port = 34011;
+
     public IpcClient(IConfigRepository config)
     {
         _config = config;
     }
 
-    public bool IsConnected => _pipe?.IsConnected ?? false;
+    public bool IsConnected => _tcp?.Connected ?? false;
     public event Action<bool>? ConnectionStateChanged;
     public event Action<List<ConnectionRecord>>? ConnectionsUpdated = delegate { };
     public event Action<LogEntry>? LogEntryReceived = delegate { };
     public event Action<ServiceStats>? StatsUpdated = delegate { };
+    public string? LastRawResponse { get; set; }
+
+    private static void DiagLog(string msg)
+    {
+        try
+        {
+            var dir = AppDomain.CurrentDomain.BaseDirectory;
+            var path = Path.Combine(dir, "ipc_diag.log");
+            File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} {msg}\n");
+        }
+        catch { }
+    }
 
     public async Task ConnectAsync()
     {
+        DiagLog($"ConnectAsync: connecting to {Host}:{Port}...");
         await _lock.WaitAsync();
         try
         {
-            _pipe?.Dispose();
-            _pipe = new NamedPipeClientStream(".", "TcpRedirectorService",
-                PipeDirection.InOut, PipeOptions.Asynchronous);
-            await _pipe.ConnectAsync(2000);
-            // Must match server's PIPE_READMODE_MESSAGE
-            _pipe.ReadMode = System.IO.Pipes.PipeTransmissionMode.Message;
+            DisconnectInternal();
+            _tcp = new TcpClient();
+            await _tcp.ConnectAsync(Host, Port).WaitAsync(TimeSpan.FromSeconds(3));
+            _stream = _tcp.GetStream();
+            DiagLog("ConnectAsync: connected OK");
             ConnectionStateChanged?.Invoke(true);
         }
-        catch
+        catch (Exception ex)
         {
+            DiagLog($"ConnectAsync: FAILED — {ex.GetType().Name}: {ex.Message}");
             ConnectionStateChanged?.Invoke(false);
         }
         finally
@@ -58,10 +76,16 @@ public class IpcClient : ITcpRedirectorService, IDisposable
 
     public void Disconnect()
     {
-        // Don't lock — in-flight Call() will fail with IOException, release lock itself
-        try { _pipe?.Dispose(); } catch { }
-        _pipe = null;
+        DisconnectInternal();
         ConnectionStateChanged?.Invoke(false);
+    }
+
+    private void DisconnectInternal()
+    {
+        try { _stream?.Dispose(); } catch { }
+        try { _tcp?.Dispose(); } catch { }
+        _stream = null;
+        _tcp = null;
     }
 
     public async Task<ProxyConfig?> GetConfigAsync()
@@ -78,7 +102,6 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             cfg.HasPassword = p.GetProperty("has_password").GetBoolean();
         }
 
-        // Backend IPC doesn't return login/auth fields — read from config.json
         cfg.Login = _config.ReadString("auth", "username");
         cfg.KerberosEnabled = _config.ReadBool("auth", "kerberos");
         return cfg;
@@ -91,11 +114,8 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             host = config.Host,
             port = config.Port,
             auth_required = config.AuthRequired,
-            login = config.Login,
-            set_password = !string.IsNullOrEmpty(config.Password),
-            password = config.Password,
-            kerberos = config.KerberosEnabled,
-            auth_username = config.Login
+            login = config.Login ?? "",
+            set_password = !string.IsNullOrEmpty(config.Password)
         });
         return r?.GetProperty("status").GetString() == "success";
     }
@@ -103,69 +123,55 @@ public class IpcClient : ITcpRedirectorService, IDisposable
     public async Task<List<Rule>> GetRulesAsync()
     {
         var r = await Call("get_rules");
+        if (r?.TryGetProperty("data", out var d) != true) return new();
+        if (!d.TryGetProperty("rules", out var arr)) return new();
+
         var list = new List<Rule>();
-        if (r?.TryGetProperty("data", out var d) == true &&
-            d.TryGetProperty("rules", out var a))
+        foreach (var item in arr.EnumerateArray())
         {
-            foreach (var i in a.EnumerateArray())
+            list.Add(new Rule
             {
-                list.Add(new Rule
-                {
-                    Id = i.GetProperty("id").GetString() ?? "",
-                    Pattern = i.GetProperty("pattern").GetString() ?? "",
-                    Description = i.GetProperty("description").GetString() ?? "",
-                    Priority = i.GetProperty("priority").GetInt32(),
-                    Enabled = i.GetProperty("enabled").GetBoolean(),
-                    Type = (RuleType)i.GetProperty("type").GetInt32(),
-                    Action = (RuleAction)i.GetProperty("action").GetInt32()
-                });
-            }
+                Id = item.GetProperty("id").GetString() ?? "",
+                Pattern = item.GetProperty("pattern").GetString() ?? "",
+                Description = item.GetProperty("description").GetString() ?? "",
+                Priority = item.GetProperty("priority").GetInt32(),
+                Enabled = item.GetProperty("enabled").GetBoolean(),
+                Type = (RuleType)item.GetProperty("type").GetInt32(),
+                Action = (RuleAction)item.GetProperty("action").GetInt32()
+            });
         }
         return list;
     }
 
     public async Task<bool> SetRulesAsync(List<Rule> rules)
     {
-        var r = await Call("set_rules", new
-        {
-            rules = rules.Select(x => new
-            {
-                id = x.Id,
-                pattern = x.Pattern,
-                description = x.Description,
-                priority = x.Priority,
-                enabled = x.Enabled,
-                type = (int)x.Type,
-                action = (int)x.Action
-            })
-        });
+        var r = await Call("set_rules", new { rules });
         return r?.GetProperty("status").GetString() == "success";
     }
 
     public async Task<List<ConnectionRecord>> GetConnectionsAsync()
     {
         var r = await Call("get_connections");
+        if (r?.TryGetProperty("data", out var d) != true) return new();
+        if (!d.TryGetProperty("connections", out var arr)) return new();
+
         var list = new List<ConnectionRecord>();
-        if (r?.TryGetProperty("data", out var d) == true &&
-            d.TryGetProperty("connections", out var a))
+        foreach (var item in arr.EnumerateArray())
         {
-            foreach (var i in a.EnumerateArray())
+            list.Add(new ConnectionRecord
             {
-                list.Add(new ConnectionRecord
-                {
-                    Id = i.GetProperty("id").GetUInt64(),
-                    Pid = i.GetProperty("pid").GetUInt32(),
-                    ProcessName = i.GetProperty("process_name").GetString() ?? "",
-                    DestinationHost = i.GetProperty("destination_host").GetString() ?? "",
-                    DestinationIp = i.GetProperty("destination_ip").GetString() ?? "",
-                    DestinationPort = i.GetProperty("destination_port").GetUInt16(),
-                    RxBytes = i.GetProperty("rx_bytes").GetUInt64(),
-                    TxBytes = i.GetProperty("tx_bytes").GetUInt64(),
-                    DurationMs = i.GetProperty("duration_ms").GetInt64(),
-                    State = (ConnectionState)i.GetProperty("state").GetInt32(),
-                    ProxyEnabled = i.GetProperty("proxy_enabled").GetBoolean()
-                });
-            }
+                Id = ulong.TryParse(item.GetProperty("id").GetString(), out var parsedId) ? parsedId : 0,
+                Pid = item.GetProperty("pid").GetUInt32(),
+                ProcessName = item.GetProperty("process_name").GetString() ?? "",
+                DestinationHost = item.GetProperty("destination_host").GetString() ?? "",
+                DestinationIp = item.GetProperty("destination_ip").GetString() ?? "",
+                DestinationPort = item.GetProperty("destination_port").GetUInt16(),
+                RxBytes = item.GetProperty("rx_bytes").GetUInt64(),
+                TxBytes = item.GetProperty("tx_bytes").GetUInt64(),
+                DurationMs = (long)item.GetProperty("duration_ms").GetUInt64(),
+                State = (ConnectionState)item.GetProperty("state").GetInt32(),
+                ProxyEnabled = item.GetProperty("proxy_enabled").GetBoolean()
+            });
         }
         return list;
     }
@@ -173,22 +179,19 @@ public class IpcClient : ITcpRedirectorService, IDisposable
     public async Task<List<LogEntry>> GetLogsAsync()
     {
         var r = await Call("get_logs");
+        if (r?.TryGetProperty("data", out var d) != true) return new();
+        if (!d.TryGetProperty("logs", out var arr)) return new();
+
         var list = new List<LogEntry>();
-        if (r?.TryGetProperty("data", out var d) == true &&
-            d.TryGetProperty("logs", out var a))
+        foreach (var item in arr.EnumerateArray())
         {
-            foreach (var i in a.EnumerateArray())
+            list.Add(new LogEntry
             {
-                list.Add(new LogEntry
-                {
-                    Timestamp = DateTimeOffset
-                        .FromUnixTimeMilliseconds(i.GetProperty("timestamp").GetInt64())
-                        .DateTime,
-                    Level = i.GetProperty("level").GetInt32(),
-                    Logger = i.GetProperty("logger").GetString() ?? "",
-                    Message = i.GetProperty("message").GetString() ?? ""
-                });
-            }
+                Timestamp = DateTimeOffset.FromUnixTimeMilliseconds((long)item.GetProperty("timestamp").GetUInt64()).DateTime,
+                Level = item.GetProperty("level").GetInt32(),
+                Logger = item.GetProperty("logger").GetString() ?? "",
+                Message = item.GetProperty("message").GetString() ?? ""
+            });
         }
         return list;
     }
@@ -198,13 +201,17 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         var r = await Call("get_stats");
         if (r?.TryGetProperty("data", out var d) == true)
         {
-            return new ServiceStats
+            try
             {
-                TotalConnections = d.GetProperty("total_connections").GetUInt64(),
-                ActiveConnections = d.GetProperty("active_connections").GetUInt32(),
-                TotalRxBytes = d.GetProperty("total_rx_bytes").GetUInt64(),
-                TotalTxBytes = d.GetProperty("total_tx_bytes").GetUInt64()
-            };
+                return new ServiceStats
+                {
+                    TotalConnections = d.GetProperty("total_connections").GetUInt64(),
+                    ActiveConnections = d.GetProperty("active_connections").GetUInt32(),
+                    TotalRxBytes = d.GetProperty("total_rx_bytes").GetUInt64(),
+                    TotalTxBytes = d.GetProperty("total_tx_bytes").GetUInt64()
+                };
+            }
+            catch { return null; }
         }
         return null;
     }
@@ -234,7 +241,11 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         await _lock.WaitAsync();
         try
         {
-            if (_pipe is null || !_pipe.IsConnected) return null;
+            if (_tcp is null || !_tcp.Connected || _stream is null)
+            {
+                DiagLog($"Call({method}): not connected");
+                return null;
+            }
 
             var paramsJson = p is not null
                 ? JsonSerializer.Serialize(p, _json)
@@ -248,25 +259,72 @@ public class IpcClient : ITcpRedirectorService, IDisposable
                 @params = paramsJson
             });
 
-            var buf = Encoding.UTF8.GetBytes(req);
-            await _pipe.WriteAsync(buf);
-            await _pipe.FlushAsync();
+            // TCP framing: newline-delimited
+            var reqBytes = Encoding.UTF8.GetBytes(req + "\n");
+            await _stream.WriteAsync(reqBytes);
+            await _stream.FlushAsync();
 
-            var rbuf = new byte[65536];
+            // Read response line (up to newline)
             using var cts = new CancellationTokenSource(5000);
-            var n = await _pipe.ReadAsync(rbuf, 0, rbuf.Length, cts.Token);
+            var reader = new StreamReader(_stream, Encoding.UTF8, false, 4096, true);
+            var line = await ReadLineAsync(reader, cts.Token);
 
-            return JsonSerializer.Deserialize<JsonElement>(
-                Encoding.UTF8.GetString(rbuf, 0, n), _json);
+            if (string.IsNullOrEmpty(line))
+            {
+                DiagLog($"Call({method}): empty response");
+                return null;
+            }
+
+            LastRawResponse = line.Length > 200 ? line[..200] + "..." : line;
+            if (method == "get_stats")
+                DiagLog($"Call(get_stats) raw: {line}");
+
+            return JsonSerializer.Deserialize<JsonElement>(line, _json);
         }
-        catch
+        catch (Exception ex)
         {
+            DiagLog($"Call({method}): FAILED — {ex.GetType().Name}: {ex.Message}");
             return null;
         }
         finally
         {
             _lock.Release();
         }
+    }
+
+    /// <summary>
+    /// Read a newline-delimited line from the stream.
+    /// </summary>
+    private static async Task<string?> ReadLineAsync(StreamReader reader, CancellationToken ct)
+    {
+        // StreamReader.ReadLineAsync doesn't support cancellation nicely,
+        // so we read byte-by-byte with a timeout approach.
+        var sb = new StringBuilder();
+        var buf = new byte[1];
+
+        while (!ct.IsCancellationRequested)
+        {
+            var readTask = reader.BaseStream.ReadAsync(buf, 0, 1, ct);
+            int n;
+            try
+            {
+                n = await readTask;
+            }
+            catch (OperationCanceledException)
+            {
+                return sb.Length > 0 ? sb.ToString() : null;
+            }
+
+            if (n == 0) break; // EOF
+
+            if (buf[0] == '\n')
+                return sb.ToString();
+
+            if (buf[0] != '\r')
+                sb.Append((char)buf[0]);
+        }
+
+        return sb.Length > 0 ? sb.ToString() : null;
     }
 
     public void Dispose()

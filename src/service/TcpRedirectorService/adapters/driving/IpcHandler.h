@@ -16,6 +16,9 @@
 namespace tcp_redirector {
 namespace adapters {
 
+// Callback to get relay byte counters: returns {rx_bytes, tx_bytes}
+using GetRelayBytesCallback = std::function<std::pair<uint64_t, uint64_t>()>;
+
 class IpcHandler {
 public:
     IpcHandler(
@@ -24,13 +27,15 @@ public:
         infrastructure::ConfigManager* configManager,
         infrastructure::Logger* logger,
         const std::atomic<bool>* running,
-        const std::atomic<bool>* initialized)
+        const std::atomic<bool>* initialized,
+        GetRelayBytesCallback getRelayBytes = nullptr)
         : m_ruleEngine(ruleEngine)
         , m_connectionTracker(connectionTracker)
         , m_configManager(configManager)
         , m_logger(logger)
         , m_running(running)
-        , m_initialized(initialized) {
+        , m_initialized(initialized)
+        , m_getRelayBytes(std::move(getRelayBytes)) {
     }
 
     void Handle(const std::string& method,
@@ -186,11 +191,19 @@ private:
 
     void GetStats(nlohmann::json& result) {
         auto stats = m_connectionTracker->GetAggregatedStats();
+        uint64_t rx = stats.total_rx_bytes;
+        uint64_t tx = stats.total_tx_bytes;
+        // Include capture byte counters (WinDivertCapture tracks TCP-level bytes)
+        if (m_getRelayBytes) {
+            auto rb = m_getRelayBytes();
+            if (rb.first > rx) rx = rb.first;
+            if (rb.second > tx) tx = rb.second;
+        }
         result["status"] = "success";
         result["data"]["total_connections"] = stats.total_connections;
         result["data"]["active_connections"] = stats.active_connections;
-        result["data"]["total_rx_bytes"] = stats.total_rx_bytes;
-        result["data"]["total_tx_bytes"] = stats.total_tx_bytes;
+        result["data"]["total_rx_bytes"] = rx;
+        result["data"]["total_tx_bytes"] = tx;
     }
 
     void GetStatus(nlohmann::json& result) {
@@ -212,6 +225,7 @@ private:
     infrastructure::Logger* m_logger;
     const std::atomic<bool>* m_running;
     const std::atomic<bool>* m_initialized;
+    GetRelayBytesCallback m_getRelayBytes;
 };
 
 } // namespace adapters

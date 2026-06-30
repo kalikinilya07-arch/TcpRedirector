@@ -326,6 +326,12 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                     TotalTraffic = FormatBytes(stats.TotalRxBytes + stats.TotalTxBytes);
                     Stats.PushStats(stats);
                 }
+                else if (_svc is IpcClient ipc)
+                {
+                    var raw = ipc.LastRawResponse;
+                    if (!string.IsNullOrEmpty(raw))
+                        SvcMsg = $"IPC raw: {raw}";
+                }
 
                 var status = await _svc.GetServiceStatusAsync();
                 if (status is not null)

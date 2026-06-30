@@ -269,6 +269,8 @@ void WinDivertCapture::CaptureLoop() {
                             ShortName(info.proc_path), dstPort,
                             info.bytes_up, info.bytes_down,
                             info.bytes_up + info.bytes_down);
+                        m_totalRxBytes.fetch_add(info.bytes_up, std::memory_order_relaxed);
+                        m_totalTxBytes.fetch_add(info.bytes_down, std::memory_order_relaxed);
                     }
                     m_connTable->Remove(dstPort);
                     ClearPort(dstPort);
@@ -290,6 +292,8 @@ void WinDivertCapture::CaptureLoop() {
                         ShortName(info.proc_path), srcPort,
                         info.bytes_up, info.bytes_down,
                         info.bytes_up + info.bytes_down);
+                    m_totalRxBytes.fetch_add(info.bytes_up, std::memory_order_relaxed);
+                    m_totalTxBytes.fetch_add(info.bytes_down, std::memory_order_relaxed);
                 }
                 m_connTable->Remove(srcPort);
                 ClearPort(srcPort);

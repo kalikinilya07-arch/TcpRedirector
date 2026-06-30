@@ -32,7 +32,7 @@ namespace infrastructure {
 struct RelayPair {
     SOCKET sock_client;
     SOCKET sock_proxy;
-    volatile LONG refs;
+    LONG refs;
 };
 
 // Коллбэки для уведомления о событиях
@@ -48,6 +48,9 @@ public:
         , m_listenSock(INVALID_SOCKET)
         , m_listenSock6(INVALID_SOCKET) {
     }
+
+    uint64_t GetTotalRxBytes() const override { return m_totalRxBytes.load(std::memory_order_relaxed); }
+    uint64_t GetTotalTxBytes() const override { return m_totalTxBytes.load(std::memory_order_relaxed); }
 
     ~TcpRelayServer() {
         Stop();
@@ -431,11 +434,13 @@ private:
         up_cfg->pair = pair;
         up_cfg->from = client_sock;
         up_cfg->to = proxy_sock;
+        up_cfg->counter = &m_totalRxBytes;  // client→proxy = RX
 
         auto* dn_cfg = new OneWayConfig();
         dn_cfg->pair = pair;
         dn_cfg->from = proxy_sock;
         dn_cfg->to = client_sock;
+        dn_cfg->counter = &m_totalTxBytes;  // proxy→client = TX
 
         HANDLE up_thread = CreateThread(nullptr, 0, &TcpRelayServer::OneWayRelayThunk,
                                          up_cfg, 0, nullptr);
@@ -452,12 +457,15 @@ private:
 
         WaitForSingleObject(up_thread, INFINITE);
         CloseHandle(up_thread);
+        // pair может быть уже удалён OneWayRelay (refs==0) —
+        // не обращаемся к нему после WaitForSingleObject
     }
 
     struct OneWayConfig {
         RelayPair* pair;
         SOCKET from;
         SOCKET to;
+        std::atomic<uint64_t>* counter;  // куда аккумулировать байты (null = не аккумулировать)
     };
 
     static DWORD WINAPI OneWayRelayThunk(LPVOID arg) {
@@ -469,8 +477,10 @@ private:
         RelayPair* pair = cfg->pair;
         SOCKET from = cfg->from;
         SOCKET to = cfg->to;
+        std::atomic<uint64_t>* counter = cfg->counter;  // save before cfg deleted
         delete cfg;
 
+        uint64_t total_bytes = 0;
         char buf[131072];
 
         int len;
@@ -479,6 +489,9 @@ private:
             while (sent < len) {
                 int n = send(to, buf + sent, len - sent, 0);
                 if (n == SOCKET_ERROR) {
+                    // Accumulate bytes before pair cleanup
+                    if (counter)
+                        counter->fetch_add(total_bytes, std::memory_order_relaxed);
                     shutdown(pair->sock_client, SD_BOTH);
                     shutdown(pair->sock_proxy, SD_BOTH);
                     if (InterlockedDecrement(&pair->refs) == 0) {
@@ -490,7 +503,12 @@ private:
                 }
                 sent += n;
             }
+            total_bytes += len;
         }
+
+        // Normal completion — accumulate before pair cleanup
+        if (counter)
+            counter->fetch_add(total_bytes, std::memory_order_relaxed);
 
         shutdown(pair->sock_client, SD_BOTH);
         shutdown(pair->sock_proxy, SD_BOTH);
@@ -546,6 +564,9 @@ private:
     domain::ports::ILogSink* m_logSink = nullptr;
     RelayLogCallback m_logCb;
     RelayConnCallback m_connCb;
+
+    std::atomic<uint64_t> m_totalRxBytes{0};
+    std::atomic<uint64_t> m_totalTxBytes{0};
 };
 
 } // namespace infrastructure

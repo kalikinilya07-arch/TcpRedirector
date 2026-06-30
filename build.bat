@@ -55,6 +55,14 @@ echo [OK]
 :: Step 3: Service
 echo [3/3] Building Service...
 cd /d "%ROOT%\src\service\TcpRedirectorService"
+:: Clean ALL build artifacts to force full recompilation
+:: MSVC LTCG caches code in .iobj/.ipdb — must delete all to guarantee fresh build
+if exist "build\service\x64\Release\obj" (
+    del /Q "build\service\x64\Release\obj\*.obj"  2>nul
+    del /Q "build\service\x64\Release\obj\*.iobj" 2>nul
+    del /Q "build\service\x64\Release\obj\*.ipdb" 2>nul
+)
+echo     (cleaned .obj/.iobj/.ipdb cache)
 msbuild TcpRedirectorService.vcxproj /p:Configuration=Release /p:Platform=x64 /nologo 2>&1
 if errorlevel 1 echo [FAIL] & pause & exit /b 1
 copy /Y "build\service\x64\Release\TcpRedirectorService.exe" "%ROOT%\build\" >nul 2>&1

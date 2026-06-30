@@ -73,6 +73,10 @@ public:
     domain::DriverStats GetStats() override;
     void* GetEventHandle() const override;
 
+    // Expose byte counters for IPC stats
+    uint64_t GetTotalRxBytes() const { return m_totalRxBytes.load(std::memory_order_relaxed); }
+    uint64_t GetTotalTxBytes() const { return m_totalTxBytes.load(std::memory_order_relaxed); }
+
 private:
     void WdLog(domain::LogLevel level, const char* fmt, ...);
 
@@ -180,6 +184,9 @@ private:
     // Stats
     std::atomic<uint64_t> m_packets_captured{0};
     std::atomic<uint64_t> m_redirects_emitted{0};
+    std::atomic<uint64_t> m_totalRxBytes{0};
+    std::atomic<uint64_t> m_totalTxBytes{0};
+
 
     // Redirect event queue (заглушка, не используется)
     std::mutex m_queueMutex;

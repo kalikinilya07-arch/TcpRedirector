@@ -59,9 +59,9 @@ public partial class StatsViewModel : ObservableObject
             _prevRx = stats.TotalRxBytes;
             _prevTx = stats.TotalTxBytes;
 
-            // Approximate B/s (polling every ~2s)
-            var rxRate = rxDelta / 2;
-            var txRate = txDelta / 2;
+            // Polling every ~1s, so delta == bytes/second
+            var rxRate = rxDelta;
+            var txRate = txDelta;
 
             RxPoints.Add(new TrafficPoint(now, rxRate));
             TxPoints.Add(new TrafficPoint(now, txRate));
