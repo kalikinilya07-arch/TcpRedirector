@@ -105,4 +105,4 @@ logs/
 # dotnet
 **/[Pp]ublish/
 *.nuget.props
-*.nuget.targets
+*.nuget.targetsdeploy.7z  
