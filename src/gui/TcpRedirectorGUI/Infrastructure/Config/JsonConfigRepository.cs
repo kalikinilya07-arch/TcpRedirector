@@ -105,7 +105,7 @@ public sealed class JsonConfigRepository : IConfigRepository
 
     // ── Write ────────────────────────────────────────
 
-    public void WriteFull(ProxyConfig config, string exePath, List<Rule> rules)
+    public bool WriteFull(ProxyConfig config, string exePath, List<Rule> rules)
     {
         try
         {
@@ -172,10 +172,11 @@ public sealed class JsonConfigRepository : IConfigRepository
             j["rules"] = rulesArr;
 
             Save(j);
+            return true;
         }
         catch
         {
-            // File I/O errors are non-fatal; caller handles silently
+            return false;
         }
     }
 

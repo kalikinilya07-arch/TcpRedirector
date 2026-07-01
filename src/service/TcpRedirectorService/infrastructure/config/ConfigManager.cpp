@@ -73,11 +73,8 @@ bool ConfigManager::SetProxyConfig(const domain::ProxyConfig& config) {
     if (config.has_password && !m_config.auth.encryptedPassword.empty()) {
         // пароль уже зашифрован — оставляем
     }
-    if (SaveImpl()) {
-        NotifyListeners(oldCfg, m_config);
-        return true;
-    }
-    return false;
+    NotifyListeners(oldCfg, m_config);
+    return true;  // config.json is persisted by GUI via WriteFull()
 }
 
 // ====================================================================
@@ -92,7 +89,7 @@ std::vector<domain::Rule> ConfigManager::GetRules() const {
 bool ConfigManager::SetRules(const std::vector<domain::Rule>& rules) {
     std::unique_lock lock(m_mutex);
     m_rules = rules;
-    return SaveImpl();
+    return true;  // config.json is persisted by GUI via WriteFull()
 }
 
 // ====================================================================
@@ -293,8 +290,16 @@ bool ConfigManager::SaveImpl() {
         // Правила (старый формат)
         j["rules"] = RulesToJson(m_rules);
 
-        std::ofstream file(m_configPath);
-        file << j.dump(4);
+        // Atomic write: write to temp file, then rename
+        auto tmpPath = m_configPath;
+        tmpPath += L".tmp";
+        {
+            std::ofstream file(tmpPath);
+            if (!file.is_open()) return false;
+            file << j.dump(4);
+            if (!file.good()) return false;
+        }
+        std::filesystem::rename(tmpPath, m_configPath);
         return true;
     } catch (...) {
         return false;

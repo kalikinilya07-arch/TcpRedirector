@@ -222,7 +222,7 @@ public partial class SettingsViewModel : ObservableObject
             }
 
             // Write full config to disk (primary persistence)
-            _config.WriteFull(
+            var ok = _config.WriteFull(
                 new ProxyConfig
                 {
                     Host = Host,
@@ -234,14 +234,21 @@ public partial class SettingsViewModel : ObservableObject
                 exePath ?? "",
                 [.. Rules]);
 
-            Msg = $"\u2713 Saved (exePath: {exePath ?? "(none)"})";
-            Password = "";
-            Saved?.Invoke();
+            if (ok)
+            {
+                Msg = $"\u2713 Saved";
+                Password = "";
+                Saved?.Invoke();
+            }
+            else
+            {
+                Msg = "\u2717 Error: failed to write config.json";
+            }
             _ = ClearMsgAfterDelay();
         }
         catch (Exception ex)
         {
-            Msg = $"\u2717 Save failed: {ex.Message}";
+            Msg = $"\u2717 Error: {ex.Message}";
         }
     }
 

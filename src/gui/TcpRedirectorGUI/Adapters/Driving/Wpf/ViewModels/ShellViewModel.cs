@@ -93,6 +93,8 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
             await _svc.ConnectAsync();
             StartTimer();
+            // Reload config from disk — service loaded it at startup
+            Settings.LoadFromConfig();
             SvcStatus = "Running";
             SvcMsg = "\u2713 Started";
         }
@@ -140,6 +142,8 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            // Reload config from disk — may have been modified externally
+            Settings.LoadFromConfig();
             _ = ClearMsgAfterDelay();
         }
     }
