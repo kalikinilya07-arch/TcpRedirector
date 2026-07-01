@@ -246,6 +246,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <!-- Graph header -->
@@ -260,7 +261,7 @@
                                           TxData="{Binding Stats.TxPoints}"
                                           WindowSeconds="{Binding Stats.GraphWindowSec}"/>
 
-                        <!-- Stats summary -->
+                        <!-- Stats summary row 1 -->
                         <Grid Grid.Row="2" Margin="0,4,0,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -279,6 +280,33 @@
                             <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12">
                                 <Run Text="TX:"/>
                                 <Run Text="{Binding Stats.TotalTx, Mode=OneWay}" FontWeight="Bold" Foreground="#CE9178"/>
+                            </TextBlock>
+                        </Grid>
+
+                        <!-- Stats summary row 2: derived metrics -->
+                        <Grid Grid.Row="3" Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
+                                <Run Text="Proxy errors:"/>
+                                <Run Text="{Binding Stats.ProxyErrors, Mode=OneWay}" FontWeight="Bold" Foreground="#F44747"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
+                                <Run Text="Avg latency:"/>
+                                <Run Text="{Binding Stats.AvgLatency, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12" Margin="16,0">
+                                <Run Text="Uptime:"/>
+                                <Run Text="{Binding Stats.Uptime, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="4" Foreground="#858585" FontSize="12" Margin="16,0">
+                                <Run Text="Rate:"/>
+                                <Run Text="{Binding Stats.ConnectionRate, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                         </Grid>
                     </Grid>

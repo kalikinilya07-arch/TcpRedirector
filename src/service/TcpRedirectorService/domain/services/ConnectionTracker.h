@@ -131,7 +131,28 @@ public:
 
     ServiceStats GetAggregatedStats() const override {
         std::shared_lock lock(m_mutex);
-        return m_stats;
+        auto s = m_stats;
+        s.active_connections = static_cast<uint64_t>(m_connections.size());
+        return s;
+    }
+
+    void IncrementProxyErrors() override {
+        std::unique_lock lock(m_mutex);
+        m_stats.proxy_errors++;
+    }
+
+    void RecordLatency(double ms) override {
+        std::unique_lock lock(m_mutex);
+        // Exponential moving average: α=0.2 (80% history, 20% new sample)
+        if (m_stats.avg_latency_ms == 0.0)
+            m_stats.avg_latency_ms = ms;
+        else
+            m_stats.avg_latency_ms = m_stats.avg_latency_ms * 0.8 + ms * 0.2;
+    }
+
+    void SetUptimeSeconds(uint64_t seconds) override {
+        std::unique_lock lock(m_mutex);
+        m_stats.uptime_seconds = seconds;
     }
 
     void SetOnConnectionsChanged(ConnectionsCallback callback) override {

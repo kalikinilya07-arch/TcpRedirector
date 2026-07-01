@@ -113,6 +113,8 @@ public class ServiceStats
     public ulong TotalRxBytes { get; set; }
     public ulong TotalTxBytes { get; set; }
     public ulong ProxyErrors { get; set; }
+    public double AvgLatencyMs { get; set; }
+    public ulong UptimeSeconds { get; set; }
 }
 
 public class ServiceStatus

@@ -72,6 +72,23 @@ public:
      */
     virtual ServiceStats GetAggregatedStats() const = 0;
 
+    /**
+     * @brief Инкрементировать счётчик ошибок прокси-соединений.
+     */
+    virtual void IncrementProxyErrors() = 0;
+
+    /**
+     * @brief Записать latency установки CONNECT-туннеля (обновляет скользящее среднее).
+     * @param ms Задержка в миллисекундах.
+     */
+    virtual void RecordLatency(double ms) = 0;
+
+    /**
+     * @brief Установить uptime сервиса в секундах.
+     * @param seconds Время работы сервиса.
+     */
+    virtual void SetUptimeSeconds(uint64_t seconds) = 0;
+
     /// Тип коллбэка уведомления об изменениях в списке соединений.
     using ConnectionsCallback = std::function<void(const std::vector<ConnectionRecord>&)>;
 

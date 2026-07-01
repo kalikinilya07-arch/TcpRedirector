@@ -171,6 +171,7 @@ struct ServiceStats {
     uint64_t total_tx_bytes = 0;        //!< Всего отправлено байт
     uint64_t proxy_errors = 0;          //!< Ошибок прокси-соединений
     double avg_latency_ms = 0.0;        //!< Средняя задержка в мс
+    uint64_t uptime_seconds = 0;        //!< Время работы сервиса в секундах
 };
 
 /**

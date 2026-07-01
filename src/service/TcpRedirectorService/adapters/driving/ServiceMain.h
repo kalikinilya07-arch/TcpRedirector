@@ -112,6 +112,8 @@ public:
         m_relayServer = std::make_unique<infrastructure::TcpRelayServer>(*m_connTable, relayPort);
         m_relayServer->SetProxyConfig(proxyCfg, 1);
         m_relayServer->SetLogSink(m_logger.get());
+        static_cast<infrastructure::TcpRelayServer*>(m_relayServer.get())
+            ->SetConnectionMonitor(m_connectionTracker.get());
         m_relayServer->SetLogCallback([this](const std::string& msg) {
             m_logger->Debug("relay", msg);
         });
@@ -151,6 +153,9 @@ public:
             return false;
         }
 
+        // Record service start time for uptime tracking
+        m_startTime = std::chrono::steady_clock::now();
+
         // Initialize IPC server with IpcHandler
         m_pipeServer = std::make_unique<infrastructure::TcpIpcServer>();
         m_ipcHandler = std::make_unique<adapters::IpcHandler>(
@@ -165,6 +170,11 @@ public:
             [this]() -> uint32_t {
                 auto* capture = static_cast<infrastructure::WinDivertCapture*>(m_capture.get());
                 return capture->GetActiveConnections();
+            },
+            [this]() -> uint64_t {
+                return static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - m_startTime).count());
             });
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {
@@ -282,6 +292,9 @@ private:
 
     // DST modification relay (храним через порты для injectable тестов)
     std::unique_ptr<domain::ports::IConnectionTable> m_connTable;
+
+    // Uptime tracking
+    std::chrono::steady_clock::time_point m_startTime;
     std::unique_ptr<domain::ports::IRelayServer> m_relayServer;
 
     SERVICE_STATUS m_status = {0};

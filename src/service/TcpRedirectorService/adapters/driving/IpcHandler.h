@@ -22,6 +22,9 @@ using GetRelayBytesCallback = std::function<std::pair<uint64_t, uint64_t>()>;
 // Callback to get active connection count from capture (ConnectionTable)
 using GetActiveCountCallback = std::function<uint32_t()>;
 
+// Callback to get service uptime in seconds
+using GetUptimeCallback = std::function<uint64_t()>;
+
 class IpcHandler {
 public:
     IpcHandler(
@@ -32,7 +35,8 @@ public:
         const std::atomic<bool>* running,
         const std::atomic<bool>* initialized,
         GetRelayBytesCallback getRelayBytes = nullptr,
-        GetActiveCountCallback getActiveCount = nullptr)
+        GetActiveCountCallback getActiveCount = nullptr,
+        GetUptimeCallback getUptime = nullptr)
         : m_ruleEngine(ruleEngine)
         , m_connectionTracker(connectionTracker)
         , m_configManager(configManager)
@@ -40,7 +44,8 @@ public:
         , m_running(running)
         , m_initialized(initialized)
         , m_getRelayBytes(std::move(getRelayBytes))
-        , m_getActiveCount(std::move(getActiveCount)) {
+        , m_getActiveCount(std::move(getActiveCount))
+        , m_getUptime(std::move(getUptime)) {
     }
 
     void Handle(const std::string& method,
@@ -206,10 +211,17 @@ private:
         }
         // active_connections from capture (ConnectionTable) — authoritative source
         uint32_t active = m_getActiveCount ? m_getActiveCount() : stats.active_connections;
+        // Push uptime to ConnectionTracker before reading stats
+        if (m_getUptime) {
+            m_connectionTracker->SetUptimeSeconds(m_getUptime());
+        }
         result["status"] = "success";
         result["data"]["active_connections"] = active;
         result["data"]["total_rx_bytes"] = rx;
         result["data"]["total_tx_bytes"] = tx;
+        result["data"]["proxy_errors"] = stats.proxy_errors;
+        result["data"]["avg_latency_ms"] = stats.avg_latency_ms;
+        result["data"]["uptime_seconds"] = stats.uptime_seconds;
     }
 
     void GetStatus(nlohmann::json& result) {
@@ -233,6 +245,7 @@ private:
     const std::atomic<bool>* m_initialized;
     GetRelayBytesCallback m_getRelayBytes;
     GetActiveCountCallback m_getActiveCount;
+    GetUptimeCallback m_getUptime;
 };
 
 } // namespace adapters

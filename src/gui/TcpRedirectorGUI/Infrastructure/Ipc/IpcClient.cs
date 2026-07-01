@@ -207,7 +207,10 @@ public class IpcClient : ITcpRedirectorService, IDisposable
                 {
                     ActiveConnections = d.GetProperty("active_connections").GetUInt32(),
                     TotalRxBytes = d.GetProperty("total_rx_bytes").GetUInt64(),
-                    TotalTxBytes = d.GetProperty("total_tx_bytes").GetUInt64()
+                    TotalTxBytes = d.GetProperty("total_tx_bytes").GetUInt64(),
+                    ProxyErrors = d.TryGetProperty("proxy_errors", out var pe) ? pe.GetUInt64() : 0,
+                    AvgLatencyMs = d.TryGetProperty("avg_latency_ms", out var al) ? al.GetDouble() : 0.0,
+                    UptimeSeconds = d.TryGetProperty("uptime_seconds", out var up) ? up.GetUInt64() : 0
                 };
             }
             catch { return null; }

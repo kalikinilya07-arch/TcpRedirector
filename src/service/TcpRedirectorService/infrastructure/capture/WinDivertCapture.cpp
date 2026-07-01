@@ -359,9 +359,7 @@ void WinDivertCapture::CaptureLoop() {
                     rec.start_time = std::chrono::steady_clock::now();
                     rec.proxy_enabled = true;
                     m_connectionMonitor->AddConnection(rec);
-                }
-                m_totalConnections.fetch_add(1, std::memory_order_relaxed);
-                m_activeConnections.fetch_add(1, std::memory_order_relaxed);
+                    }
 
                 SetPortDecided(srcPort);
                 m_redirects_emitted++;

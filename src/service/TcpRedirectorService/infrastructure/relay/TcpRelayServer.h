@@ -70,6 +70,7 @@ public:
     void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }
     void SetLogCallback(RelayLogCallback cb) { m_logCb = std::move(cb); }
     void SetConnCallback(RelayConnCallback cb) { m_connCb = std::move(cb); }
+    void SetConnectionMonitor(domain::ports::IConnectionMonitor* monitor) { m_connectionMonitor = monitor; }
 
     bool Start() {
         if (m_running) return true;
@@ -259,6 +260,7 @@ private:
         SOCKET proxy_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (proxy_sock == INVALID_SOCKET) {
             Log(domain::LogLevel::Error, "Failed to create proxy socket");
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             return;
         }
@@ -282,6 +284,7 @@ private:
         struct addrinfo* result = nullptr;
         if (getaddrinfo(m_proxyHost.c_str(), nullptr, &hints, &result) != 0 || !result) {
             Log(domain::LogLevel::Error, "Failed to resolve proxy: " + m_proxyHost);
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
             if (result) freeaddrinfo(result);
@@ -295,8 +298,10 @@ private:
         proxy_addr.sin_addr = ((struct sockaddr_in*)result->ai_addr)->sin_addr;
         freeaddrinfo(result);
 
+        auto t_connect_start = std::chrono::steady_clock::now();
         if (connect(proxy_sock, (sockaddr*)&proxy_addr, sizeof(proxy_addr)) != 0) {
             Log(domain::LogLevel::Error, "connect to proxy failed: " + std::to_string(WSAGetLastError()));
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -354,6 +359,7 @@ private:
 
         if (send(proxy_sock, connect_req.c_str(), (int)connect_req.length(), 0) == SOCKET_ERROR) {
             Log(domain::LogLevel::Error, "send CONNECT failed");
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -363,6 +369,7 @@ private:
         int bytes = recv(proxy_sock, resp_buf, sizeof(resp_buf) - 1, 0);
         if (bytes <= 0) {
             Log(domain::LogLevel::Error, "no CONNECT response");
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -373,7 +380,10 @@ private:
         if (strstr(resp_buf, "200 Connection established") != nullptr ||
             strstr(resp_buf, "200 Connection Established") != nullptr ||
             strstr(resp_buf, "200 OK") != nullptr) {
-            // CONNECT успешен — выходим
+            // CONNECT успешен — замеряем latency
+            auto t_now = std::chrono::steady_clock::now();
+            double latency_ms = std::chrono::duration<double, std::milli>(t_now - t_connect_start).count();
+            if (m_connectionMonitor) m_connectionMonitor->RecordLatency(latency_ms);
             Log(domain::LogLevel::Debug, "CONNECT response: 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
         }
         else if (m_kerberosAuth && sspiAvailable && strstr(resp_buf, "407") != nullptr) {
@@ -381,6 +391,7 @@ private:
             std::string challenge = infrastructure::Parse407Challenge(resp_buf);
             if (challenge.empty()) {
                 Log(domain::LogLevel::Warn, "CONNECT failed: 407 без Negotiate challenge");
+                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
@@ -390,12 +401,14 @@ private:
                 infrastructure::MakeSpn(m_proxyHost));
             if (r == infrastructure::SspiResult::Error) {
                 Log(domain::LogLevel::Error, "SSPI error after 407 challenge: " + std::string(resp_buf, 100));
+                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
             if (sspiToken.empty()) {
                 Log(domain::LogLevel::Warn, "CONNECT failed: SSPI не дал токен после 407");
+                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
@@ -403,6 +416,7 @@ private:
             authRetries++;
             if (authRetries > 5) {
                 Log(domain::LogLevel::Warn, "CONNECT failed: SSPI retry limit exceeded");
+                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
@@ -412,6 +426,7 @@ private:
         }
         else {
             Log(domain::LogLevel::Warn, "CONNECT failed: " + std::string(resp_buf, 100));
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -564,6 +579,7 @@ private:
     domain::ports::ILogSink* m_logSink = nullptr;
     RelayLogCallback m_logCb;
     RelayConnCallback m_connCb;
+    domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
 
     std::atomic<uint64_t> m_totalRxBytes{0};
     std::atomic<uint64_t> m_totalTxBytes{0};

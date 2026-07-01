@@ -40,19 +40,49 @@ public partial class StatsViewModel : ObservableObject
     [ObservableProperty]
     private uint _activeConnections;
 
+    [ObservableProperty]
+    private ulong _proxyErrors;
+
+    [ObservableProperty]
+    private string _avgLatency = "0 ms";
+
+    [ObservableProperty]
+    private string _uptime = "0m";
+
+    [ObservableProperty]
+    private string _connectionRate = "0/min";
+
     private ulong _prevRx;
     private ulong _prevTx;
+    private uint _prevActive;
+    private double _prevConnRateTime;
 
     /// <summary>
-    /// Push new stats from polling. Updates graph and totals.
+    /// Push new stats from polling. Updates graph, totals, and derived metrics.
     /// </summary>
     public void PushStats(ServiceStats stats)
     {
         _ = App.Current.Dispatcher.BeginInvoke(() =>
         {
             ActiveConnections = stats.ActiveConnections;
+            ProxyErrors = stats.ProxyErrors;
+            AvgLatency = stats.AvgLatencyMs > 0 ? $"{stats.AvgLatencyMs:F0} ms" : "—";
             TotalRx = FormatBytes(stats.TotalRxBytes);
             TotalTx = FormatBytes(stats.TotalTxBytes);
+
+            // Connection rate: delta active per minute (approximate from polling interval)
+            var nowSec = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            if (_prevConnRateTime > 0) {
+                double dt = nowSec - _prevConnRateTime;
+                if (dt > 0.1) {
+                    double ratePerSec = (double)(int)(stats.ActiveConnections - _prevActive) / dt;
+                    double ratePerMin = ratePerSec * 60.0;
+                    ConnectionRate = $"{(ratePerMin >= 0 ? "+" : "")}{ratePerMin:F0}/min";
+                }
+            }
+            _prevActive = stats.ActiveConnections;
+            _prevConnRateTime = nowSec;
+            Uptime = FormatUptime(stats.UptimeSeconds);
 
             // Calculate bytes per second delta
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -85,5 +115,12 @@ public partial class StatsViewModel : ObservableObject
             >= 1_024 => $"{bytes / 1_024.0:F1} KB",
             _ => $"{bytes} B"
         };
+    }
+
+    private static string FormatUptime(ulong seconds)
+    {
+        if (seconds < 60) return $"{seconds}s";
+        if (seconds < 3600) return $"{seconds / 60}m {seconds % 60}s";
+        return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
     }
 }
