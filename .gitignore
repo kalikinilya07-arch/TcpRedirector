@@ -106,3 +106,4 @@ logs/
 **/[Pp]ublish/
 *.nuget.props
 *.nuget.targetsdeploy.7z  
+deploy.7z 
