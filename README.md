@@ -1,117 +1,88 @@
 # TcpRedirector
 
-Прозрачное перенаправление TCP-соединений выбранного приложения через HTTP Proxy (CONNECT) на Windows 10/11 x64.
+Прозрачный TCP-прокси-редиректор для Windows. Перехватывает TCP-трафик выбранных приложений на уровне ядра (WinDivert) и перенаправляет через upstream HTTP-прокси с поддержкой Kerberos/Negotiate аутентификации.
 
-**Разработчик:** Kalikin Iliya
+## Характеристики
 
----
+| Параметр | Значение |
+|----------|----------|
+| Языки | C++ (сервис), C# (GUI) |
+| Строк кода | ~91 000 |
+| Платформа | Windows 10/11 x64 |
+| Требования | .NET 9.0 Windows Desktop Runtime, WinDivert |
+| Права | Администратор (обязательно) |
+
+## Установка на голую Windows
+
+### 1. Установить .NET 9.0 Runtime
+Скачать и установить **Windows Desktop Runtime 9.0 (x64)**:
+```
+https://dotnet.microsoft.com/download/dotnet/9.0
+```
+
+### 2. Скопировать папку `deploy` на целевую машину
+Вся программа — это папка [`deploy/`](deploy/). Скопируйте её в `C:\Program Files\TcpRedirector\`.
+
+```
+C:\Program Files\TcpRedirector\
+├── TcpRedirectorService.exe   # C++ сервис (WinDivert)
+├── WinDivert.dll              # Драйвер перехвата пакетов
+├── WinDivert64.sys            # Драйвер ядра
+├── gui\
+│   ├── TcpRedirectorGUI.exe   # GUI (WPF, .NET 9.0)
+│   └── *.dll                  # Зависимости .NET
+├── config.json                # Пример конфига (авто-создаётся)
+├── install_service.bat        # Установка как Windows-сервис
+├── install_windivert.bat      # Установка драйвера WinDivert
+├── run_console.bat            # Запуск в консольном режиме
+└── uninstall_service.bat      # Удаление сервиса
+```
+
+### 3. Запустить GUI от Администратора
+ПКМ по `gui\TcpRedirectorGUI.exe` → **Run as Administrator**.
+
+GUI автоматически найдёт и запустит `TcpRedirectorService.exe`.
 
 ## Архитектура
 
 ```
-┌──────────┐     ┌──────────────────┐     ┌──────────────┐     ┌──────────┐
-│   GUI    │────▶│    Service       │◀───▶│  WinDivert   │◀───▶│  Apps    │
-│ (WPF C#) │     │ (C++ DST mod)   │     │ Capture/Diver│     │(chrome..)│
-└──────────┘     └──────┬───────────┘     └──────────────┘     └──────────┘
-                        │
-                        ▼
-                 ┌──────────────┐
-                 │ HTTP Proxy   │
-                 │ (CONNECT)    │
-                 └──────────────┘
+┌──────────────┐    IPC (TCP 34011)    ┌──────────────────┐
+│  GUI (WPF)   │◄─────────────────────►│  C++ Service     │
+│  net9.0      │                       │  WinDivert       │
+└──────┬───────┘                       └────────┬─────────┘
+       │ config.json                             │
+       │ (атомарная запись)                       │ WinDivert
+       ▼                                         ▼
+  %ProgramData%\                         Перехват TCP-пакетов
+  TcpRedirector\                          на уровне ядра
+  config.json
 ```
 
-## Компоненты
-
-| Компонент | Технология | Назначение |
-|-----------|-----------|------------|
-| **WinDivert Capture** | C++, WinDivert API | Перехват TCP-пакетов на уровне LAYER_NETWORK, DST modification |
-| **TcpRelayServer** | C++, Winsock | HTTP CONNECT туннели, SSPI/Kerberos auth, bidirectional bridge |
-| **Windows Service** | C++, Win32 API | Управление жизненным циклом, IPC с GUI |
-| **GUI** | C#, WPF, MVVM | Настройка, мониторинг, управление |
-
-## Возможности
-
-- ✅ Прозрачный перехват TCP через WinDivert (без WFP драйвера, без DLL Injection)
-- ✅ HTTP CONNECT прокси с Basic-аутентификацией
-- ✅ **Kerberos/Negotiate аутентификация через SSPI** (Windows Integrated Auth)
-- ✅ DST modification — SYN-пакеты перенаправляются на локальный relay
-- ✅ Правила: по имени процесса, по пути, глобальный режим
-- ✅ Мониторинг соединений (PID, хост, порт, RX/TX, длительность)
-- ✅ Управление сервисом (start/stop/restart/install/uninstall)
-- ✅ Логирование с ротацией (INFO/DEBUG/TRACE)
-- ✅ Консольный режим для отладки
-- ✅ Безопасное хранение пароля (Windows DPAPI)
-
-## Быстрый старт
-
-### Установка сервиса
-
-```batch
-# 1. Скопируйте файлы в одну директорию:
-#    TcpRedirectorService.exe + WinDivert.dll + WinDivert64.sys
-
-# 2. Установите сервис (от имени Администратора)
-TcpRedirectorService.exe --install
-
-# 3. Запустите сервис
-net start TcpRedirectorService
-```
-
-### Консольный режим (для отладки)
-
-```batch
-TcpRedirectorService.exe --console
-```
-
-### Полное описание установки
-
-Подробная пошаговая инструкция: [INSTALL_GUIDE.md](docs/INSTALL_GUIDE.md)
-
-## Документация
-
-- [Архитектура](docs/01_ARCHITECTURE_OVERVIEW.md)
-- [Windows Service (актуальная архитектура)](docs/03_WINDOWS_SERVICE.md)
-- [Установка на чистую Windows](docs/INSTALL_GUIDE.md)
-- [Конфигурация](docs/CONFIG_DESIGN.md)
-- [Логирование](docs/LOGGER_DESIGN.md)
-- [Статистика](docs/STATS_DESIGN.md)
-- [GUI](docs/04_GUI.md)
-- [Connection Flow](docs/05_CONNECTION_FLOW.md)
-- [Risks & Limitations](docs/07_RISKS_AND_LIMITATIONS.md)
-- [Repository Structure](docs/08_REPOSITORY_STRUCTURE.md)
+### Принцип работы
+1. **GUI** — единственный писатель `config.json`. Сервис читает конфиг при старте и хранит в памяти.
+2. **Правила**: добавил правило → трафик приложения перенаправляется. Удалил → не перенаправляется. Всё.
+3. **Сохранение**: кнопка Save → атомарная запись в `config.json` + IPC-синхронизация с сервисом.
+4. **Перечитывание**: конфиг перечитывается при старте GUI, после Start и после Stop сервиса.
 
 ## Сборка из исходников
 
-### Требования
+### C++ сервис
+Открыть `src/service/TcpRedirectorService/TcpRedirectorService.vcxproj` в Visual Studio 2022+, собрать `Release | x64`.
 
-- Visual Studio 2022 (MSVC v143)
-- Windows SDK 10.0.26100+
-- WinDivert 2.2.2-A (x64)
-
-### Сборка
-
+### C# GUI
 ```bash
-msbuild src\service\TcpRedirectorService\TcpRedirectorService.vcxproj /p:Configuration=Release /p:Platform=x64
+dotnet build src/gui/TcpRedirectorGUI/TcpRedirectorGUI.csproj -c Release
 ```
 
-### Структура репозитория
-
-```
-TcpRedirector/
-├── src/
-│   └── service/TcpRedirectorService/     # Основной проект
-│       ├── adapters/                     # Адаптеры (driving/driven)
-│       ├── domain/                       # Доменная модель (entities/ports/services)
-│       └── infrastructure/              # Инфраструктура (auth/capture/config/ipc/logging/relay/stats)
-├── tests/                                # Тесты
-├── docs/                                 # Документация
-├── external/                             # Внешние зависимости (ProxyBridge, WinDivert)
-└── gui/                                  # WPF GUI (C#)
+## Тесты
+```bash
+cd tests/build2 && ctest -C Release
 ```
 
----
-
-**Разработчик:** Kalikin Iliya
-
-**Лицензия:** MIT
+## Коммиты (последние)
+```
+441b1a6 fix: remove Enabled checkbox — rule presence = active
+45e2ba4 chore: fix comments, remove unused AuthUsername
+b148ca2 fix: two-tier save — disk + IPC
+0327cdd fix: config.json persistence — atomic writes
+```
