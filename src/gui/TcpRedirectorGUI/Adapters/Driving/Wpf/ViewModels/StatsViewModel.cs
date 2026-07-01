@@ -10,12 +10,14 @@ public partial class StatsViewModel : ObservableObject
 {
     private readonly ITcpRedirectorService _svc;
     private readonly IConfigRepository _config;
-    private const int MaxGraphPoints = 60; // 60 seconds @ 1 point/sec
+    private int _maxGraphPoints;
 
     public StatsViewModel(ITcpRedirectorService svc, IConfigRepository config)
     {
         _svc = svc;
         _config = config;
+        _graphWindowSec = config.ReadInt("stats", "graphWindowSec", 3600);
+        _maxGraphPoints = Math.Max(60, _graphWindowSec); // at least 60 points
     }
 
     // ── Traffic Graph ────────────────────────────────
@@ -25,6 +27,10 @@ public partial class StatsViewModel : ObservableObject
     [ObservableProperty]
     private ObservableCollection<TrafficPoint> _txPoints = new();
 
+    /// <summary>Graph time window in seconds (from config).</summary>
+    private readonly int _graphWindowSec;
+    public int GraphWindowSec => _graphWindowSec;
+
     [ObservableProperty]
     private string _totalRx = "0 B";
 
@@ -33,9 +39,6 @@ public partial class StatsViewModel : ObservableObject
 
     [ObservableProperty]
     private uint _activeConnections;
-
-    [ObservableProperty]
-    private ulong _totalConnections;
 
     private ulong _prevRx;
     private ulong _prevTx;
@@ -48,7 +51,6 @@ public partial class StatsViewModel : ObservableObject
         _ = App.Current.Dispatcher.BeginInvoke(() =>
         {
             ActiveConnections = stats.ActiveConnections;
-            TotalConnections = stats.TotalConnections;
             TotalRx = FormatBytes(stats.TotalRxBytes);
             TotalTx = FormatBytes(stats.TotalTxBytes);
 
@@ -66,9 +68,9 @@ public partial class StatsViewModel : ObservableObject
             RxPoints.Add(new TrafficPoint(now, rxRate));
             TxPoints.Add(new TrafficPoint(now, txRate));
 
-            while (RxPoints.Count > MaxGraphPoints)
+            while (RxPoints.Count > _maxGraphPoints)
                 RxPoints.RemoveAt(0);
-            while (TxPoints.Count > MaxGraphPoints)
+            while (TxPoints.Count > _maxGraphPoints)
                 TxPoints.RemoveAt(0);
         });
     }

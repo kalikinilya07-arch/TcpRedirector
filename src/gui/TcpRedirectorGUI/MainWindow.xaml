@@ -13,77 +13,18 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <!-- Tab bar -->
-            <RowDefinition Height="36"/>
             <!-- Service bar -->
             <RowDefinition Height="40"/>
-            <!-- Content -->
+            <!-- Content: single Viewbox — no scrollbars, everything scales together -->
             <RowDefinition Height="*"/>
             <!-- Status bar -->
             <RowDefinition Height="28"/>
         </Grid.RowDefinitions>
 
         <!-- ============================================
-             TAB BAR (VSCode-style)
-             ============================================ -->
-        <Border Grid.Row="0" Background="#252526">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-
-                <!-- Logo -->
-                <TextBlock Grid.Column="0" Text="TcpRedirector"
-                           Foreground="#007ACC" FontSize="14" FontWeight="Bold"
-                           VerticalAlignment="Center" Margin="16,0,20,0"/>
-
-                <!-- Tab: Settings -->
-                <Button Grid.Column="1"
-                        Content="Settings"
-                        Command="{Binding NavCommand}"
-                        CommandParameter="Settings"
-                        Width="100">
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource TabButton}">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding ActiveTab}" Value="Settings">
-                                    <Setter Property="Background" Value="{StaticResource EditorBgBrush}"/>
-                                    <Setter Property="BorderBrush" Value="{StaticResource AccentBlueBrush}"/>
-                                    <Setter Property="Foreground" Value="White"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Button.Style>
-                </Button>
-
-                <!-- Tab: Statistics -->
-                <Button Grid.Column="2"
-                        Content="Statistics"
-                        Command="{Binding NavCommand}"
-                        CommandParameter="Statistics"
-                        Width="100">
-                    <Button.Style>
-                        <Style TargetType="Button" BasedOn="{StaticResource TabButton}">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding ActiveTab}" Value="Statistics">
-                                    <Setter Property="Background" Value="{StaticResource EditorBgBrush}"/>
-                                    <Setter Property="BorderBrush" Value="{StaticResource AccentBlueBrush}"/>
-                                    <Setter Property="Foreground" Value="White"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Button.Style>
-                </Button>
-            </Grid>
-        </Border>
-
-        <!-- ============================================
              SERVICE CONTROL BAR
              ============================================ -->
-        <Border Grid.Row="1" Background="#2D2D2D" BorderBrush="#3C3C3C"
+        <Border Grid.Row="0" Background="#2D2D2D" BorderBrush="#3C3C3C"
                 BorderThickness="0,0,0,1" Padding="12,0">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -123,10 +64,6 @@
 
                 <!-- Connection info -->
                 <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock FontSize="12" Foreground="#858585" Margin="0,0,16,0">
-                        <Run Text="Conn:"/>
-                        <Run Text="{Binding ActiveConnections, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
-                    </TextBlock>
                     <TextBlock FontSize="12" Foreground="#858585">
                         <Run Text="Traffic:"/>
                         <Run Text="{Binding TotalTraffic, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
@@ -136,20 +73,20 @@
         </Border>
 
         <!-- ============================================
-             CONTENT AREA
+             CONTENT: single Viewbox wrapping both
+             settings + statistics, no scrollbars
              ============================================ -->
-        <Grid Grid.Row="2" Margin="0,0,0,0">
+        <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
+            <Grid Width="1060" Height="620">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-            <!-- ════════════════════════════════════════
-                 TAB 1: SETTINGS
-                 ════════════════════════════════════════ -->
-            <ScrollViewer Visibility="{Binding ActiveTab, Converter={StaticResource ViewToVis}, ConverterParameter=Settings}"
-                          Background="#1E1E1E"
-                          VerticalScrollBarVisibility="Auto"
-                          Padding="24,16">
-                <StackPanel>
+                <!-- SETTINGS (top 2/3) -->
+                <StackPanel Grid.Row="0">
 
-                    <!-- ── Proxy Settings ──────────────────── -->
+                    <!-- Proxy Settings -->
                     <TextBlock Text="PROXY SETTINGS" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
@@ -165,25 +102,25 @@
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:"
-                                       VerticalAlignment="Center" Margin="0,4"/>
+                                       VerticalAlignment="Center" Margin="0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
                                      Text="{Binding Settings.Host, Mode=TwoWay}"
-                                     Margin="0,4"/>
+                                     Margin="0,2"/>
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Port:"
-                                       VerticalAlignment="Center" Margin="8,4,0,4"/>
+                                       VerticalAlignment="Center" Margin="8,2,0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="3"
                                      Text="{Binding Settings.Port, Mode=TwoWay}"
-                                     Margin="8,4,0,4"/>
+                                     Margin="8,2,0,2"/>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
                                       Content="Authentication required"
                                       IsChecked="{Binding Settings.AuthRequired, Mode=TwoWay}"
-                                      Margin="0,4"/>
+                                      Margin="0,2"/>
                         </Grid>
                     </Border>
 
-                    <!-- ── Authentication ──────────────────── -->
+                    <!-- Authentication -->
                     <TextBlock Text="AUTHENTICATION (Login / Kerberos SSPI)"
                                Style="{StaticResource SectionHeader}"
                                Visibility="{Binding Settings.AuthRequired, Converter={StaticResource BoolToVis}}"/>
@@ -203,34 +140,34 @@
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Login:"
-                                       VerticalAlignment="Center" Margin="0,4"/>
+                                       VerticalAlignment="Center" Margin="0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
                                      Text="{Binding Settings.Login, Mode=TwoWay}"
-                                     Margin="0,4"/>
+                                     Margin="0,2"/>
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Password:"
-                                       VerticalAlignment="Center" Margin="8,4,0,4"/>
+                                       VerticalAlignment="Center" Margin="8,2,0,2"/>
                             <PasswordBox Grid.Row="0" Grid.Column="3"
-                                         x:Name="PwdBox" Margin="8,4,0,4"/>
+                                         x:Name="PwdBox" Margin="8,2,0,2"/>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
                                       Content="Use Kerberos protocol"
                                       IsChecked="{Binding Settings.KerberosEnabled, Mode=TwoWay}"
-                                      Margin="0,4"/>
+                                      Margin="0,2"/>
                         </Grid>
                     </Border>
 
-                    <!-- ── Rules ───────────────────────────── -->
+                    <!-- Rules -->
                     <TextBlock Text="RULES" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="200"/>
+                                <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
                                 <Button Content="+ Add Rule"
                                         Command="{Binding Settings.AddRuleCommand}"
                                         Padding="12,6" Margin="0,0,8,0"/>
@@ -248,7 +185,8 @@
                                       SelectedItem="{Binding Settings.SelectedRule}"
                                       AutoGenerateColumns="False"
                                       IsReadOnly="True"
-                                      FontSize="12">
+                                      FontSize="12"
+                                      MinHeight="60" MaxHeight="400">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*"/>
                                     <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="150"/>
@@ -273,7 +211,7 @@
                         </Grid>
                     </Border>
 
-                    <!-- ── Log Level ─────────────────────────── -->
+                    <!-- Log Level -->
                     <TextBlock Text="LOG LEVEL" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <StackPanel Orientation="Horizontal">
@@ -300,65 +238,58 @@
                     </Border>
 
                 </StackPanel>
-            </ScrollViewer>
 
-            <!-- ════════════════════════════════════════
-                 TAB 2: STATISTICS
-                 ════════════════════════════════════════ -->
-            <Grid Visibility="{Binding ActiveTab, Converter={StaticResource ViewToVis}, ConverterParameter=Statistics}"
-                  Background="#1E1E1E">
-                <Grid Margin="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
+                <!-- STATISTICS (bottom 1/3) -->
+                <Grid Grid.Row="1" Background="#1E1E1E">
+                    <Grid Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
 
-                    <!-- Graph header -->
-                    <Grid Grid.Row="0" Margin="0,0,0,4">
-                        <TextBlock Text="TRAFFIC (bytes/sec)" FontWeight="Bold"
-                                   Foreground="#DCDCAA" FontSize="13"/>
-                    </Grid>
+                        <!-- Graph header -->
+                        <Grid Grid.Row="0" Margin="0,0,0,4">
+                            <TextBlock Text="TRAFFIC (bytes/sec)" FontWeight="Bold"
+                                       Foreground="#DCDCAA" FontSize="13"/>
+                        </Grid>
 
-                    <!-- The custom chart control -->
-                    <ctl:TrafficGraph Grid.Row="1"
-                                      RxData="{Binding Stats.RxPoints}"
-                                      TxData="{Binding Stats.TxPoints}"/>
+                        <!-- The custom chart control -->
+                        <ctl:TrafficGraph Grid.Row="1"
+                                          RxData="{Binding Stats.RxPoints}"
+                                          TxData="{Binding Stats.TxPoints}"
+                                          WindowSeconds="{Binding Stats.GraphWindowSec}"/>
 
-                    <!-- Stats summary -->
-                    <Grid Grid.Row="2" Margin="0,4,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
-                            <Run Text="Total connections:"/>
-                            <Run Text="{Binding Stats.TotalConnections, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
-                        </TextBlock>
-                        <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
-                            <Run Text="RX:"/>
-                            <Run Text="{Binding Stats.TotalRx, Mode=OneWay}" FontWeight="Bold" Foreground="#4EC9B0"/>
-                        </TextBlock>
-                        <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12">
-                            <Run Text="TX:"/>
-                            <Run Text="{Binding Stats.TotalTx, Mode=OneWay}" FontWeight="Bold" Foreground="#CE9178"/>
-                        </TextBlock>
-                        <TextBlock Grid.Column="3" Foreground="#858585" FontSize="12" Margin="16,0">
-                            <Run Text="Active:"/>
-                            <Run Text="{Binding Stats.ActiveConnections, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
-                        </TextBlock>
+                        <!-- Stats summary -->
+                        <Grid Grid.Row="2" Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
+                                <Run Text="Active connections:"/>
+                                <Run Text="{Binding Stats.ActiveConnections, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
+                                <Run Text="RX:"/>
+                                <Run Text="{Binding Stats.TotalRx, Mode=OneWay}" FontWeight="Bold" Foreground="#4EC9B0"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12">
+                                <Run Text="TX:"/>
+                                <Run Text="{Binding Stats.TotalTx, Mode=OneWay}" FontWeight="Bold" Foreground="#CE9178"/>
+                            </TextBlock>
+                        </Grid>
                     </Grid>
                 </Grid>
             </Grid>
-        </Grid>
+        </Viewbox>
 
         <!-- ============================================
              STATUS BAR
              ============================================ -->
-        <Border Grid.Row="3" Background="#007ACC" Padding="12,0">
+        <Border Grid.Row="2" Background="#007ACC" Padding="12,0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>

@@ -109,7 +109,6 @@ public class LogEntry
 
 public class ServiceStats
 {
-    public ulong TotalConnections { get; set; }
     public uint ActiveConnections { get; set; }
     public ulong TotalRxBytes { get; set; }
     public ulong TotalTxBytes { get; set; }

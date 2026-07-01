@@ -138,6 +138,7 @@ public:
             std::string exeNameUtf8(exeName.begin(), exeName.end());
             m_logger->Info("service", "Target process: " + exeNameUtf8);
             capture->SetLogSink(m_logger.get());
+            capture->SetConnectionMonitor(m_connectionTracker.get());
             m_capture = std::move(capture);
         }
 
@@ -160,6 +161,10 @@ public:
                 // Read byte counters from WinDivertCapture (tracks TCP-level bytes)
                 auto* capture = static_cast<infrastructure::WinDivertCapture*>(m_capture.get());
                 return {capture->GetTotalRxBytes(), capture->GetTotalTxBytes()};
+            },
+            [this]() -> uint32_t {
+                auto* capture = static_cast<infrastructure::WinDivertCapture*>(m_capture.get());
+                return capture->GetActiveConnections();
             });
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {

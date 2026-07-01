@@ -22,7 +22,6 @@ public:
             std::unique_lock lock(m_mutex);
             m_connections[record.id] = record;
             m_stats.active_connections = static_cast<uint32_t>(m_connections.size());
-            m_stats.total_connections++;
             if (m_callback) {
                 snapshot = BuildSnapshotLocked();
             }

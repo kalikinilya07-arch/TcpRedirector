@@ -166,7 +166,6 @@ struct LogEntry {
  * Содержит счётчики соединений, объём трафика и ошибки работы с прокси.
  */
 struct ServiceStats {
-    uint64_t total_connections = 0;     //!< Всего соединений
     uint64_t active_connections = 0;    //!< Активных соединений
     uint64_t total_rx_bytes = 0;        //!< Всего получено байт
     uint64_t total_tx_bytes = 0;        //!< Всего отправлено байт

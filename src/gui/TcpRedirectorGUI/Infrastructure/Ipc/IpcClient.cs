@@ -205,7 +205,6 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             {
                 return new ServiceStats
                 {
-                    TotalConnections = d.GetProperty("total_connections").GetUInt64(),
                     ActiveConnections = d.GetProperty("active_connections").GetUInt32(),
                     TotalRxBytes = d.GetProperty("total_rx_bytes").GetUInt64(),
                     TotalTxBytes = d.GetProperty("total_tx_bytes").GetUInt64()

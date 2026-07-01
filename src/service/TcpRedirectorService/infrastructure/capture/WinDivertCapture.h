@@ -67,6 +67,10 @@ public:
 
     void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }
 
+    void SetConnectionMonitor(domain::ports::IConnectionMonitor* monitor) {
+        m_connectionMonitor = monitor;
+    }
+
     std::vector<domain::RedirectEvent> GetPendingRedirects(
         uint32_t timeout_ms = 1000) override;
     bool AckRedirect(uint64_t redirect_id) override;
@@ -76,6 +80,10 @@ public:
     // Expose byte counters for IPC stats
     uint64_t GetTotalRxBytes() const { return m_totalRxBytes.load(std::memory_order_relaxed); }
     uint64_t GetTotalTxBytes() const { return m_totalTxBytes.load(std::memory_order_relaxed); }
+    uint64_t GetTotalConnections() const { return m_totalConnections.load(std::memory_order_relaxed); }
+    uint32_t GetActiveConnections() const {
+        return m_connTable ? static_cast<uint32_t>(m_connTable->GetTrackedCount()) : 0u;
+    }
 
 private:
     void WdLog(domain::LogLevel level, const char* fmt, ...);
@@ -186,6 +194,11 @@ private:
     std::atomic<uint64_t> m_redirects_emitted{0};
     std::atomic<uint64_t> m_totalRxBytes{0};
     std::atomic<uint64_t> m_totalTxBytes{0};
+    std::atomic<uint64_t> m_totalConnections{0};
+    std::atomic<uint32_t> m_activeConnections{0};
+
+    // Connection monitor (for UI stats)
+    domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
 
 
     // Redirect event queue (заглушка, не используется)

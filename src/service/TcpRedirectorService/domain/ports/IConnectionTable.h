@@ -109,6 +109,9 @@ public:
      * @return true, если информация успешно получена.
      */
     virtual bool GetInfo(uint16_t src_port, ConnectionInfo* info) = 0;
+
+    /// Number of currently tracked (active) connections.
+    virtual uint32_t GetTrackedCount() const = 0;
 };
 
 } // namespace ports

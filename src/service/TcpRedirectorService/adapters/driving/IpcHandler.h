@@ -19,6 +19,9 @@ namespace adapters {
 // Callback to get relay byte counters: returns {rx_bytes, tx_bytes}
 using GetRelayBytesCallback = std::function<std::pair<uint64_t, uint64_t>()>;
 
+// Callback to get active connection count from capture (ConnectionTable)
+using GetActiveCountCallback = std::function<uint32_t()>;
+
 class IpcHandler {
 public:
     IpcHandler(
@@ -28,14 +31,16 @@ public:
         infrastructure::Logger* logger,
         const std::atomic<bool>* running,
         const std::atomic<bool>* initialized,
-        GetRelayBytesCallback getRelayBytes = nullptr)
+        GetRelayBytesCallback getRelayBytes = nullptr,
+        GetActiveCountCallback getActiveCount = nullptr)
         : m_ruleEngine(ruleEngine)
         , m_connectionTracker(connectionTracker)
         , m_configManager(configManager)
         , m_logger(logger)
         , m_running(running)
         , m_initialized(initialized)
-        , m_getRelayBytes(std::move(getRelayBytes)) {
+        , m_getRelayBytes(std::move(getRelayBytes))
+        , m_getActiveCount(std::move(getActiveCount)) {
     }
 
     void Handle(const std::string& method,
@@ -199,9 +204,10 @@ private:
             if (rb.first > rx) rx = rb.first;
             if (rb.second > tx) tx = rb.second;
         }
+        // active_connections from capture (ConnectionTable) — authoritative source
+        uint32_t active = m_getActiveCount ? m_getActiveCount() : stats.active_connections;
         result["status"] = "success";
-        result["data"]["total_connections"] = stats.total_connections;
-        result["data"]["active_connections"] = stats.active_connections;
+        result["data"]["active_connections"] = active;
         result["data"]["total_rx_bytes"] = rx;
         result["data"]["total_tx_bytes"] = tx;
     }
@@ -226,6 +232,7 @@ private:
     const std::atomic<bool>* m_running;
     const std::atomic<bool>* m_initialized;
     GetRelayBytesCallback m_getRelayBytes;
+    GetActiveCountCallback m_getActiveCount;
 };
 
 } // namespace adapters

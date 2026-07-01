@@ -17,20 +17,27 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 {
     private readonly ITcpRedirectorService _svc;
     private readonly IServiceController _scm;
+    private readonly IConfigRepository _config;
     private CancellationTokenSource? _timerCts;
     private Process? _backendProcess;
     private bool _disposed;
+    private readonly int _pollIntervalMs;
 
     public ShellViewModel(
         ITcpRedirectorService svc,
         IServiceController scm,
+        IConfigRepository config,
         SettingsViewModel settings,
         StatsViewModel stats)
     {
         _svc = svc;
         _scm = scm;
+        _config = config;
         Settings = settings;
         Stats = stats;
+
+        // Read poll interval from config (default 1000ms)
+        _pollIntervalMs = Math.Max(200, config.ReadInt("stats", "updateIntervalMs", 1000));
 
         // React to connection state changes
         _svc.ConnectionStateChanged += OnConnectionStateChanged;
@@ -39,14 +46,6 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         Settings.LoadFromConfig();
         StatusText = "Configured";
     }
-
-    // ── Navigation ───────────────────────────────────
-
-    [ObservableProperty]
-    private string _activeTab = "Settings";
-
-    [RelayCommand]
-    private void Nav(string tab) => ActiveTab = tab;
 
     // ── Status ───────────────────────────────────────
 
@@ -62,10 +61,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _svcMsg = "";
 
-    // ── Stats (top-level) ────────────────────────────
-
-    [ObservableProperty]
-    private uint _activeConnections;
+    // ── Stats ────────────────────────────────────────
 
     [ObservableProperty]
     private string _totalTraffic = "0 B";
@@ -316,13 +312,12 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         {
             try
             {
-                await Task.Delay(1000, ct);
+                await Task.Delay(_pollIntervalMs, ct);
                 if (!_svc.IsConnected) continue;
 
                 var stats = await _svc.GetStatsAsync();
                 if (stats is not null)
                 {
-                    ActiveConnections = stats.ActiveConnections;
                     TotalTraffic = FormatBytes(stats.TotalRxBytes + stats.TotalTxBytes);
                     Stats.PushStats(stats);
                 }

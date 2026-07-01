@@ -114,7 +114,6 @@ public:
 
     void SendStats(const domain::ServiceStats& stats) override {
         nlohmann::json j = {
-            {"total_connections", stats.total_connections},
             {"active_connections", stats.active_connections},
             {"total_rx_bytes", stats.total_rx_bytes},
             {"total_tx_bytes", stats.total_tx_bytes},

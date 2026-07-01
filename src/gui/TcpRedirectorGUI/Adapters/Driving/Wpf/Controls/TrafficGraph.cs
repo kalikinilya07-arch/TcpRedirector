@@ -11,6 +11,11 @@ namespace TcpRedirectorGUI.Adapters.Driving.Wpf.Controls;
 /// </summary>
 public class TrafficGraph : FrameworkElement
 {
+    public TrafficGraph()
+    {
+        ClipToBounds = true;
+    }
+
     // ── Data ──────────────────────────────────────────
     public static readonly DependencyProperty RxDataProperty =
         DependencyProperty.Register(nameof(RxData), typeof(IList<TrafficPoint>),
@@ -32,6 +37,18 @@ public class TrafficGraph : FrameworkElement
     {
         get => (IList<TrafficPoint>?)GetValue(TxDataProperty);
         set => SetValue(TxDataProperty, value);
+    }
+
+    /// <summary>Graph time window in seconds (default 3600 = 1 hour).</summary>
+    public static readonly DependencyProperty WindowSecondsProperty =
+        DependencyProperty.Register(nameof(WindowSeconds), typeof(double),
+            typeof(TrafficGraph), new FrameworkPropertyMetadata(3600.0,
+                FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public double WindowSeconds
+    {
+        get => (double)GetValue(WindowSecondsProperty);
+        set => SetValue(WindowSecondsProperty, value);
     }
 
     /// <summary>
@@ -94,7 +111,7 @@ public class TrafficGraph : FrameworkElement
         var typeface = new Typeface("Segoe UI");
         var fontSize = 10;
 
-        var maxVal = ComputeMax(RxData, TxData);
+        var maxVal = ComputeMax(RxData, TxData, (long)(WindowSeconds * 1000));
         if (maxVal <= 0) maxVal = 1;
 
         // Y-axis labels
@@ -107,13 +124,18 @@ public class TrafficGraph : FrameworkElement
             dc.DrawText(ft, new Point(4, h * i / 4 - ft.Height / 2));
         }
 
-        // X-axis labels (last 60s)
+        // X-axis labels
+        var winSec = (int)WindowSeconds;
+        if (winSec < 10) winSec = 10;
+        var step = winSec / 4;
         for (int i = 0; i <= 4; i++)
         {
-            var sec = i * 15;
-            var ft = new FormattedText($"-{60 - sec}s", System.Globalization.CultureInfo.CurrentCulture,
+            var sec = i * step;
+            var label = FormatTimeLabel(winSec - sec);
+            var ft = new FormattedText(label, System.Globalization.CultureInfo.CurrentCulture,
                 FlowDirection.LeftToRight, typeface, fontSize, labelBrush, 96);
-            dc.DrawText(ft, new Point(w - 60 + sec * (w - 50) / 60 - ft.Width / 2, h - ft.Height - 2));
+            var xPos = 4 + sec * (w - 50) / winSec;
+            dc.DrawText(ft, new Point(xPos - ft.Width / 2, h - ft.Height - 2));
         }
 
         // Draw data lines
@@ -121,29 +143,29 @@ public class TrafficGraph : FrameworkElement
         var plotW = w - margin - 8;
         var plotH = h - 20;
 
-        DrawLine(dc, RxData, maxVal, plotW, plotH, margin, Color.FromRgb(0x4E, 0xC9, 0xB0)); // green
-        DrawLine(dc, TxData, maxVal, plotW, plotH, margin, Color.FromRgb(0xCE, 0x91, 0x78)); // orange
+        DrawLine(dc, RxData, maxVal, plotW, plotH, margin, (int)WindowSeconds * 1000L, Color.FromRgb(0x4E, 0xC9, 0xB0)); // green
+        DrawLine(dc, TxData, maxVal, plotW, plotH, margin, (int)WindowSeconds * 1000L, Color.FromRgb(0xCE, 0x91, 0x78)); // orange
 
         // Legend
         DrawLegend(dc, w);
     }
 
     private static void DrawLine(DrawingContext dc, IList<TrafficPoint>? data,
-        ulong maxVal, double plotW, double plotH, double margin, Color color)
+        ulong maxVal, double plotW, double plotH, double margin, long windowMs, Color color)
     {
         if (data == null || data.Count < 2 || maxVal == 0) return;
 
         var pen = new Pen(new SolidColorBrush(color), 1.5);
         var points = new List<Point>();
 
-        // Normalize time: last 60 seconds
+        // Normalize time: last windowMs milliseconds
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var tStart = now - 60_000;
+        var tStart = now - windowMs;
 
         foreach (var pt in data)
         {
             if (pt.Timestamp < tStart) continue;
-            var x = margin + plotW * (pt.Timestamp - tStart) / 60_000.0;
+            var x = margin + plotW * (pt.Timestamp - tStart) / (double)windowMs;
             var y = plotH - plotH * pt.BytesPerSec / (double)maxVal;
             points.Add(new Point(x, y));
         }
@@ -168,21 +190,41 @@ public class TrafficGraph : FrameworkElement
         dc.DrawText(txFt, new Point(w - 40, 4));
     }
 
-    private static ulong ComputeMax(IList<TrafficPoint>? rx, IList<TrafficPoint>? tx)
+    private static ulong ComputeMax(IList<TrafficPoint>? rx, IList<TrafficPoint>? tx, long windowMs)
     {
-        ulong max = 0;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var tStart = now - windowMs;
+
+        // Collect all visible non-zero values for percentile calculation
+        var vals = new List<ulong>();
         if (rx != null)
             foreach (var p in rx)
-                if (p.BytesPerSec > max) max = p.BytesPerSec;
+                if (p.Timestamp >= tStart && p.BytesPerSec > 0)
+                    vals.Add(p.BytesPerSec);
         if (tx != null)
             foreach (var p in tx)
-                if (p.BytesPerSec > max) max = p.BytesPerSec;
+                if (p.Timestamp >= tStart && p.BytesPerSec > 0)
+                    vals.Add(p.BytesPerSec);
+
+        if (vals.Count == 0) return 1024;
+
+        vals.Sort();
+        ulong actualMax = vals[^1];
+
+        // Use 95th percentile so outlier spikes don't flatten the Y-axis for hours.
+        // Floor at actualMax / 10 so huge spikes are still somewhat visible.
+        int p95idx = (int)(vals.Count * 0.95);
+        if (p95idx >= vals.Count) p95idx = vals.Count - 1;
+        ulong p95 = vals[p95idx];
+
+        ulong result = Math.Max(p95, actualMax / 10);
+        if (result == 0) result = 1024;
 
         // Round up to nice number
-        if (max == 0) return 1024;
         ulong mag = 1;
-        while (max >= 1000) { max /= 10; mag *= 10; }
-        return (max + 1) * mag;
+        ulong r = result;
+        while (r >= 1000) { r /= 10; mag *= 10; }
+        return (r + 1) * mag;
     }
 
     private static string FormatByteRate(ulong bps)
@@ -190,6 +232,15 @@ public class TrafficGraph : FrameworkElement
         if (bps >= 1_000_000) return $"{bps / 1_000_000.0:F1} MB/s";
         if (bps >= 1_000) return $"{bps / 1_000.0:F0} KB/s";
         return $"{bps} B/s";
+    }
+
+    private static string FormatTimeLabel(int totalSec)
+    {
+        if (totalSec >= 3600 && totalSec % 3600 == 0)
+            return $"-{totalSec / 3600}h";
+        if (totalSec >= 60 && totalSec % 60 == 0)
+            return $"-{totalSec / 60}m";
+        return $"-{totalSec}s";
     }
 }
 

@@ -296,6 +296,14 @@ void WinDivertCapture::CaptureLoop() {
                     m_totalTxBytes.fetch_add(info.bytes_down, std::memory_order_relaxed);
                 }
                 m_connTable->Remove(srcPort);
+
+                // Remove from connection monitor
+                if (m_connectionMonitor) {
+                    m_connectionMonitor->RemoveConnection(srcPort);
+                }
+                if (m_activeConnections.load(std::memory_order_relaxed) > 0)
+                    m_activeConnections.fetch_sub(1, std::memory_order_relaxed);
+
                 ClearPort(srcPort);
             }
 
@@ -339,6 +347,22 @@ void WinDivertCapture::CaptureLoop() {
                 if (pid != 0 && procPath[0]) {
                     m_connTable->SetProcessInfo(srcPort, pid, procPath);
                 }
+
+                // Track in connection monitor for UI stats
+                if (m_connectionMonitor) {
+                    domain::ConnectionRecord rec;
+                    rec.id = srcPort;
+                    rec.pid = pid;
+                    if (procPath[0]) rec.process_name = procPath;
+                    rec.destination_port = origDestPort;
+                    rec.state = domain::ConnectionState::Redirecting;
+                    rec.start_time = std::chrono::steady_clock::now();
+                    rec.proxy_enabled = true;
+                    m_connectionMonitor->AddConnection(rec);
+                }
+                m_totalConnections.fetch_add(1, std::memory_order_relaxed);
+                m_activeConnections.fetch_add(1, std::memory_order_relaxed);
+
                 SetPortDecided(srcPort);
                 m_redirects_emitted++;
 

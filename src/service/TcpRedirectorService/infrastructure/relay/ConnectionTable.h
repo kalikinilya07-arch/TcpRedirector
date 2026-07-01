@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
+#include <atomic>
 
 #include "../../domain/ports/IConnectionTable.h"
 
@@ -59,6 +60,9 @@ public:
         Clear();
     }
 
+    /// Number of currently tracked connections.
+    uint32_t GetTrackedCount() const { return m_trackedCount.load(std::memory_order_relaxed); }
+
     // Сохранить соединение: src_port → {orig_dest_ip, orig_dest_port, proxy_config_id}
     void Add(uint16_t src_port, uint32_t src_ip,
              uint32_t orig_dest_ip, uint16_t orig_dest_port,
@@ -91,6 +95,7 @@ public:
         conn->is_tracked = true;
         conn->next = m_table[hash];
         m_table[hash] = conn;
+        m_trackedCount.fetch_add(1, std::memory_order_relaxed);
 
         ReleaseSRWLockExclusive(&m_lock);
     }
@@ -164,6 +169,8 @@ public:
                 ConnectionEntry* to_delete = *pp;
                 *pp = (*pp)->next;
                 delete to_delete;
+                if (m_trackedCount.load(std::memory_order_relaxed) > 0)
+                    m_trackedCount.fetch_sub(1, std::memory_order_relaxed);
                 ReleaseSRWLockExclusive(&m_lock);
                 return;
             }
@@ -207,6 +214,7 @@ public:
             }
             m_table[i] = nullptr;
         }
+        m_trackedCount.store(0, std::memory_order_relaxed);
 
         ReleaseSRWLockExclusive(&m_lock);
     }
@@ -255,6 +263,7 @@ public:
 private:
     ConnectionEntry* m_table[CONNECTION_HASH_SIZE];
     SRWLOCK m_lock;
+    std::atomic<uint32_t> m_trackedCount{0};
 };
 
 } // namespace infrastructure
