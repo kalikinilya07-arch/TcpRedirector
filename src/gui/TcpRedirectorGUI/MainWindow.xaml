@@ -184,6 +184,7 @@
                                       ItemsSource="{Binding Settings.Rules}"
                                       SelectedItem="{Binding Settings.SelectedRule}"
                                       AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
                                       FontSize="12"
                                       MinHeight="60" MaxHeight="400">
                                 <DataGrid.Columns>
