@@ -184,12 +184,11 @@
                                       ItemsSource="{Binding Settings.Rules}"
                                       SelectedItem="{Binding Settings.SelectedRule}"
                                       AutoGenerateColumns="False"
-                                      IsReadOnly="True"
                                       FontSize="12"
                                       MinHeight="60" MaxHeight="400">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*"/>
-                                    <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="150"/>
+                                    <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="150" IsReadOnly="True"/>
                                     <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled}" Width="60"/>
                                     <DataGridTemplateColumn Header="" Width="60">
                                         <DataGridTemplateColumn.CellTemplate>
