@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+
 namespace TcpRedirectorGUI.Domain.Entities;
 
 public class ProxyConfig
@@ -32,7 +34,7 @@ public enum RuleAction
     Block = 2
 }
 
-public class Rule
+public partial class Rule : ObservableObject
 {
     public string Id { get; set; } = Guid.NewGuid().ToString();
     public RuleType Type { get; set; } = RuleType.ProcessName;
@@ -40,7 +42,10 @@ public class Rule
     public string Pattern { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public int Priority { get; set; }
-    public bool Enabled { get; set; } = true;
+
+    [ObservableProperty]
+    private bool _enabled = true;
+
     public DateTime Created { get; set; } = DateTime.UtcNow;
     public DateTime Modified { get; set; } = DateTime.UtcNow;
 }

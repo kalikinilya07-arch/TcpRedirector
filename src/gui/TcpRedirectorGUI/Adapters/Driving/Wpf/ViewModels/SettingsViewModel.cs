@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
@@ -21,6 +23,8 @@ public partial class SettingsViewModel : ObservableObject
     {
         _config = config;
         _svc = svc;
+        // Auto-save when any rule's Enabled property changes
+        Rules.CollectionChanged += OnRulesCollectionChanged;
     }
 
     // ── Proxy ────────────────────────────────────────
@@ -36,6 +40,26 @@ public partial class SettingsViewModel : ObservableObject
     // ── Rules ────────────────────────────────────────
     [ObservableProperty] private ObservableCollection<Rule> _rules = [];
     [ObservableProperty] private Rule? _selectedRule;
+
+    private void OnRulesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems is not null)
+        {
+            foreach (Rule rule in e.NewItems)
+                rule.PropertyChanged += OnRulePropertyChanged;
+        }
+        if (e.OldItems is not null)
+        {
+            foreach (Rule rule in e.OldItems)
+                rule.PropertyChanged -= OnRulePropertyChanged;
+        }
+    }
+
+    private async void OnRulePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(Rule.Enabled))
+            await SaveAsync();
+    }
 
     // ── Log Level ────────────────────────────────────
     [ObservableProperty] private int _logLevelFilter = 2; // 0=TRACE..4=ERROR
