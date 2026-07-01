@@ -141,6 +141,7 @@ public:
             m_logger->Info("service", "Target process: " + exeNameUtf8);
             capture->SetLogSink(m_logger.get());
             capture->SetConnectionMonitor(m_connectionTracker.get());
+            capture->SetRuleEngine(m_ruleEngine.get());
             m_capture = std::move(capture);
         }
 

@@ -33,6 +33,7 @@
 #include "../../domain/ports/ICapture.h"
 #include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/ports/IConnectionMonitor.h"
+#include "../../domain/services/RuleEngine.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -69,6 +70,10 @@ public:
 
     void SetConnectionMonitor(domain::ports::IConnectionMonitor* monitor) {
         m_connectionMonitor = monitor;
+    }
+
+    void SetRuleEngine(domain::services::RuleEngine* engine) {
+        m_ruleEngine = engine;
     }
 
     std::vector<domain::RedirectEvent> GetPendingRedirects(
@@ -197,6 +202,9 @@ private:
 
     // Connection monitor (for UI stats)
     domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
+
+    // Rule engine (for multi-rule process matching)
+    domain::services::RuleEngine* m_ruleEngine = nullptr;
 
 
     // Redirect event queue (заглушка, не используется)

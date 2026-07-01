@@ -454,7 +454,28 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
         wcscpy_s(out_proc_path, out_proc_path_size, procPath);
     }
 
-    // 4. Проверка: совпадает с target process?
+    // 4. RuleEngine check (multi-rule matching — supports multiple processes)
+    if (m_ruleEngine) {
+        std::wstring procName = procPath;
+        auto lastSlash = procName.find_last_of(L'\\');
+        if (lastSlash != std::wstring::npos)
+            procName = procName.substr(lastSlash + 1);
+
+        auto action = m_ruleEngine->Match(procName, procPath);
+        if (action == domain::RuleAction::Block) {
+            return 2; // BLOCK
+        }
+        if (action == domain::RuleAction::Proxy) {
+            if (m_proxyHost.empty() || m_proxyPort == 0) {
+                return 0; // DIRECT — no proxy configured
+            }
+            if (out_proxy_config_id) *out_proxy_config_id = 0;
+            return 1; // PROXY
+        }
+        // RuleAction::Direct -> fall through to hardcoded check
+    }
+
+    // 5. Проверка: совпадает с target process? (backward compat)
     if (_wcsicmp(procPath, m_targetProcessPath.c_str()) == 0) {
         m_targetPid = pid;
 
@@ -466,7 +487,7 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
         return 1; // PROXY
     }
 
-    // 5. Поиск в дереве процессов (helper/child process)
+    // 6. Поиск в дереве процессов (helper/child process)
     if (m_targetPid != 0) {
         HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if (hSnap != INVALID_HANDLE_VALUE) {
