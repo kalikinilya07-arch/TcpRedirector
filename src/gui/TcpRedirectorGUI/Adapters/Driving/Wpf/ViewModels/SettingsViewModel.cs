@@ -13,17 +13,23 @@ namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 /// Settings ViewModel — manages proxy configuration, authentication, and rules.
 /// Reads/writes via IConfigRepository (config.json on disk).
 /// Optionally syncs via IPC when service is connected.
+/// 
+/// Two-tier persistence:
+///   SaveToDisk()  — fast, disk-only (used for checkbox auto-save)
+///   SaveAsync()   — disk + IPC + user-visible feedback (Save button)
 /// </summary>
 public partial class SettingsViewModel : ObservableObject
 {
     private readonly IConfigRepository _config;
     private readonly ITcpRedirectorService? _svc;
+    private bool _isLoading;
+    private DateTime _lastAutoSave = DateTime.MinValue;
+    private static readonly TimeSpan AutoSaveDebounce = TimeSpan.FromMilliseconds(300);
 
     public SettingsViewModel(IConfigRepository config, ITcpRedirectorService? svc = null)
     {
         _config = config;
         _svc = svc;
-        // Auto-save when any rule's Enabled property changes
         Rules.CollectionChanged += OnRulesCollectionChanged;
     }
 
@@ -55,10 +61,20 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
-    private async void OnRulePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    /// <summary>
+    /// Checkbox toggle → instant disk save (no IPC, no message).
+    /// Debounced at 300ms to avoid storms.
+    /// </summary>
+    private void OnRulePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName == nameof(Rule.Enabled))
-            await SaveAsync();
+        if (_isLoading) return;
+        if (e.PropertyName != nameof(Rule.Enabled)) return;
+
+        var now = DateTime.UtcNow;
+        if (now - _lastAutoSave < AutoSaveDebounce) return;
+        _lastAutoSave = now;
+
+        SaveToDisk();
     }
 
     // ── Log Level ────────────────────────────────────
@@ -78,21 +94,14 @@ public partial class SettingsViewModel : ObservableObject
             _ => "INFO+"
         };
 
-        // Persist to config.json
         _config.WriteInt("log", "level", value);
 
-        // Auto-apply log level to backend service when connected
         try
         {
             if (_svc is { IsConnected: true })
-            {
                 _ = _svc.SetLogLevelAsync(value);
-            }
         }
-        catch
-        {
-            // IPC not available yet — level will apply on next IPC call
-        }
+        catch { }
     }
 
     [RelayCommand]
@@ -105,7 +114,7 @@ public partial class SettingsViewModel : ObservableObject
                 await _svc.SetLogLevelAsync(LogLevelFilter);
         }
         catch { }
-        LogMsg = "✓ Saved";
+        LogMsg = "\u2713 Saved";
         _ = ClearLogMsgAfterDelay();
     }
 
@@ -121,24 +130,31 @@ public partial class SettingsViewModel : ObservableObject
     /// <summary>Fired after successful save (for UI cleanup).</summary>
     public event Action? Saved;
 
-    /// <summary>Load settings from config.json. Safe to call from constructor.</summary>
+    /// <summary>Load settings from config.json. Suppresses auto-save during load.</summary>
     public void LoadFromConfig()
     {
-        Host = _config.ReadString("proxy", "host", "127.0.0.1");
-        var portStr = _config.ReadString("proxy", "port", "3128");
-        Port = int.TryParse(portStr, out var p) ? p : 3128;
-        AuthRequired = _config.ReadBool("auth", "enabled");
-        KerberosEnabled = _config.ReadBool("auth", "kerberos");
-        Login = _config.ReadString("auth", "username");
-        Password = "";
+        _isLoading = true;
+        try
+        {
+            Host = _config.ReadString("proxy", "host", "127.0.0.1");
+            var portStr = _config.ReadString("proxy", "port", "3128");
+            Port = int.TryParse(portStr, out var p) ? p : 3128;
+            AuthRequired = _config.ReadBool("auth", "enabled");
+            KerberosEnabled = _config.ReadBool("auth", "kerberos");
+            Login = _config.ReadString("auth", "username");
+            Password = "";
 
-        // Load log level from config
-        LogLevelFilter = _config.ReadInt("log", "level", 2);
+            LogLevelFilter = _config.ReadInt("log", "level", 2);
 
-        var fileRules = _config.ReadRules();
-        Rules.Clear();
-        foreach (var r in fileRules)
-            Rules.Add(r);
+            var fileRules = _config.ReadRules();
+            Rules.Clear();
+            foreach (var r in fileRules)
+                Rules.Add(r);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
     [RelayCommand]
@@ -175,21 +191,50 @@ public partial class SettingsViewModel : ObservableObject
         await SaveAsync();
     }
 
-    [RelayCommand]
-    private void LoadRules()
+    // ── Persistence ──────────────────────────────────
+
+    /// <summary>
+    /// Fast disk-only save. No IPC, no user message.
+    /// Used by checkbox auto-save.
+    /// </summary>
+    private void SaveToDisk()
     {
-        var fileRules = _config.ReadRules();
-        Rules.Clear();
-        foreach (var r in fileRules)
-            Rules.Add(r);
+        try
+        {
+            var exePath = Rules
+                .FirstOrDefault(r => r.Enabled && r.Type == RuleType.ProcessPath)
+                ?.Pattern;
+
+            if (string.IsNullOrEmpty(exePath))
+                exePath = _config.ReadString("app", "exePath");
+
+            _config.WriteFull(
+                new ProxyConfig
+                {
+                    Host = Host,
+                    Port = Port,
+                    AuthRequired = AuthRequired,
+                    Login = Login,
+                    KerberosEnabled = KerberosEnabled
+                },
+                exePath ?? "",
+                [.. Rules]);
+        }
+        catch
+        {
+            // Silent — checkbox save failures are non-critical
+        }
     }
 
+    /// <summary>
+    /// Full save: disk + IPC sync + user-visible feedback.
+    /// Called by Save button, AddRule, DeleteRule.
+    /// </summary>
     [RelayCommand]
     private async Task SaveAsync()
     {
         try
         {
-            // Determine exePath for WinDivert target
             var exePath = Rules
                 .FirstOrDefault(r => r.Enabled && r.Type == RuleType.ProcessPath)
                 ?.Pattern;
@@ -199,7 +244,27 @@ public partial class SettingsViewModel : ObservableObject
 
             var currentPwd = Password;
 
-            // IPC sync to running service
+            // 1. Write to disk first (always works, even offline)
+            var ok = _config.WriteFull(
+                new ProxyConfig
+                {
+                    Host = Host,
+                    Port = Port,
+                    AuthRequired = AuthRequired,
+                    Login = Login,
+                    KerberosEnabled = KerberosEnabled
+                },
+                exePath ?? "",
+                [.. Rules]);
+
+            if (!ok)
+            {
+                Msg = "\u2717 Error: failed to write config.json";
+                _ = ClearMsgAfterDelay();
+                return;
+            }
+
+            // 2. IPC sync to running service (best-effort)
             if (_svc is { IsConnected: true })
             {
                 try
@@ -217,45 +282,26 @@ public partial class SettingsViewModel : ObservableObject
                 }
                 catch
                 {
-                    // IPC failure is non-fatal; config.json will be used on restart
+                    // IPC failure is non-fatal — config.json is already saved
                 }
             }
 
-            // Write full config to disk (primary persistence)
-            var ok = _config.WriteFull(
-                new ProxyConfig
-                {
-                    Host = Host,
-                    Port = Port,
-                    AuthRequired = AuthRequired,
-                    Login = Login,
-                    KerberosEnabled = KerberosEnabled
-                },
-                exePath ?? "",
-                [.. Rules]);
-
-            if (ok)
-            {
-                Msg = $"\u2713 Saved";
-                Password = "";
-                Saved?.Invoke();
-            }
-            else
-            {
-                Msg = "\u2717 Error: failed to write config.json";
-            }
+            Msg = "\u2713 Saved";
+            Password = "";
+            Saved?.Invoke();
             _ = ClearMsgAfterDelay();
         }
         catch (Exception ex)
         {
             Msg = $"\u2717 Error: {ex.Message}";
+            _ = ClearMsgAfterDelay();
         }
     }
 
     private async Task ClearMsgAfterDelay()
     {
         await Task.Delay(3000);
-        if (Msg.Contains('\u2713'))
+        if (Msg.Contains('\u2713') || Msg.Contains('\u2717'))
             Msg = "";
     }
 }
