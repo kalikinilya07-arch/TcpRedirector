@@ -15,7 +15,6 @@ public class ProxyConfig
 
     // Authentication (Kerberos/SSPI)
     public bool KerberosEnabled { get; set; }
-    public string AuthUsername { get; set; } = string.Empty;
 }
 
 public enum RuleType

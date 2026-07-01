@@ -8,9 +8,17 @@ using TcpRedirectorGUI.Domain.Ports;
 namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 
 /// <summary>
-/// Settings ViewModel — proxy config, auth, rules.
-/// Persistence: Save button writes to config.json (disk) + syncs to service via IPC.
-/// Logic: rule in list = active, removed = inactive. No individual enable/disable.
+/// Settings ViewModel — proxy configuration, authentication, rules.
+///
+/// Persistence:
+///   Save button → config.json (atomic write) + IPC sync to service (best-effort).
+///   Config is read at startup, after service start, and after service stop.
+///
+/// Rule lifecycle:
+///   Rule in list = active. Removed = inactive. No per-rule enable/disable toggle.
+///   C++ RuleEngine still supports enabled field; GUI always sends enabled=true.
+///
+/// Service does NOT write config.json — GUI is the sole writer.
 /// </summary>
 public partial class SettingsViewModel : ObservableObject
 {
