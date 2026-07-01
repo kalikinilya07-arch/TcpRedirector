@@ -71,27 +71,6 @@ public:
         m_logger->Info("service", "Rules loaded: " +
             std::to_string(m_configManager->GetRules().size()) + " rules");
 
-        // Default rule from config
-        {
-            auto cfg = m_configManager->GetConfig();
-            std::vector<domain::Rule> configRules;
-            domain::Rule rule;
-            rule.id = "capture-target";
-            rule.pattern = cfg.app.exePath;
-            rule.description = L"Rule from config: " + cfg.app.exePath;
-            rule.priority = 1;
-            rule.enabled = true;
-            rule.type = domain::RuleType::ProcessPath;
-            rule.action = cfg.proxy.enabled
-                ? domain::RuleAction::Proxy
-                : domain::RuleAction::Direct;
-            configRules.push_back(rule);
-            m_ruleEngine->SetRules(configRules);
-            std::string exePath(cfg.app.exePath.begin(), cfg.app.exePath.end());
-            m_logger->Info("service", "Rule set from config (ProcessPath): " + exePath +
-                ", proxy=" + (cfg.proxy.enabled ? "enabled" : "disabled"));
-        }
-
         // Initialize connection tracker
         m_connectionTracker = std::make_unique<domain::services::ConnectionTracker>();
 
