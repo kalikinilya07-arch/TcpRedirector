@@ -43,71 +43,25 @@
 
 ---
 
-## 2. Остаточные проблемы (требуют исправления)
+## 2. Остаточные проблемы
 
-### 🔴 CRITICAL
+### 🔴 C2. Отсутствие аутентификации IPC
 
-**C2. Отсутствие аутентификации IPC**
+TCP сокет `localhost:34011` без аутентификации — любой локальный процесс может управлять сервисом.
 
-Файлы: [`IpcHandler.h`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/IpcHandler.h), [`IpcClient.cs`](TcpRedirector/src/gui/TcpRedirectorGUI/Infrastructure/Ipc/IpcClient.cs)
+**Рекомендация:** перейти на Named Pipes с ACL (уже реализовано в PipeServer.h) либо добавить challenge-response.
 
-IPC использует TCP сокет на `localhost:34011` без какой-либо аутентификации. Любой процесс на локальной машине может прочитать конфигурацию (включая зашифрованный пароль), изменить правила фильтрации, перенаправить трафик на свой прокси для MITM.
+### 🟡 M13. Нет валидации размера IPC-сообщений
 
-**Рекомендация:** перейти на Named Pipes с ACL (уже частично реализовано в PipeServer.h) либо добавить challenge-response аутентификацию при подключении.
+`nlohmann::json::parse(params)` без ограничений — гигантский JSON → OOM.
 
-### 🟠 HIGH
+**Рекомендация:** лимит 1 MB на входящее сообщение.
 
-**H8. Однопоточный блокирующий pipe-сервер без таймаутов → локальный DoS**
+### 🟡 M16. CompositionRoot не используется
 
-Файл: [`PipeServer.h`](TcpRedirector/src/service/TcpRedirectorService/infrastructure/ipc/PipeServer.h)
+Дублирует `ServiceMain::Initialize()`, мёртвый код.
 
-`ConnectNamedPipe` — блокирующий вызов. Злоумышленник может открыть pipe-соединения и не закрывать их — сервис зависнет.
-
-**Рекомендация:** использовать `OVERLAPPED` I/O с таймаутом либо полностью перейти на TCP сокет с `select()`/`poll()`.
-
-### 🟡 MEDIUM
-
-**M13. IPC сообщения не валидируются на размер**
-
-Файл: [`IpcHandler.h:108`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/IpcHandler.h:108)
-
-`nlohmann::json::parse(params)` без проверки размера. Гигантский JSON → OOM или краш.
-
-**Рекомендация:** ограничить размер входящего JSON (1 MB).
-
-**M14. Нет rate limiting на IPC**
-
-Файл: [`IpcHandler.h`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/IpcHandler.h)
-
-Спам IPC-запросами → DoS через исчерпание CPU/памяти.
-
-**Рекомендация:** rate limiting (10 запросов/сек на соединение).
-
-**M15. Логирование конфиденциальных данных**
-
-Файл: [`WinDivertCapture.cpp:379-385`](TcpRedirector/src/service/TcpRedirectorService/infrastructure/capture/WinDivertCapture.cpp:379)
-
-IP-адреса и порты назначения пишутся в лог: `[PROXIED] chrome.exe srcPort=%u 173.194.222.138:443 ...`
-
-**Рекомендация:** режим логирования без IP-адресов или маскирование.
-
-**M16. CompositionRoot не используется**
-
-Файлы: [`CompositionRoot.h`](TcpRedirector/src/service/TcpRedirectorService/CompositionRoot.h), [`ServiceMain.h`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/ServiceMain.h)
-
-`CompositionRoot::CreateFromConfig()` дублирует логику `ServiceMain::Initialize()`. CompositionRoot — мёртвый код.
-
-**Рекомендация:** удалить CompositionRoot или перевести ServiceMain на его использование.
-
-### 🟢 LOW
-
-| ID | Проблема | Рекомендация |
-|----|----------|--------------|
-| L1 | `localtime` не потокобезопасен в Logger | `localtime_s` |
-| L2 | Ring buffer в Logger не ограничивает размер записи | Truncation для длинных сообщений |
-| L3 | Debug логи WinDivert пишутся синхронно | Перенести в асинхронный Logger |
-| L4 | Нет обработки `WM_QUERYENDSESSION` в GUI | Сохранять настройки перед shutdown |
-| L5 | `printf` в режиме `--console` | Заменить на Logger |
+**Рекомендация:** удалить или интегрировать.
 
 ---
 
@@ -115,23 +69,16 @@ IP-адреса и порты назначения пишутся в лог: `[P
 
 | Контрол | Статус |
 |---------|--------|
-| Аутентификация IPC | ❌ Нет (C2) |
-| Авторизация IPC | ⚠️ Pipe ACL (C1 fix), но используется TCP |
+| Аутентификация IPC | ❌ (C2) |
 | Шифрование в покое (пароль) | ✅ DPAPI |
-| Валидация ввода (IPC) | ❌ Нет (M13) |
-| Rate limiting (IPC) | ❌ Нет (M14) |
-| ASLR/DEP/CFG | ⚠️ Нужно проверить флаги vcxproj |
-| Логирование | ⚠️ IP-адреса в логах (M15) |
-| Graceful degradation | ⚠️ При ошибке WinDivert — сервис останавливается |
+| Валидация ввода (IPC) | ❌ (M13) |
+| ASLR/DEP/CFG | ⚠️ проверить флаги |
+| Graceful degradation | ⚠️ при ошибке WinDivert — остановка |
 
 ---
 
-## 4. Приоритеты исправления
+## 4. Приоритеты
 
 1. **C2** — Аутентификация IPC
-2. **M13** — Валидация размера IPC-сообщений
-3. **H8** — Таймауты pipe-сервера
-4. **M14** — Rate limiting IPC
-5. **M15** — Санитизация логов
-6. **M16** — CompositionRoot
-7. L1-L5 — Косметические улучшения
+2. **M13** — Валидация IPC-сообщений
+3. **M16** — CompositionRoot
