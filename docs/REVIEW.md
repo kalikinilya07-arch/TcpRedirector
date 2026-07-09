@@ -1,296 +1,137 @@
-# Cross-Review: Config + Logger + StatsCollector
+# Security Review: TcpRedirector
 
-## Проверка на непротиворечивость и скрытые проблемы
-
----
-
-### 🔴 Проблема 1: Race condition в per-second rate (StatsCollector)
-
-**Файл:** [`STATS_DESIGN.md:67-73`](TcpRedirector/docs/STATS_DESIGN.md:67)
-
-```cpp
-struct RateCounter {
-    std::atomic<uint64_t> count{0};
-    std::chrono::steady_clock::time_point lastReset;  // НЕ АТОМАРНЫЙ!
-};
-```
-
-**Проблема:** `m_packetsPerSecond.lastReset` — не `std::atomic`, не защищён мьютексом. 
-`lastReset` пишется в [`STATS_DESIGN.md:149-159`](TcpRedirector/docs/STATS_DESIGN.md:149) из `OnPacket()`, который вызывается из CaptureLoop.
-Если два потока (теоретически, хотя CaptureLoop один) или один поток на 1000-м пакете проверяет `elapsed >= 1000` — **data race**.
-
-Попытка CAS на строке 154-155 не сработает: `m_packetsPerSecond.lastReset` нельзя атомарно сравнить, это `time_point`.
-
-**Решение: вычислять per-second rate дифференциально в GetStats()**
-
-```cpp
-// OnPacket — только счётчик, без per-second rate
-void OnPacket(const PacketInfo& info) {
-    m_totalPackets.fetch_add(1, relaxed);
-    // ... остальные счётчики ...
-}
-
-// GetStats — вычисление pps по разности
-StatsSnapshot GetStats() {
-    auto now = steady_clock::now();
-    auto elapsed = now - m_lastStatsCall;
-    uint64_t currTotal = m_totalPackets.load();
-    double pps = (elapsed > 0ms)
-        ? (currTotal - m_lastTotalPackets) / elapsed_seconds
-        : 0.0;
-    m_lastStatsCall = now;           // неатомарный, но вызывается только из GUI-таймера
-    m_lastTotalPackets = currTotal;  // один поток-читатель
-    // ...
-}
-```
+## Состояние: после аудита и исправлений (ветка `fix/audit-review-fixes`)
 
 ---
 
-### 🔴 Проблема 2: shared_mutex в CaptureLoop — contention
+## 1. Исправленные уязвимости
 
-**Файл:** [`CONFIG_DESIGN.md:262`](TcpRedirector/docs/CONFIG_DESIGN.md:262)
+### 🔴 CRITICAL
 
-```cpp
-// В CaptureLoop на КАЖДЫЙ SYN-пакет:
-if (m_configManager->GetConfig().proxy.enabled) { ... }
-```
+| ID | Уязвимость | Исправление | Файл |
+|----|-----------|-------------|------|
+| C1 | Named Pipe без security descriptor — любой пользователь управляет SYSTEM-сервисом | Добавлен SECURITY_DESCRIPTOR: доступ только SYSTEM + Administrators | `PipeServer.h` |
+| H1 | Захардкоженный пароль `:proxy_pass` вместо настроенного | Используется пароль из конфига через DPAPI | `TcpRelayServer.h:339` |
+| H2 | Base64 декодер трактует padding `=` как данные — ломает SSPI токены и DPAPI пароль | `D['='] = 0xFF` — padding пропускается | `ConfigManager.cpp:489` |
+| H7 | `Initialize()` всегда возвращает `true` — сервис рапортует RUNNING при отказе | Возвращает `false` при ошибке WinDivert/Capture | `ServiceMain.h:129-134` |
 
-**Проблема:** CaptureLoop вызывает `GetConfig()` до 50 000 раз в секунду.
-Каждый вызов захватывает `shared_lock(m_mutex)` — чтение из разделяемой памяти.
-На x86 это ~50-200 нс на lock, итого **2.5-10 мс/сек на блокировки**.
+### 🟠 HIGH
 
-Хотя shared_mutex позволяет множественные чтения — overhead есть.
+| ID | Уязвимость | Исправление | Файл |
+|----|-----------|-------------|------|
+| H3 | Таймаут 30с утекает из CONNECT в фазу данных | После CONNECT: SO_RCVTIMEO/SO_SNDTIMEO=0 + SO_KEEPALIVE | `TcpRelayServer.h` |
+| H4 | Потоки relay не отслеживаются, WSACleanup при живых потоках | m_activePairs atomic + ожидание до 5с в Stop() | `TcpRelayServer.h` |
+| H5 | Краш по null-указателю функции при неудаче WinDivertOpen | Close() проверяет m_api.Shutdown/Close != nullptr | `WinDivertCapture.cpp:171-176` |
+| H6 | PID определяется на КАЖДЫЙ untracked-пакет (TCP table scan) | PID cache с TTL 30 секунд | `WinDivertCapture.h:157-164` |
 
-**Решение:** кэшировать `proxy.enabled` в атомарном флаге внутри WinDivertCapture.
+### 🟡 MEDIUM
 
-```cpp
-// В WinDivertCapture.h добавить:
-std::atomic<bool> m_proxyEnabled{true};
-
-// В WinDivertCapture::CaptureLoop() читать atomic:
-if (isTargetSyn && m_proxyEnabled.load(relaxed)) { ... }
-
-// ConfigManager уведомляет WinDivertCapture при изменении:
-m_capture->SetProxyEnabled(cfg.proxy.enabled);
-```
-
----
-
-### 🔴 Проблема 3: Ring buffer overflow + out-of-bounds (Logger)
-
-**Файл:** [`LOGGER_DESIGN.md:121-123`](TcpRedirector/docs/LOGGER_DESIGN.md:121)
-
-```cpp
-static constexpr size_t RING_BUFFER_SIZE = 2000;
-std::array<LogMessage, RING_BUFFER_SIZE> m_ringBuffer;
-std::atomic<size_t> m_ringIndex{0};
-```
-
-**Проблема:** `m_ringIndex` инкрементируется бесконечно. Когда он достигает 2000 — запись в `m_ringBuffer[2000]` — выход за границы массива.
-
-В псевдокоде WriterThread (строка 187) нет `% RING_BUFFER_SIZE`.
-
-**Решение:** добавить модуль + копирование, а не перемещение:
-
-```cpp
-void AddToRingBuffer(const LogMessage& msg) {
-    size_t idx = m_ringIndex.fetch_add(1, relaxed) % RING_BUFFER_SIZE;
-    std::lock_guard lock(m_ringMutex);
-    m_ringBuffer[idx] = msg;  // копия, а не move
-}
-```
-
-Также: при `fetch_add` к `SIZE_MAX` (18446744073709551615) — переполнение через 10^19 записей.
-Практически безопасно (~ 10^8 лет работы), но корректнее использовать `% RING_BUFFER_SIZE`.
+| ID | Уязвимость | Исправление | Файл |
+|----|-----------|-------------|------|
+| M1 | Потеря данных при half-close (SD_BOTH) | shutdown(SD_SEND) — graceful close | `TcpRelayServer.h` |
+| M2 | CONNECT успех определяется подстрокой `"200"` где угодно | Проверка `HTTP/1.x 200` в начале ответа | `TcpRelayServer.h` |
+| M3 | ConnectionTable ключуется только по src_port — коллизии | Compound key: (src_port, orig_dest_ip) | `ConnectionTable.h` |
+| M4 | `getenv("ProgramData")` возвращает nullptr → UB | Fallback на `C:\ProgramData\...` | `ServiceMain.h:39-43` |
+| M5 | Нет try/catch вокруг Initialize()/Run() → terminate | Оборачивание в try/catch | `main.cpp:35,73` |
+| M6 | Порча не-ASCII через `wstring(s.begin(), s.end())` (28 мест) | Utf8ToWide/WideToUtf8 через MultiByteToWideChar CP_UTF8 | 4 файла |
+| M7 | PipeServer: гонка при конкурентной записи | m_pipeMutex для WriteFile | `PipeServer.h` |
+| M8 | ConnectionTracker: рекурсивный shared_mutex → латентный дедлок | Исправлена логика захвата | `ConnectionTracker.h` |
+| M9 | Конфиг: нет атомарного сохранения | Write to temp → rename | `ConfigManager.cpp` |
+| M10 | SCM-обработчик с неверной сигнатурой | Исправлена сигнатура HandlerEx | `main.cpp:38` |
+| M11 | Неверный порядок остановки: WinDivert закрывается последним | Исправлен порядок в Stop() | `ServiceMain.h` |
+| M12 | Process handle leak + DPAPI флаги mismatch | Dispose() + CRYPTPROTECT_UI_FORBIDDEN | `ServiceController.cs`, `ConfigManager.cpp` |
 
 ---
 
-### 🔴 Проблема 4: Отсутствие механизма уведомлений при изменении конфига
+## 2. Остаточные проблемы (требуют исправления)
 
-**Файл:** [`CONFIG_DESIGN.md:155`](TcpRedirector/docs/CONFIG_DESIGN.md:155)
+### 🔴 CRITICAL
 
-```cpp
-bool UpdateConfig(const Config& newConfig);  // обновляет и сохраняет
-```
+**C2. Отсутствие аутентификации IPC**
 
-**Проблема:** Когда GUI меняет `proxy.host`, `log.level` или `app.exePath` через `UpdateConfig()` — никто не уведомляется.
-- WinDivertCapture продолжает использовать старый `m_targetProcessPath`
-- Logger продолжает использовать старый log level
-- ProxyEngine продолжает коннектиться к старому host
+Файлы: [`IpcHandler.h`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/IpcHandler.h), [`IpcClient.cs`](TcpRedirector/src/gui/TcpRedirectorGUI/Infrastructure/Ipc/IpcClient.cs)
 
-**Решение:** добавить listener-механизм в ConfigManager:
+IPC использует TCP сокет на `localhost:34011` без какой-либо аутентификации. Любой процесс на локальной машине может прочитать конфигурацию (включая зашифрованный пароль), изменить правила фильтрации, перенаправить трафик на свой прокси для MITM.
 
-```cpp
-using ConfigChangeListener = std::function<void(const Config& oldConfig, const Config& newConfig)>;
-uint64_t AddListener(ConfigChangeListener cb);
-void RemoveListener(uint64_t id);
+**Рекомендация:** перейти на Named Pipes с ACL (уже частично реализовано в PipeServer.h) либо добавить challenge-response аутентификацию при подключении.
 
-// В UpdateConfig():
-auto oldCfg = m_config;
-m_config = newConfig;
-Save();
-for (auto& [id, cb] : m_listeners) {
-    cb(oldCfg, m_config);
-}
-```
+### 🟠 HIGH
 
-Пример регистрации в ServiceMain.h:
-```cpp
-m_configManager->AddListener([this](const Config& oldCfg, const Config& newCfg) {
-    if (oldCfg.proxy.host != newCfg.proxy.host ||
-        oldCfg.proxy.port != newCfg.proxy.port) {
-        m_proxyEngine->Shutdown();
-        m_proxyEngine->Initialize(ConfigToProxyConfig(newCfg));
-    }
-    if (oldCfg.log.level != newCfg.log.level) {
-        m_logger->SetLevel(static_cast<LogLevel>(newCfg.log.level));
-    }
-});
-```
+**H8. Однопоточный блокирующий pipe-сервер без таймаутов → локальный DoS**
 
----
+Файл: [`PipeServer.h`](TcpRedirector/src/service/TcpRedirectorService/infrastructure/ipc/PipeServer.h)
 
-### 🟡 Проблема 5: exePath и exeName рассогласованы
+`ConnectNamedPipe` — блокирующий вызов. Злоумышленник может открыть pipe-соединения и не закрывать их — сервис зависнет.
 
-**Файл:** [`CONFIG_DESIGN.md:10-12`](TcpRedirector/docs/CONFIG_DESIGN.md:10)
+**Рекомендация:** использовать `OVERLAPPED` I/O с таймаутом либо полностью перейти на TCP сокет с `select()`/`poll()`.
 
-```json
-{
-  "app": {
-    "exePath": "C:\\Projects\\china\\police_sec\\TransfersClient.exe",
-    "exeName": "TransfersClient.exe"
-  }
-}
-```
+### 🟡 MEDIUM
 
-**Проблема:** `exeName` дублирует информацию, уже содержащуюся в `exePath`.
-Если пользователь (или GUI) изменит только `exePath`, но забудет обновить `exeName` — 
-WinDivertCapture будет искать `TransfersClient.exe`, а RuleEngine будет сравнивать с `packet_generator.exe`.
+**M13. IPC сообщения не валидируются на размер**
 
-**Решение:** убрать `exeName` из JSON. Вычислять автоматически:
+Файл: [`IpcHandler.h:108`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/IpcHandler.h:108)
 
-```cpp
-// ConfigManager::Load():
-m_config.app.exeName = std::filesystem::path(m_config.app.exePath).filename().wstring();
-```
+`nlohmann::json::parse(params)` без проверки размера. Гигантский JSON → OOM или краш.
 
-Или хранить в ConfigManager как вычисляемое поле (геттер):
+**Рекомендация:** ограничить размер входящего JSON (1 MB).
 
-```cpp
-std::wstring Config::GetExeName() const {
-    auto pos = exePath.find_last_of(L'\\');
-    return (pos != std::wstring::npos) ? exePath.substr(pos + 1) : exePath;
-}
-```
+**M14. Нет rate limiting на IPC**
+
+Файл: [`IpcHandler.h`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/IpcHandler.h)
+
+Спам IPC-запросами → DoS через исчерпание CPU/памяти.
+
+**Рекомендация:** rate limiting (10 запросов/сек на соединение).
+
+**M15. Логирование конфиденциальных данных**
+
+Файл: [`WinDivertCapture.cpp:379-385`](TcpRedirector/src/service/TcpRedirectorService/infrastructure/capture/WinDivertCapture.cpp:379)
+
+IP-адреса и порты назначения пишутся в лог: `[PROXIED] chrome.exe srcPort=%u 173.194.222.138:443 ...`
+
+**Рекомендация:** режим логирования без IP-адресов или маскирование.
+
+**M16. CompositionRoot не используется**
+
+Файлы: [`CompositionRoot.h`](TcpRedirector/src/service/TcpRedirectorService/CompositionRoot.h), [`ServiceMain.h`](TcpRedirector/src/service/TcpRedirectorService/adapters/driving/ServiceMain.h)
+
+`CompositionRoot::CreateFromConfig()` дублирует логику `ServiceMain::Initialize()`. CompositionRoot — мёртвый код.
+
+**Рекомендация:** удалить CompositionRoot или перевести ServiceMain на его использование.
+
+### 🟢 LOW
+
+| ID | Проблема | Рекомендация |
+|----|----------|--------------|
+| L1 | `localtime` не потокобезопасен в Logger | `localtime_s` |
+| L2 | Ring buffer в Logger не ограничивает размер записи | Truncation для длинных сообщений |
+| L3 | Debug логи WinDivert пишутся синхронно | Перенести в асинхронный Logger |
+| L4 | Нет обработки `WM_QUERYENDSESSION` в GUI | Сохранять настройки перед shutdown |
+| L5 | `printf` в режиме `--console` | Заменить на Logger |
 
 ---
 
-### 🟡 Проблема 6: UDP-счётчик в StatsCollector никогда не сработает
+## 3. Статус контролов ИБ
 
-**Файл:** [`STATS_DESIGN.md:54-55`](TcpRedirector/docs/STATS_DESIGN.md:54)
-
-```cpp
-std::atomic<uint64_t> m_tcpPackets{0};
-std::atomic<uint64_t> m_udpPackets{0};
-```
-
-**Проблема:** CaptureLoop в [`WinDivertCapture.cpp:177`](TcpRedirector/src/service/TcpRedirectorService/infrastructure/capture/WinDivertCapture.cpp:177) обрабатывает ТОЛЬКО TCP:
-
-```cpp
-if (ipHdr && tcpHdr) { ... }
-```
-
-UDP заголовки игнорируются. `m_udpPackets` всегда будет 0.
-Это вводит пользователя в заблуждение.
-
-**Решение:** либо убрать `m_udpPackets`, либо добавить UDP-обработку в CaptureLoop.
-Я рекомендую **убрать** — это dead code. При необходимости UDP-редирект добавится позже отдельным PR.
+| Контрол | Статус |
+|---------|--------|
+| Аутентификация IPC | ❌ Нет (C2) |
+| Авторизация IPC | ⚠️ Pipe ACL (C1 fix), но используется TCP |
+| Шифрование в покое (пароль) | ✅ DPAPI |
+| Валидация ввода (IPC) | ❌ Нет (M13) |
+| Rate limiting (IPC) | ❌ Нет (M14) |
+| ASLR/DEP/CFG | ⚠️ Нужно проверить флаги vcxproj |
+| Логирование | ⚠️ IP-адреса в логах (M15) |
+| Graceful degradation | ⚠️ При ошибке WinDivert — сервис останавливается |
 
 ---
 
-### 🟡 Проблема 7: Нет единой точки создания директорий
+## 4. Приоритеты исправления
 
-**Файлы:**
-- [`CONFIG_DESIGN.md:140`](TcpRedirector/docs/CONFIG_DESIGN.md:140): `%ProgramData%\TcpRedirector\config\` (создаётся ConfigManager)
-- [`LOGGER_DESIGN.md:43`](TcpRedirector/docs/LOGGER_DESIGN.md:43): `%ProgramData%\TcpRedirector\logs\` (создаётся Logger.Initialize())
-- [`WinDivertCapture.cpp:83`](TcpRedirector/src/service/TcpRedirectorService/infrastructure/capture/WinDivertCapture.cpp:83): `%ProgramData%\TcpRedirector\logs\windivert_debug.log` (создаётся WinDivertCapture::Open())
-
-**Проблема:** Три разных компонента создают одну и ту же директорию `%ProgramData%\TcpRedirector\logs\`.
-Если один из них не запущен — лог-файлы не создадутся.
-
-**Решение:** Вынести создание структуры директорий в TcpRedirectorService::Initialize():
-
-```cpp
-// ServiceMain.h:
-bool CreateDirectories() {
-    auto progData = std::filesystem::path(getenv("ProgramData")) / "TcpRedirector";
-    std::filesystem::create_directories(progData / "config");
-    std::filesystem::create_directories(progData / "logs");
-    return true;
-}
-```
-
----
-
-## Итоговая таблица проблем
-
-| # | Серьёзность | Компонент | Проблема | Решение |
-|---|-------------|-----------|----------|---------|
-| 1 | 🔴 CRITICAL | StatsCollector | Race condition в per-second rate (data race) | Вычислять дифференциально в GetStats |
-| 2 | 🔴 CRITICAL | Config + Capture | shared_lock в CaptureLoop — contention 50k pps | Атомарный флаг m_proxyEnabled |
-| 3 | 🔴 CRITICAL | Logger | Ring buffer out-of-bounds без `% SIZE` | `fetch_add % RING_BUFFER_SIZE` |
-| 4 | 🟡 IMPORTANT | ConfigManager | Нет уведомлений при изменении конфига | Listener callback-механизм |
-| 5 | 🟡 IMPORTANT | Config | exeName дублирует exePath | Вычислять автоматически |
-| 6 | 🟢 MINOR | StatsCollector | UDP-счётчик всегда 0 (dead code) | Убрать m_udpPackets |
-| 7 | 🟢 MINOR | ServiceMain | Нет единой точки создания директорий | CreateDirectories() в Initialize |
-
----
-
-## Cross-cutting: как три компонента соединяются
-
-```
-TcpRedirectorService::Initialize()
-│
-├── create_directories()
-│
-├── ConfigManager::Load()              ← читает config.json
-│   │
-│   ├── GetConfig().app.exePath        → WinDivertCapture.SetTarget(exePath)
-│   ├── GetConfig().proxy.*            → ProxyEngine.Initialize(proxyCfg)
-│   ├── GetConfig().log.*              → Logger.Initialize(level, maxSize)
-│   └── AddListener(callback)          → уведомление при изменениях
-│
-├── Logger::Initialize(...)            ← асинхронный WriterThread
-│   │
-│   ├── ILogSink* → WinDivertCapture   ← на каждый пакет (замена LOG макроса)
-│   └── ILogSink* → ProxyEngine        ← на ошибки CONNECT
-│
-├── WinDivertCapture::Open()           ← запуск CaptureLoop
-│   │
-│   ├── StatsCollector.OnPacket()      ← для каждого пакета (lock-free)
-│   └── ILogSink->Log()                ← heartbeat + ошибки
-│
-├── ProxyEngine::CreateSession()
-│   │
-│   ├── ILogSink->Log()                ← ошибки CONNECT
-│   └── StatsCollector?                ← нет, статистика редиректов уже в CaptureLoop
-│
-└── IpcHandler
-    ├── ConfigManager::GetConfig()     ← get_config
-    ├── ConfigManager::UpdateConfig()  ← set_config (триггерит listener'ы)
-    ├── Logger::GetRecentEntries()     ← get_logs
-    ├── StatsCollector::GetStats()     ← get_stats
-    └── StatsCollector::Reset()        ← reset_stats
-```
-
----
-
-## Рекомендуемый порядок исправления
-
-1. 🔴 **Per-second rate** — убрать из OnPacket, вычислить в GetStats
-2. 🔴 **Ring buffer** — добавить `% RING_BUFFER_SIZE` 
-3. 🔴 **shared_lock в CaptureLoop** — атомарный флаг m_proxyEnabled
-4. 🟡 **Listener механизм** — ConfigChangeListener
-5. 🟡 **exeName** — вычислять автоматически
-6. 🟢 **UDP счётчик** — убрать
-7. 🟢 **CreateDirectories** — единая точка
+1. **C2** — Аутентификация IPC
+2. **M13** — Валидация размера IPC-сообщений
+3. **H8** — Таймауты pipe-сервера
+4. **M14** — Rate limiting IPC
+5. **M15** — Санитизация логов
+6. **M16** — CompositionRoot
+7. L1-L5 — Косметические улучшения
