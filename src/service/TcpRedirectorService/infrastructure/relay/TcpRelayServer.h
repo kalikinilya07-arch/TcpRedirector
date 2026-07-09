@@ -24,6 +24,7 @@
 #include "../../domain/ports/IConnectionMonitor.h"
 #include "../../domain/entities/ProxyConfig.h"
 #include "../../infrastructure/auth/auth_sspi.h"
+#include "../utf8_convert.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -57,14 +58,14 @@ public:
     }
 
     void SetProxyConfig(const domain::ProxyConfig& config, uint32_t config_id = 1) {
-        m_proxyHost = std::string(config.host.begin(), config.host.end());
+        m_proxyHost = WideToUtf8(config.host);
         m_proxyPort = config.port;
         m_proxyAuthRequired = config.auth_required;
         m_kerberosAuth = config.kerberos_auth;
         m_proxyConfigId = config_id;
         // H1: store decrypted password from ConfigManager
-        m_proxyUser = std::string(config.login.begin(), config.login.end());
-        m_proxyPassword = std::string(config.plain_password.begin(), config.plain_password.end());
+        m_proxyUser = WideToUtf8(config.login);
+        m_proxyPassword = WideToUtf8(config.plain_password);
     }
 
     void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }

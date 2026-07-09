@@ -17,6 +17,7 @@
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
 #include "../../adapters/driven/ProxyEngine.h"
+#include "../../infrastructure/utf8_convert.h"
 #include "IpcHandler.h"
 
 namespace tcp_redirector {
@@ -55,11 +56,11 @@ public:
         {
             auto cfg = m_configManager->GetConfig();
             if (proxyCfg.host.empty()) {
-                proxyCfg.host = std::wstring(cfg.proxy.host.begin(), cfg.proxy.host.end());
+                proxyCfg.host = infrastructure::Utf8ToWide(cfg.proxy.host);
                 proxyCfg.port = cfg.proxy.port;
                 proxyCfg.auth_required = cfg.auth.enabled;
                 proxyCfg.kerberos_auth = cfg.auth.kerberos;
-                proxyCfg.login = std::wstring(cfg.auth.username.begin(), cfg.auth.username.end());
+                proxyCfg.login = infrastructure::Utf8ToWide(cfg.auth.username);
             }
             m_configManager->UpdateConfigNoSave(cfg);
             m_logger->Info("service", "Proxy set from config: " + cfg.proxy.host + ":" + std::to_string(cfg.proxy.port));
@@ -113,10 +114,10 @@ public:
             capture->SetConnectionTable(m_connTable.get());
             capture->SetRelayPort(relayPort);
             capture->SetProxyConfig(
-                std::string(proxyCfg.host.begin(), proxyCfg.host.end()),
+                infrastructure::WideToUtf8(proxyCfg.host),
                 proxyCfg.port);
             std::wstring exeName = appCfg.GetExeName();
-            std::string exeNameUtf8(exeName.begin(), exeName.end());
+            std::string exeNameUtf8 = infrastructure::WideToUtf8(exeName);
             m_logger->Info("service", "Target process: " + exeNameUtf8);
             capture->SetLogSink(m_logger.get());
             capture->SetConnectionMonitor(m_connectionTracker.get());

@@ -12,6 +12,7 @@
 #include "../../domain/services/ConnectionTracker.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
+#include "../../infrastructure/utf8_convert.h"
 
 namespace tcp_redirector {
 namespace adapters {
@@ -98,7 +99,7 @@ private:
     void GetConfig(nlohmann::json& result) {
         auto config = m_configManager->GetProxyConfig();
         result["status"] = "success";
-        result["data"]["proxy"]["host"] = std::string(config.host.begin(), config.host.end());
+        result["data"]["proxy"]["host"] = infrastructure::WideToUtf8(config.host);
         result["data"]["proxy"]["port"] = config.port;
         result["data"]["proxy"]["auth_required"] = config.auth_required;
         result["data"]["proxy"]["has_password"] = config.has_password;
@@ -108,7 +109,7 @@ private:
         auto j = nlohmann::json::parse(params);
         domain::ProxyConfig config;
         std::string host = j["host"].get<std::string>();
-        config.host = std::wstring(host.begin(), host.end());
+        config.host = infrastructure::Utf8ToWide(host);
         config.port = j["port"].get<uint16_t>();
         config.auth_required = j.value("auth_required", false);
         config.login = std::wstring(j.value("login", std::string()).begin(),
@@ -124,8 +125,8 @@ private:
         for (const auto& r : rules) {
             arr.push_back({
                 {"id", r.id},
-                {"pattern", std::string(r.pattern.begin(), r.pattern.end())},
-                {"description", std::string(r.description.begin(), r.description.end())},
+                {"pattern", infrastructure::WideToUtf8(r.pattern)},
+                {"description", infrastructure::WideToUtf8(r.description)},
                 {"priority", r.priority},
                 {"enabled", r.enabled},
                 {"type", static_cast<int>(r.type)},
@@ -144,11 +145,11 @@ private:
             rule.id = r.value("id", "");
             {
                 std::string tmp = r["pattern"].get<std::string>();
-                rule.pattern = std::wstring(tmp.begin(), tmp.end());
+                rule.pattern = infrastructure::Utf8ToWide(tmp);
             }
             {
                 std::string tmp = r.value("description", std::string());
-                rule.description = std::wstring(tmp.begin(), tmp.end());
+                rule.description = infrastructure::Utf8ToWide(tmp);
             }
             rule.priority = r.value("priority", 0);
             rule.enabled = r.value("enabled", true);
@@ -168,8 +169,8 @@ private:
             arr.push_back({
                 {"id", c.id},
                 {"pid", c.pid},
-                {"process_name", std::string(c.process_name.begin(), c.process_name.end())},
-                {"destination_host", std::string(c.destination_host.begin(), c.destination_host.end())},
+                {"process_name", infrastructure::WideToUtf8(c.process_name)},
+                {"destination_host", infrastructure::WideToUtf8(c.destination_host)},
                 {"destination_ip", c.destination_ip},
                 {"destination_port", c.destination_port},
                 {"rx_bytes", c.rx_bytes},

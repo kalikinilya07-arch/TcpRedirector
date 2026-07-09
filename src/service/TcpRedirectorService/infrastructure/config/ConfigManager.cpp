@@ -50,11 +50,11 @@ bool ConfigManager::Save() {
 domain::ProxyConfig ConfigManager::GetProxyConfig() const {
     std::shared_lock lock(m_mutex);
     domain::ProxyConfig pc;
-    pc.host = std::wstring(m_config.proxy.host.begin(), m_config.proxy.host.end());
+    pc.host = Utf8ToWide(m_config.proxy.host);
     pc.port = m_config.proxy.port;
     pc.auth_required = m_config.auth.enabled;
     pc.kerberos_auth = m_config.auth.kerberos;
-    pc.login = std::wstring(m_config.auth.username.begin(), m_config.auth.username.end());
+    pc.login = Utf8ToWide(m_config.auth.username);
     pc.has_password = !m_config.auth.encryptedPassword.empty();
     if (pc.has_password) {
         pc.plain_password = DecryptPassword(m_config.auth.encryptedPassword);
@@ -65,11 +65,11 @@ domain::ProxyConfig ConfigManager::GetProxyConfig() const {
 bool ConfigManager::SetProxyConfig(const domain::ProxyConfig& config) {
     std::unique_lock lock(m_mutex);
     Config oldCfg = m_config;
-    m_config.proxy.host = std::string(config.host.begin(), config.host.end());
+    m_config.proxy.host = WideToUtf8(config.host);
     m_config.proxy.port = config.port;
     m_config.proxy.enabled = true;
     m_config.auth.enabled = config.auth_required;
-    m_config.auth.username = std::string(config.login.begin(), config.login.end());
+    m_config.auth.username = WideToUtf8(config.login);
     if (config.has_password && !m_config.auth.encryptedPassword.empty()) {
         // пароль уже зашифрован — оставляем
     }
@@ -232,7 +232,7 @@ bool ConfigManager::LoadImpl() {
         if (j.contains("app")) {
             auto& a = j["app"];
             std::string tmpExe = a["exePath"].get<std::string>();
-            m_config.app.exePath = std::wstring(tmpExe.begin(), tmpExe.end());
+            m_config.app.exePath = Utf8ToWide(tmpExe);
         }
         if (j.contains("proxy")) {
             auto& p = j["proxy"];
@@ -274,7 +274,7 @@ bool ConfigManager::SaveImpl() {
         std::filesystem::create_directories(m_configPath.parent_path());
 
         nlohmann::json j;
-        j["app"]["exePath"] = std::string(m_config.app.exePath.begin(), m_config.app.exePath.end());
+        j["app"]["exePath"] = WideToUtf8(m_config.app.exePath);
         j["proxy"]["host"] = m_config.proxy.host;
         j["proxy"]["port"] = m_config.proxy.port;
         j["proxy"]["enabled"] = m_config.proxy.enabled;
@@ -346,7 +346,7 @@ Config ConfigManager::JsonToConfig(const nlohmann::json& j) const {
 
 nlohmann::json ConfigManager::ConfigToJson(const Config& cfg) const {
     nlohmann::json j;
-    j["app"]["exePath"] = std::string(cfg.app.exePath.begin(), cfg.app.exePath.end());
+    j["app"]["exePath"] = WideToUtf8(cfg.app.exePath);
     j["proxy"]["host"] = cfg.proxy.host;
     j["proxy"]["port"] = cfg.proxy.port;
     j["proxy"]["enabled"] = cfg.proxy.enabled;
@@ -369,11 +369,11 @@ std::vector<domain::Rule> ConfigManager::JsonToRules(const nlohmann::json& j) co
         rule.id = r.value("id", "");
         {
             std::string tmp = r["pattern"].get<std::string>();
-            rule.pattern = std::wstring(tmp.begin(), tmp.end());
+            rule.pattern = Utf8ToWide(tmp);
         }
         {
             std::string tmp = r.value("description", std::string());
-            rule.description = std::wstring(tmp.begin(), tmp.end());
+            rule.description = Utf8ToWide(tmp);
         }
         rule.priority = r.value("priority", 0);
         rule.enabled = r.value("enabled", true);
@@ -395,8 +395,8 @@ nlohmann::json ConfigManager::RulesToJson(const std::vector<domain::Rule>& rules
     for (const auto& rule : rules) {
         nlohmann::json r;
         r["id"] = rule.id;
-        r["pattern"] = std::string(rule.pattern.begin(), rule.pattern.end());
-        r["description"] = std::string(rule.description.begin(), rule.description.end());
+        r["pattern"] = WideToUtf8(rule.pattern);
+        r["description"] = WideToUtf8(rule.description);
         r["priority"] = rule.priority;
         r["enabled"] = rule.enabled;
         switch (rule.type) {
