@@ -8,6 +8,10 @@ echo  Building TcpRedirector
 echo ========================================
 echo.
 
+:: Read version
+set /p VERSION=<"%ROOT%\VERSION"
+echo [INFO] Version: %VERSION%
+
 :: Auto-detect Visual Studio
 set VSWHERE="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist %VSWHERE% set VSWHERE="%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -34,6 +38,12 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
+:: Clean build directory (temporary — releases go to releases\)
+echo [0/3] Cleaning build directory...
+if exist "%ROOT%\build" rmdir /S /Q "%ROOT%\build" >nul 2>&1
+mkdir "%ROOT%\build" >nul 2>&1
+echo [OK]
+
 :: Step 1: Unit Tests
 echo [1/3] Compiling RuleEngine tests...
 cd /d "%ROOT%\tests\unit\service"
@@ -44,10 +54,9 @@ RuleEngineTest.exe 2>&1
 if errorlevel 1 echo [FAIL] Tests failed! & pause & exit /b 1
 echo [PASS]
 
-:: Step 2: GUI — self-contained publish (no .NET runtime required on target)
-echo [2/3] Building GUI (self-contained, ~70 MB)...
+:: Step 2: GUI — self-contained publish
+echo [2/3] Building GUI (self-contained)...
 cd /d "%ROOT%\src\gui\TcpRedirectorGUI"
-if exist "%ROOT%\build\gui" rmdir /S /Q "%ROOT%\build\gui" >nul 2>&1
 dotnet publish TcpRedirectorGUI.csproj -c Release --self-contained true -r win-x64 --nologo -o "%ROOT%\build\gui\" 2>&1
 if errorlevel 1 echo [FAIL] & pause & exit /b 1
 echo [OK]
@@ -55,8 +64,7 @@ echo [OK]
 :: Step 3: Service
 echo [3/3] Building Service...
 cd /d "%ROOT%\src\service\TcpRedirectorService"
-:: Clean ALL build artifacts to force full recompilation
-:: MSVC LTCG caches code in .iobj/.ipdb — must delete all to guarantee fresh build
+:: Clean LTCG cache to force full recompilation
 if exist "build\service\x64\Release\obj" (
     del /Q "build\service\x64\Release\obj\*.obj"  2>nul
     del /Q "build\service\x64\Release\obj\*.iobj" 2>nul
@@ -68,19 +76,20 @@ if errorlevel 1 echo [FAIL] & pause & exit /b 1
 copy /Y "build\service\x64\Release\TcpRedirectorService.exe" "%ROOT%\build\" >nul 2>&1
 echo [OK]
 
-copy /Y "build\service\x64\Release\*.exe" "%ROOT%\build\" >nul 2>&1
-
-:: Copy WinDivert.dll to build directory so LoadLibrary finds it
+:: Copy WinDivert.dll + WinDivert64.sys to build directory
 if exist "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" (
     copy /Y "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
+    copy /Y "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert64.sys" "%ROOT%\build\" >nul 2>&1
 ) else if exist "%ROOT%\deploy\WinDivert.dll" (
     copy /Y "%ROOT%\deploy\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
+    if exist "%ROOT%\deploy\WinDivert64.sys" (
+        copy /Y "%ROOT%\deploy\WinDivert64.sys" "%ROOT%\build\" >nul 2>&1
+    )
 )
 
 echo.
 echo ========================================
 echo  Build complete!
 echo  Output: %ROOT%\build\
-echo  Run: deploy.bat
+echo  Next:   deploy.bat  (creates versioned release)
 echo ========================================
-pause

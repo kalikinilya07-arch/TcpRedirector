@@ -60,6 +60,11 @@ public:
                 proxyCfg.port = cfg.proxy.port;
                 proxyCfg.auth_required = cfg.auth.enabled;
                 proxyCfg.kerberos_auth = cfg.auth.kerberos;
+                // Kerberos implies auth_required (mutually exclusive with Basic)
+                if (proxyCfg.kerberos_auth && !proxyCfg.auth_required) {
+                    proxyCfg.auth_required = true;
+                    m_logger->Info("service", "Kerberos enabled — forcing auth_required=true");
+                }
                 proxyCfg.login = infrastructure::Utf8ToWide(cfg.auth.username);
             }
             m_configManager->UpdateConfigNoSave(cfg);

@@ -1,220 +1,82 @@
 @echo off
 title TcpRedirector — Deploy
 cd /d "%~dp0"
+set ROOT=%CD%
 
-set PROJECT_DIR=%~dp0
-set DEPLOY_DIR=.\deploy
-set BUILD_DIR=.\build
-
+:: Read version
+set /p VERSION=<"%ROOT%\VERSION"
 echo ========================================
-echo  Preparing deployment package
+echo  Deploying TcpRedirector v%VERSION%
 echo ========================================
 echo.
 
-:: Create deploy directory
-if exist "%DEPLOY_DIR%" rmdir /S /Q "%DEPLOY_DIR%" >nul 2>&1
-mkdir "%DEPLOY_DIR%" >nul 2>&1
-mkdir "%DEPLOY_DIR%\gui" >nul 2>&1
+:: Check build exists
+if not exist "%ROOT%\build\TcpRedirectorService.exe" (
+    echo [FAIL] Build not found! Run build.bat first.
+    pause
+    exit /b 1
+)
+
+:: Create versioned release directory
+set RELEASE_DIR=%ROOT%\releases\v%VERSION%
+if exist "%RELEASE_DIR%" (
+    echo [WARN] Release v%VERSION% already exists!
+    echo        Delete it manually or bump VERSION file.
+    pause
+    exit /b 1
+)
+
+mkdir "%RELEASE_DIR%" >nul 2>&1
+mkdir "%RELEASE_DIR%\gui" >nul 2>&1
 
 :: Copy service binary
-echo [1] Copying service binary...
-if exist "%BUILD_DIR%\TcpRedirectorService.exe" (
-    copy /Y "%BUILD_DIR%\TcpRedirectorService.exe" "%DEPLOY_DIR%\" >nul 2>&1
-    echo     OK
-) else (
-    echo     [WARN] Not found — run build.bat first
+echo [1/4] Copying service binary...
+copy /Y "%ROOT%\build\TcpRedirectorService.exe" "%RELEASE_DIR%\" >nul 2>&1
+echo     OK
+
+:: Copy GUI (cleaned)
+echo [2/4] Copying GUI...
+xcopy /Y /E /I "%ROOT%\build\gui\*" "%RELEASE_DIR%\gui\" >nul 2>&1
+
+:: Remove unnecessary files from self-contained publish
+if exist "%RELEASE_DIR%\gui\*.pdb" del /Q "%RELEASE_DIR%\gui\*.pdb" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\clretwrc.dll" del "%RELEASE_DIR%\gui\clretwrc.dll" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\mscordaccore.dll" del "%RELEASE_DIR%\gui\mscordaccore.dll" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\mscordaccore_amd64*.dll" del "%RELEASE_DIR%\gui\mscordaccore_amd64*.dll" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\mscordbi.dll" del "%RELEASE_DIR%\gui\mscordbi.dll" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\createdump.exe" del "%RELEASE_DIR%\gui\createdump.exe" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\Microsoft.DiaSymReader.Native.*.dll" del "%RELEASE_DIR%\gui\Microsoft.DiaSymReader.Native.*.dll" >nul 2>&1
+if exist "%RELEASE_DIR%\gui\msquic.dll" del "%RELEASE_DIR%\gui\msquic.dll" >nul 2>&1
+:: Remove non-ru language folders
+for /d %%d in ("%RELEASE_DIR%\gui\cs" "%RELEASE_DIR%\gui\de" "%RELEASE_DIR%\gui\es" "%RELEASE_DIR%\gui\fr" "%RELEASE_DIR%\gui\it" "%RELEASE_DIR%\gui\ja" "%RELEASE_DIR%\gui\ko" "%RELEASE_DIR%\gui\pl" "%RELEASE_DIR%\gui\pt-BR" "%RELEASE_DIR%\gui\tr" "%RELEASE_DIR%\gui\zh-Hans" "%RELEASE_DIR%\gui\zh-Hant") do (
+    if exist "%%d" rmdir /S /Q "%%d" >nul 2>&1
 )
+echo     OK
 
-:: Copy GUI
-echo [2] Copying GUI...
-if exist "%BUILD_DIR%\gui" (
-    xcopy /Y /E /I "%BUILD_DIR%\gui\*" "%DEPLOY_DIR%\gui\" >nul 2>&1
+:: Copy WinDivert
+echo [3/4] Copying WinDivert...
+copy /Y "%ROOT%\build\WinDivert.dll" "%RELEASE_DIR%\" >nul 2>&1
+copy /Y "%ROOT%\build\WinDivert64.sys" "%RELEASE_DIR%\" >nul 2>&1
+echo     OK
 
-    :: Remove unnecessary files from self-contained publish
-    :: 1. Debug symbols
-    if exist "%DEPLOY_DIR%\gui\*.pdb" del /Q "%DEPLOY_DIR%\gui\*.pdb"
-    :: 2. Debug/ETW DLLs
-    if exist "%DEPLOY_DIR%\gui\clretwrc.dll" del "%DEPLOY_DIR%\gui\clretwrc.dll"
-    if exist "%DEPLOY_DIR%\gui\mscordaccore.dll" del "%DEPLOY_DIR%\gui\mscordaccore.dll"
-    if exist "%DEPLOY_DIR%\gui\mscordaccore_amd64*.dll" del "%DEPLOY_DIR%\gui\mscordaccore_amd64*.dll"
-    if exist "%DEPLOY_DIR%\gui\mscordbi.dll" del "%DEPLOY_DIR%\gui\mscordbi.dll"
-    if exist "%DEPLOY_DIR%\gui\createdump.exe" del "%DEPLOY_DIR%\gui\createdump.exe"
-    if exist "%DEPLOY_DIR%\gui\Microsoft.DiaSymReader.Native.*.dll" del "%DEPLOY_DIR%\gui\Microsoft.DiaSymReader.Native.*.dll"
-    :: 3. QUIC (HTTP/3) — не используется
-    if exist "%DEPLOY_DIR%\gui\msquic.dll" del "%DEPLOY_DIR%\gui\msquic.dll"
-    :: 4. Language folders — оставить только ru и en (invariant)
-    for /d %%d in ("%DEPLOY_DIR%\gui\cs" "%DEPLOY_DIR%\gui\de" "%DEPLOY_DIR%\gui\es" "%DEPLOY_DIR%\gui\fr" "%DEPLOY_DIR%\gui\it" "%DEPLOY_DIR%\gui\ja" "%DEPLOY_DIR%\gui\ko" "%DEPLOY_DIR%\gui\pl" "%DEPLOY_DIR%\gui\pt-BR" "%DEPLOY_DIR%\gui\tr" "%DEPLOY_DIR%\gui\zh-Hans" "%DEPLOY_DIR%\gui\zh-Hant") do (
-        if exist "%%d" rmdir /S /Q "%%d" >nul 2>&1
-    )
+:: Copy install.bat
+echo [4/4] Copying installer...
+copy /Y "%ROOT%\build\install.bat" "%RELEASE_DIR%\" >nul 2>&1
+echo     OK
 
-    echo     OK (%DEPLOY_DIR%\gui\)
+:: Auto-increment patch version
+for /f "tokens=1,2,3 delims=." %%a in ("%VERSION%") do (
+    set MAJOR=%%a
+    set MINOR=%%b
+    set PATCH=%%c
 )
-
-:: Copy WinDivert (required for capture)
-echo [3] Copying WinDivert (required)...
-set "WD64_SRC=%PROJECT_DIR%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll"
-set "WD64_SYS_SRC=%PROJECT_DIR%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert64.sys"
-if exist "%BUILD_DIR%\WinDivert.dll" (
-    copy /Y "%BUILD_DIR%\WinDivert.dll" "%DEPLOY_DIR%\" >nul 2>&1
-) else if exist "%WD64_SRC%" (
-    copy /Y "%WD64_SRC%" "%DEPLOY_DIR%\" >nul 2>&1
-    echo     [OK] from external\WinDivert
-) else (
-    echo     [WARN] WinDivert.dll not found! Place in %DEPLOY_DIR%\
-    echo     Download: https://github.com/nickhutchinson/libdivert/releases
-)
-if exist "%BUILD_DIR%\WinDivert64.sys" (
-    copy /Y "%BUILD_DIR%\WinDivert64.sys" "%DEPLOY_DIR%\" >nul 2>&1
-) else if exist "%WD64_SYS_SRC%" (
-    copy /Y "%WD64_SYS_SRC%" "%DEPLOY_DIR%\" >nul 2>&1
-)
-if exist "%DEPLOY_DIR%\WinDivert.dll" (
-    echo     [OK] WinDivert.dll ready
-)
-
-:: Create default config.json
-echo [4] Creating default config.json...
-(
-echo {
-echo     "app": {
-echo         "exePath": "C:\\Path\\To\\YourApp.exe"
-echo     },
-echo     "proxy": {
-echo         "host": "192.168.1.1",
-echo         "port": 3128,
-echo         "enabled": true
-echo     },
-echo     "auth": {
-echo         "enabled": false,
-echo         "username": "",
-echo         "encryptedPassword": "",
-echo         "kerberos": false
-echo     },
-echo     "log": {
-echo         "level": 2,
-echo         "fileEnabled": true,
-echo         "maxSizeMB": 10
-echo     },
-echo     "rules": [
-echo         {
-echo             "id": "default",
-echo             "pattern": "YourApp.exe",
-echo             "description": "Redirect target app",
-echo             "priority": 1,
-echo             "enabled": true,
-echo             "type": "process_name",
-echo             "action": "proxy"
-echo         }
-echo     ]
-echo }
-) > "%DEPLOY_DIR%\config.json"
-
-:: Create install script
-echo [5] Creating install_service.bat...
-(
-echo @echo off
-echo title Install TcpRedirector Service
-echo.
-echo :: Must run as Administrator
-echo openfiles ^>nul 2^>^&1 ^|^| ^(echo This script must be run as Administrator! ^& pause ^& exit /b 1^)
-echo.
-echo :: Install service
-echo "%%~dp0TcpRedirectorService.exe" --install
-echo.
-echo :: Start service
-echo sc start TcpRedirectorService
-echo.
-echo echo Service installed and started.
-echo pause
-) > "%DEPLOY_DIR%\install_service.bat"
-
-:: Create WinDivert install helper
-(
-echo @echo off
-echo title Install WinDivert Driver
-echo.
-echo :: Must run as Administrator
-echo openfiles ^>nul 2^>^&1 ^|^| ^(echo This script must be run as Administrator! ^& pause ^& exit /b 1^)
-echo.
-echo :: Install WinDivert driver as a kernel service
-echo sc create WinDivirt binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
-echo sc start WinDivert ^>nul 2^>^&1
-echo if errorlevel 1 ^(
-echo     echo [WARN] Failed to install WinDivert driver. Trying API-PPA method...
-echo     echo The service will attempt to auto-load WinDivert64.sys from its directory.
-echo ^) else ^(
-echo     echo [OK] WinDivert driver installed successfully
-echo ^)
-echo.
-echo pause
-) > "%DEPLOY_DIR%\install_windivert.bat"
-
-:: Create uninstall script
-echo [6] Creating uninstall_service.bat...
-(
-echo @echo off
-echo title Uninstall TcpRedirector Service
-echo.
-echo :: Must run as Administrator
-echo openfiles ^>nul 2^>^&1 ^|^| ^(echo This script must be run as Administrator! ^& pause ^& exit /b 1^)
-echo.
-echo :: Stop and remove service
-echo "%%~dp0TcpRedirectorService.exe" --uninstall
-echo.
-echo echo Service uninstalled.
-echo pause
-) > "%DEPLOY_DIR%\uninstall_service.bat"
-
-:: Create console mode launcher
-echo [7] Creating run_console.bat...
-(
-echo @echo off
-echo title TcpRedirector ^(console^)
-echo.
-echo :: Auto-elevate if not running as Administrator
-echo net session ^>nul 2^>^&1
-echo if errorlevel 1 ^(
-echo     echo [INFO] Restarting with Administrator privileges...
-echo     powershell -Command "Start-Process '%%~f0' -Verb RunAs"
-echo     exit /b
-echo ^)
-echo.
-echo :: Ensure WinDivert driver is installed AND running
-echo echo [INFO] Checking WinDivert driver...
-echo sc query WinDivert ^| find "RUNNING" ^>nul 2^>^&1
-echo if errorlevel 1 ^(
-echo     echo [INFO] Installing/starting WinDivert driver...
-echo     sc create WinDivert binPath="%%~dp0WinDivert64.sys" type=kernel start=demand ^>nul 2^>^&1
-echo     sc start WinDivert ^>nul 2^>^&1
-echo     sc query WinDivert ^| find "RUNNING" ^>nul 2^>^&1
-echo     if errorlevel 1 ^(
-echo         echo [WARN] Could not start WinDivert. Trying auto-load via API-PPA...
-echo     ^) else ^(
-echo         echo [OK] WinDivert driver is RUNNING
-echo     ^)
-echo ^) else ^(
-echo     echo [OK] WinDivert driver is RUNNING
-echo ^)
-echo.
-echo "%%~dp0TcpRedirectorService.exe" --console
-echo pause
-) > "%DEPLOY_DIR%\run_console.bat"
+set /a NEW_PATCH=%PATCH%+1
+set NEW_VERSION=%MAJOR%.%MINOR%.%NEW_PATCH%
+echo %NEW_VERSION%> "%ROOT%\VERSION"
 
 echo.
 echo ========================================
-echo  Deployment package ready!
-echo  Package: %DEPLOY_DIR%\
+echo  Release v%VERSION% created!
+echo  Location: %RELEASE_DIR%
+echo  Next version will be: v%NEW_VERSION%
 echo ========================================
-echo.
-echo Required files to add manually:
-echo   - WinDivert.dll   (from https://github.com/nickhutchinson/libdivert/releases)
-echo   - WinDivert64.sys (same package, place next to exe)
-echo   - nlohmann/json.hpp (already included in source)
-echo.
-echo On target machine:
-echo   1. Copy entire "deploy" folder
-echo   2. Place WinDivert.dll and WinDivert64.sys in the same folder
-echo   3. Edit config.json
-echo   4. Run install_service.bat as Administrator
-echo.
-pause

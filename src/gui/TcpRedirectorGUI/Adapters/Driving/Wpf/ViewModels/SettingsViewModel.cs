@@ -37,9 +37,24 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _authRequired;
 
     // ── Auth ─────────────────────────────────────────
+    // Kerberos and Basic auth are mutually exclusive:
+    //  - Enabling Kerberos auto-enables AuthRequired
+    //  - Disabling AuthRequired auto-disables Kerberos
     [ObservableProperty] private string _login = "";
     [ObservableProperty] private string _password = "";
     [ObservableProperty] private bool _kerberosEnabled;
+
+    partial void OnKerberosEnabledChanged(bool value)
+    {
+        if (value && !AuthRequired)
+            AuthRequired = true;
+    }
+
+    partial void OnAuthRequiredChanged(bool value)
+    {
+        if (!value && KerberosEnabled)
+            KerberosEnabled = false;
+    }
 
     // ── Rules ────────────────────────────────────────
     [ObservableProperty] private ObservableCollection<Rule> _rules = [];

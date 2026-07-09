@@ -114,6 +114,7 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             host = config.Host,
             port = config.Port,
             auth_required = config.AuthRequired,
+            kerberos = config.KerberosEnabled,
             login = config.Login ?? "",
             set_password = !string.IsNullOrEmpty(config.Password)
         });

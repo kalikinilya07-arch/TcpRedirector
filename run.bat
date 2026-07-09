@@ -6,8 +6,8 @@ cd /d "%~dp0"
 taskkill /im TcpRedirectorService.exe /f >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-:: Launch service hidden
-start /MIN "" "src\service\TcpRedirectorService\build\service\x64\Release\TcpRedirectorService.exe" --console
+:: Launch service hidden (from build directory)
+start /MIN "" "build\TcpRedirectorService.exe" --console
 timeout /t 2 /nobreak >nul
 
 :: Launch GUI

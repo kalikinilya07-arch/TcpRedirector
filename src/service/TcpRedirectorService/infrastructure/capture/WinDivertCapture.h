@@ -149,6 +149,9 @@ private:
         InterlockedAnd(&m_portDirect[port >> 5],  (LONG)~(1u << (port & 31)));
     }
 
+    // WinDivert driver auto-start (ensures kernel driver is running before WinDivertOpen)
+    bool EnsureDriverRunning();
+
     // PID helpers (используются внутри CheckProcessRule)
     uint32_t FindPidBySourcePort(uint16_t src_port);
     uint32_t FindTargetPid();

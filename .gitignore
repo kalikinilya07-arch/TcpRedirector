@@ -35,6 +35,8 @@ Thumbs.db
 
 # Build output
 build/
+releases/
+deploy/
 [Bb]in/
 [Oo]bj/
 [Oo]ut/

@@ -112,9 +112,16 @@ private:
         config.host = infrastructure::Utf8ToWide(host);
         config.port = j["port"].get<uint16_t>();
         config.auth_required = j.value("auth_required", false);
-        config.login = std::wstring(j.value("login", std::string()).begin(),
-                                     j.value("login", std::string()).end());
+        config.kerberos_auth = j.value("kerberos", false);
+        // Kerberos implies auth_required (mutually exclusive with Basic)
+        if (config.kerberos_auth && !config.auth_required)
+            config.auth_required = true;
+        config.login = infrastructure::Utf8ToWide(j.value("login", std::string()));
         config.has_password = j.value("set_password", false);
+        if (config.has_password) {
+            std::string pwd = j.value("password", std::string());
+            config.plain_password = infrastructure::Utf8ToWide(pwd);
+        }
         m_configManager->SetProxyConfig(config);
         result["status"] = "success";
     }

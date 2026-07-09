@@ -6,6 +6,7 @@
 #include <tcpmib.h>
 #include <tlhelp32.h>
 #include <vector>
+#include <winsvc.h>
 
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -101,12 +102,104 @@ WinDivertCapture::~WinDivertCapture() {
     if (g_wdLogFile) { fclose(g_wdLogFile); g_wdLogFile = nullptr; }
 }
 
+// ---- WinDivert kernel driver auto-start ----
+// Tries to start the WinDivert kernel driver service.
+// If the service doesn't exist, creates it pointing to WinDivert64.sys
+// next to the current executable.
+bool WinDivertCapture::EnsureDriverRunning() {
+    static const wchar_t* kDriverName = L"WinDivert";
+    static const wchar_t* kSysFile    = L"WinDivert64.sys";
+
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr,
+        SC_MANAGER_ENUMERATE_SERVICE | SC_MANAGER_CREATE_SERVICE);
+    if (!scm) {
+        WD_WARN("[WinDivert] Cannot open SCM (err=%lu) — driver auto-start skipped\n",
+            GetLastError());
+        return false;  // non-fatal: caller will try WinDivertOpen anyway
+    }
+
+    bool driverReady = false;
+    SC_HANDLE svc = OpenServiceW(scm, kDriverName,
+        SERVICE_QUERY_STATUS | SERVICE_START);
+
+    if (!svc) {
+        DWORD err = GetLastError();
+        if (err == ERROR_SERVICE_DOES_NOT_EXIST) {
+            // Try to create the driver service
+            wchar_t exeDir[MAX_PATH];
+            GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+            wchar_t* lastSlash = wcsrchr(exeDir, L'\\');
+            if (lastSlash) *(lastSlash + 1) = L'\0';
+            wcscat_s(exeDir, kSysFile);
+
+            WD_INFO("[WinDivert] Creating driver service: %ls\n", exeDir);
+            svc = CreateServiceW(scm, kDriverName, kDriverName,
+                SERVICE_ALL_ACCESS,
+                SERVICE_KERNEL_DRIVER,
+                SERVICE_DEMAND_START,
+                SERVICE_ERROR_NORMAL,
+                exeDir,
+                nullptr, nullptr, nullptr, nullptr, nullptr);
+            if (!svc) {
+                WD_WARN("[WinDivert] Failed to create driver service (err=%lu)\n",
+                    GetLastError());
+            }
+        } else {
+            WD_WARN("[WinDivert] Cannot open driver service (err=%lu)\n", err);
+        }
+    }
+
+    if (svc) {
+        SERVICE_STATUS status = {};
+        if (QueryServiceStatus(svc, &status)) {
+            if (status.dwCurrentState == SERVICE_RUNNING) {
+                WD_INFO("[WinDivert] Driver is already running\n");
+                driverReady = true;
+            } else if (status.dwCurrentState == SERVICE_STOPPED) {
+                WD_INFO("[WinDivert] Starting driver...\n");
+                if (StartServiceW(svc, 0, nullptr)) {
+                    // Wait up to 3 seconds for the driver to start
+                    for (int i = 0; i < 30; i++) {
+                        Sleep(100);
+                        if (QueryServiceStatus(svc, &status) &&
+                            status.dwCurrentState == SERVICE_RUNNING) {
+                            WD_INFO("[WinDivert] Driver started successfully\n");
+                            driverReady = true;
+                            break;
+                        }
+                    }
+                    if (!driverReady) {
+                        WD_WARN("[WinDivert] Driver did not reach RUNNING state "
+                            "(current=%lu, exit=%lu)\n",
+                            status.dwCurrentState, status.dwWin32ExitCode);
+                    }
+                } else {
+                    DWORD startErr = GetLastError();
+                    if (startErr == ERROR_SERVICE_ALREADY_RUNNING) {
+                        driverReady = true;
+                    } else {
+                        WD_WARN("[WinDivert] Failed to start driver (err=%lu)\n",
+                            startErr);
+                    }
+                }
+            }
+        }
+        CloseServiceHandle(svc);
+    }
+
+    CloseServiceHandle(scm);
+    return driverReady;
+}
+
 bool WinDivertCapture::Open() {
     if (m_running) return true;
     if (!LoadWinDivertApi()) {
         WD_ERROR("[WinDivert] FAILED to load WinDivert.dll!\n");
         return false;
     }
+
+    // Ensure the WinDivert kernel driver is running before calling WinDivertOpen
+    EnsureDriverRunning();
 
     // Auto-init log file
     if (!g_wdLogFile) {
