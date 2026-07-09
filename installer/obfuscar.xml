@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Obfuscator>
+  <Var name="InPath" value="..\deploy_v3\gui" />
+  <Var name="OutPath" value="obfuscated\gui" />
+
+  <!-- Только наш GUI -->
+  <Module file="$(InPath)\TcpRedirectorGUI.dll" />
+
+  <!-- Переименование: исключаем публичные фичи -->
+  <AssemblySearchPath path="..\deploy_v3\gui" />
+
+  <!-- Исключить из обфускации: XAML-привязки и MVVM -->
+  <ForceTypeRenaming>
+    <Exclude name="TcpRedirectorGUI.Adapters.*" />
+    <Exclude name="TcpRedirectorGUI.Domain.Ports.*" />
+  </ForceTypeRenaming>
+
+  <!-- Копируем все остальные файлы -->
+  <Include file="$(InPath)\*.exe" />
+  <Include file="$(InPath)\*.dll" />
+  <Include file="$(InPath)\*.json" />
+  <Include path="$(InPath)\runtimes\**\*.dll" />
+</Obfuscator>
