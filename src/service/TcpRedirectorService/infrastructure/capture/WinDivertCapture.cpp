@@ -168,9 +168,17 @@ bool WinDivertCapture::Open() {
 
 void WinDivertCapture::Close() {
     m_running = false;
-    if (m_handle) { m_api.Shutdown(m_handle, WINDIVERT_SHUTDOWN_BOTH); }
+    // H5: check that API function pointers are valid before calling.
+    // After a failed Open(), m_api.Unload() nulls all pointers but
+    // m_handle may be INVALID_HANDLE_VALUE (truthy).
+    if (m_handle && m_handle != INVALID_HANDLE_VALUE && m_api.Shutdown) {
+        m_api.Shutdown(m_handle, WINDIVERT_SHUTDOWN_BOTH);
+    }
     if (m_captureThread.joinable()) m_captureThread.join();
-    if (m_handle) { m_api.Close(m_handle); m_handle = nullptr; }
+    if (m_handle && m_handle != INVALID_HANDLE_VALUE && m_api.Close) {
+        m_api.Close(m_handle);
+    }
+    m_handle = nullptr;
     m_api.Unload();
     m_initialized = false;
 }
@@ -580,7 +588,22 @@ bool WinDivertCapture::IsLocalhost(uint32_t ip) {
 bool WinDivertCapture::LoadWinDivertApi() { return m_api.Load(); }
 
 uint32_t WinDivertCapture::FindPidBySourcePort(uint16_t src_port) {
-    // 1 попытка без Sleep (как в ProxyBridge — если не нашли, вернёмся позже)
+    // H6: check PID cache first to avoid expensive TCP table scan.
+    {
+        AcquireSRWLockShared(&m_pidCacheLock);
+        auto it = m_pidCache.find(src_port);
+        if (it != m_pidCache.end()) {
+            uint64_t now = GetTickCount64();
+            if (now - it->second.timestamp_ms < PID_CACHE_TTL_MS) {
+                uint32_t pid = it->second.pid;
+                ReleaseSRWLockShared(&m_pidCacheLock);
+                return pid;
+            }
+        }
+        ReleaseSRWLockShared(&m_pidCacheLock);
+    }
+
+    // Cache miss or expired — scan TCP table.
     ULONG size = 0;
     GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET,
                         static_cast<TCP_TABLE_CLASS>(TCP_TABLE_OWNER_PID_ALL), 0);
@@ -595,7 +618,12 @@ uint32_t WinDivertCapture::FindPidBySourcePort(uint16_t src_port) {
     for (DWORD i = 0; i < table->dwNumEntries; i++) {
         // dwLocalPort — DWORD, но содержит порт в network byte order как u_short
         if (ntohs(static_cast<u_short>(table->table[i].dwLocalPort)) == src_port) {
-            return table->table[i].dwOwningPid;
+            uint32_t pid = table->table[i].dwOwningPid;
+            // Cache the result
+            AcquireSRWLockExclusive(&m_pidCacheLock);
+            m_pidCache[src_port] = {pid, GetTickCount64()};
+            ReleaseSRWLockExclusive(&m_pidCacheLock);
+            return pid;
         }
     }
 

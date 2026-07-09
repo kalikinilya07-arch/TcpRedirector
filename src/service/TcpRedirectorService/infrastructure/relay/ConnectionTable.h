@@ -63,7 +63,9 @@ public:
     /// Number of currently tracked connections.
     uint32_t GetTrackedCount() const { return m_trackedCount.load(std::memory_order_relaxed); }
 
-    // Сохранить соединение: src_port → {orig_dest_ip, orig_dest_port, proxy_config_id}
+    // Сохранить соединение: (src_port, orig_dest_ip) → {orig_dest_port, proxy_config_id}
+    // M3: compound key prevents collision when two connections share the same
+    // ephemeral src_port but target different destinations.
     void Add(uint16_t src_port, uint32_t src_ip,
              uint32_t orig_dest_ip, uint16_t orig_dest_port,
              uint32_t proxy_config_id) {
@@ -72,10 +74,11 @@ public:
         int hash = src_port % CONNECTION_HASH_SIZE;
         ConnectionEntry* entry = m_table[hash];
         while (entry) {
-            if (entry->src_port == src_port) {
+            // M3: match both src_port AND orig_dest_ip to avoid overwriting
+            // a different connection that happened to reuse the same src_port.
+            if (entry->src_port == src_port && entry->orig_dest_ip == orig_dest_ip) {
                 // Update existing
                 entry->src_ip = src_ip;
-                entry->orig_dest_ip = orig_dest_ip;
                 entry->orig_dest_port = orig_dest_port;
                 entry->proxy_config_id = proxy_config_id;
                 entry->is_tracked = true;

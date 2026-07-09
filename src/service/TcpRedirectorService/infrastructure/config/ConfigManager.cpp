@@ -423,8 +423,10 @@ std::string ConfigManager::EncryptPassword(const std::wstring& plaintext) const 
     plainBlob.pbData = (BYTE*)plaintext.data();
     plainBlob.cbData = (DWORD)(plaintext.size() * sizeof(wchar_t));
     DATA_BLOB encryptedBlob = {0};
+    // M12: align DPAPI flags with SecretsManager::Encrypt for interoperability.
+    // CRYPTPROTECT_UI_FORBIDDEN + description string (consistent with SecretsManager).
     if (CryptProtectData(&plainBlob, L"TcpRedirector Proxy Password",
-            NULL, NULL, NULL, CRYPTPROTECT_LOCAL_MACHINE, &encryptedBlob)) {
+            NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &encryptedBlob)) {
         std::vector<uint8_t> data(encryptedBlob.pbData,
                                   encryptedBlob.pbData + encryptedBlob.cbData);
         LocalFree(encryptedBlob.pbData);
@@ -440,8 +442,9 @@ std::wstring ConfigManager::DecryptPassword(const std::string& ciphertext) const
     encryptedBlob.pbData = raw.data();
     encryptedBlob.cbData = (DWORD)raw.size();
     DATA_BLOB plainBlob = {0};
+    // M12: align DPAPI flags with encryption (CRYPTPROTECT_UI_FORBIDDEN).
     if (CryptUnprotectData(&encryptedBlob, NULL, NULL, NULL, NULL,
-                           CRYPTPROTECT_LOCAL_MACHINE, &plainBlob)) {
+                           CRYPTPROTECT_UI_FORBIDDEN, &plainBlob)) {
         std::wstring result((wchar_t*)plainBlob.pbData,
                             plainBlob.cbData / sizeof(wchar_t));
         LocalFree(plainBlob.pbData);
@@ -486,14 +489,14 @@ std::vector<uint8_t> ConfigManager::Base64Decode(const std::string& data) {
         for (int i = 'A'; i <= 'Z'; i++) D[i] = i - 'A';
         for (int i = 'a'; i <= 'z'; i++) D[i] = i - 'a' + 26;
         for (int i = '0'; i <= '9'; i++) D[i] = i - '0' + 52;
-        D['+'] = 62; D['/'] = 63; D['='] = 0;
+        D['+'] = 62; D['/'] = 63; D['='] = 0xFF;  // H2: padding must be skipped, not decoded as data
         init = true;
     }
 
     std::vector<uint8_t> result;
     int val = 0, valb = -8;
     for (char c : data) {
-        if (D[(unsigned char)c] == 0xFF) continue;
+        if (D[(unsigned char)c] == 0xFF) continue;  // skips padding '=' and non-base64 chars
         val = (val << 6) + D[(unsigned char)c];
         valb += 6;
         if (valb >= 0) {

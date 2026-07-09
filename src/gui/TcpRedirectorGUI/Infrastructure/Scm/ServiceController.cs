@@ -81,8 +81,15 @@ public class ServiceController : IServiceController
                 var procs = Process.GetProcessesByName(ProcessName);
                 foreach (var p in procs)
                 {
-                    p.Kill();
-                    p.WaitForExit(5000);
+                    try
+                    {
+                        p.Kill();
+                        p.WaitForExit(5000);
+                    }
+                    finally
+                    {
+                        p.Dispose();  // M12: prevent handle leak
+                    }
                 }
                 return !IsProcessRunning();
             });

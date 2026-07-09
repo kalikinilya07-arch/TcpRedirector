@@ -156,6 +156,13 @@ public:
         if (m_acceptThread.joinable())
             m_acceptThread.join();
 
+        // H4: wait for active relay pairs to drain before calling WSACleanup().
+        // Each StartBridge increments m_activePairs; each completed bridge
+        // decrements it.  We poll with a 5-second total timeout.
+        for (int i = 0; i < 50 && m_activePairs.load(std::memory_order_relaxed) > 0; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+
         WSACleanup();
         Log(domain::LogLevel::Info, "Stopped");
     }
@@ -376,15 +383,40 @@ private:
         }
         resp_buf[bytes] = '\0';
 
-        // M2: check full "200 Connection established" phrase, not bare "200"
-        if (strstr(resp_buf, "200 Connection established") != nullptr ||
-            strstr(resp_buf, "200 Connection Established") != nullptr ||
-            strstr(resp_buf, "200 OK") != nullptr) {
+        // M2: parse HTTP status line properly — look for "HTTP/1.x 200" at the start
+        // instead of substring match anywhere in response.
+        bool connect_ok = false;
+        {
+            std::string resp_str(resp_buf, bytes);
+            // Status line is "HTTP/1.x NNN ..." at the very beginning
+            if (resp_str.size() >= 12 &&
+                resp_str.compare(0, 7, "HTTP/1.") == 0 &&
+                resp_str[8] == ' ' &&
+                resp_str[9] == '2' && resp_str[10] == '0' && resp_str[11] == '0') {
+                connect_ok = true;
+            }
+        }
+        if (connect_ok) {
             // CONNECT успешен — замеряем latency
             auto t_now = std::chrono::steady_clock::now();
             double latency_ms = std::chrono::duration<double, std::milli>(t_now - t_connect_start).count();
             if (m_connectionMonitor) m_connectionMonitor->RecordLatency(latency_ms);
             Log(domain::LogLevel::Debug, "CONNECT response: 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
+
+            // H3: reset SO_RCVTIMEO/SO_SNDTIMEO to 0 after successful CONNECT
+            // so that idle tunnels (SSH, DB pools, websockets) are not torn down
+            // after 30 seconds of inactivity.
+            int zero_timeout = 0;
+            setsockopt(proxy_sock, SOL_SOCKET, SO_RCVTIMEO,
+                       (const char*)&zero_timeout, sizeof(zero_timeout));
+            setsockopt(proxy_sock, SOL_SOCKET, SO_SNDTIMEO,
+                       (const char*)&zero_timeout, sizeof(zero_timeout));
+            // Also enable TCP keepalive for dead-peer detection
+            int keepalive = 1;
+            setsockopt(proxy_sock, SOL_SOCKET, SO_KEEPALIVE,
+                       (const char*)&keepalive, sizeof(keepalive));
+            setsockopt(client_sock, SOL_SOCKET, SO_KEEPALIVE,
+                       (const char*)&keepalive, sizeof(keepalive));
         }
         else if (m_kerberosAuth && sspiAvailable && strstr(resp_buf, "407") != nullptr) {
             // ---- 407 Proxy Auth Required — SSPI-цикл ----
@@ -440,6 +472,9 @@ private:
     }
 
     void StartBridge(SOCKET client_sock, SOCKET proxy_sock) {
+        // H4: track active pairs so Stop() can wait for graceful drain.
+        m_activePairs.fetch_add(1, std::memory_order_relaxed);
+
         auto* pair = new RelayPair();
         pair->sock_client = client_sock;
         pair->sock_proxy = proxy_sock;
@@ -465,6 +500,7 @@ private:
             delete pair;
             closesocket(client_sock);
             closesocket(proxy_sock);
+            m_activePairs.fetch_sub(1, std::memory_order_relaxed);
             return;
         }
 
@@ -474,6 +510,8 @@ private:
         CloseHandle(up_thread);
         // pair может быть уже удалён OneWayRelay (refs==0) —
         // не обращаемся к нему после WaitForSingleObject
+
+        m_activePairs.fetch_sub(1, std::memory_order_relaxed);
     }
 
     struct OneWayConfig {
@@ -507,8 +545,10 @@ private:
                     // Accumulate bytes before pair cleanup
                     if (counter)
                         counter->fetch_add(total_bytes, std::memory_order_relaxed);
-                    shutdown(pair->sock_client, SD_BOTH);
-                    shutdown(pair->sock_proxy, SD_BOTH);
+                    // M1: shutdown only the forward direction (SD_SEND),
+                    // let the sibling thread finish its direction gracefully.
+                    // Data still in flight from the other direction is preserved.
+                    shutdown(to, SD_SEND);
                     if (InterlockedDecrement(&pair->refs) == 0) {
                         closesocket(pair->sock_client);
                         closesocket(pair->sock_proxy);
@@ -525,8 +565,9 @@ private:
         if (counter)
             counter->fetch_add(total_bytes, std::memory_order_relaxed);
 
-        shutdown(pair->sock_client, SD_BOTH);
-        shutdown(pair->sock_proxy, SD_BOTH);
+        // M1: half-close — signal EOF in the forward direction only.
+        // The sibling OneWayRelay thread handles its own direction.
+        shutdown(to, SD_SEND);
 
         if (InterlockedDecrement(&pair->refs) == 0) {
             closesocket(pair->sock_client);
@@ -580,6 +621,11 @@ private:
     RelayLogCallback m_logCb;
     RelayConnCallback m_connCb;
     domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
+
+    // H4: number of active bridge pairs (incremented before StartBridge,
+    // decremented after both directions finish).  Stop() polls this counter
+    // before calling WSACleanup() to avoid use-after-free on Winsock.
+    std::atomic<uint32_t> m_activePairs{0};
 
     std::atomic<uint64_t> m_totalRxBytes{0};
     std::atomic<uint64_t> m_totalTxBytes{0};

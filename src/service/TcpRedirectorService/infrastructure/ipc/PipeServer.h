@@ -248,11 +248,18 @@ private:
                         response = R"({"status":"error","error":"not_ready"})";
                     }
 
-                    DWORD bytesWritten = 0;
-                    WriteFile(newPipe, response.data(),
-                              static_cast<DWORD>(response.size()),
-                              &bytesWritten, nullptr);
-                    FlushFileBuffers(newPipe);
+                    // M7: hold pipe mutex during write to prevent interleaving
+                    // with concurrent SendMessage() push notifications.
+                    {
+                        std::lock_guard<std::mutex> lock(m_pipeMutex);
+                        if (m_hPipe == newPipe) {
+                            DWORD bytesWritten = 0;
+                            WriteFile(m_hPipe, response.data(),
+                                      static_cast<DWORD>(response.size()),
+                                      &bytesWritten, nullptr);
+                            FlushFileBuffers(m_hPipe);
+                        }
+                    }
                 }
                 catch (...) {
                     std::string err = R"({"status":"error","error":"parse_error"})";

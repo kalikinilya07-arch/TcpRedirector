@@ -154,6 +154,15 @@ private:
     uint32_t FindTargetPid();
     bool     IsTargetProcess(uint32_t pid);
 
+    // H6: PID cache to avoid scanning the full TCP table on every untracked packet.
+    struct PidCacheEntry {
+        uint32_t pid;
+        uint64_t timestamp_ms;  // GetTickCount64() when cached
+    };
+    mutable SRWLOCK m_pidCacheLock = SRWLOCK_INIT;
+    std::unordered_map<uint16_t, PidCacheEntry> m_pidCache;
+    static constexpr uint64_t PID_CACHE_TTL_MS = 30000;  // 30 seconds
+
     // DST modification helpers
     void ModifyDstToRelay(uint8_t* packet, UINT packetLen, WINDIVERT_ADDRESS& addr,
                           WINDIVERT_IPHDR* ipHdr, WINDIVERT_TCPHDR* tcpHdr,
