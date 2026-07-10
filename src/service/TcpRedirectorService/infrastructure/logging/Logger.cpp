@@ -61,6 +61,47 @@ void Logger::Shutdown() {
     }
 }
 
+// ---- Scheduled rotation ----
+
+void Logger::EnableScheduledRotation(const LogRotator::Settings& settings) {
+    if (m_rotator) {
+        m_rotator->Stop();
+        m_rotator.reset();
+    }
+
+    if (!settings.enabled) return;
+
+    m_rotator = std::make_unique<LogRotator>();
+    m_rotator->Start(
+        settings,
+        m_logDir,
+        m_logPath,
+        // Close callback
+        [this]() {
+            std::lock_guard lock(m_fileMutex);
+            if (m_file) {
+                std::fclose(m_file);
+                m_file = nullptr;
+            }
+        },
+        // Open callback
+        [this]() -> bool {
+            return OpenLogFile();
+        },
+        // Log callback (write to ring buffer + console)
+        [this](const std::string& msg) {
+            domain::LogEntry entry;
+            entry.timestamp = std::chrono::system_clock::now();
+            entry.level = domain::LogLevel::Info;
+            entry.logger = "rotator";
+            entry.message = msg;
+
+            WriteColorConsole(entry);
+            AddToRingBuffer(entry);
+            NotifyListeners(entry);
+        });
+}
+
 // ---- ILogSink: Log ----
 
 void Logger::Log(domain::LogLevel level, const std::string& logger,

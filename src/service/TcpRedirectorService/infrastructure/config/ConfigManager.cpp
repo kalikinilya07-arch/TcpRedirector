@@ -257,6 +257,19 @@ bool ConfigManager::LoadImpl() {
             auto& s = j["stats"];
             m_config.stats.updateIntervalMs = s.value("updateIntervalMs", 2000);
         }
+        if (j.contains("log_rotation")) {
+            auto& lr = j["log_rotation"];
+            m_config.log_rotation.enabled = lr.value("enabled", true);
+            m_config.log_rotation.schedule = lr.value("schedule", std::string("daily"));
+            m_config.log_rotation.hour = lr.value("hour", 3);
+            m_config.log_rotation.minute = lr.value("minute", 0);
+            m_config.log_rotation.max_age_days = lr.value("max_age_days", 30);
+            {
+                std::string tmp = lr.value("archive_dir", std::string());
+                m_config.log_rotation.archive_dir = tmp;
+            }
+            m_config.log_rotation.compress = lr.value("compress", true);
+        }
 
         // Загрузка правил (старый формат)
         if (j.contains("rules")) {
@@ -285,6 +298,13 @@ bool ConfigManager::SaveImpl() {
         j["log"]["level"] = m_config.log.level;
         j["log"]["fileEnabled"] = m_config.log.fileEnabled;
         j["log"]["maxSizeMB"] = m_config.log.maxSizeMB;
+        j["log_rotation"]["enabled"] = m_config.log_rotation.enabled;
+        j["log_rotation"]["schedule"] = m_config.log_rotation.schedule;
+        j["log_rotation"]["hour"] = m_config.log_rotation.hour;
+        j["log_rotation"]["minute"] = m_config.log_rotation.minute;
+        j["log_rotation"]["max_age_days"] = m_config.log_rotation.max_age_days;
+        j["log_rotation"]["archive_dir"] = m_config.log_rotation.archive_dir;
+        j["log_rotation"]["compress"] = m_config.log_rotation.compress;
         j["stats"]["updateIntervalMs"] = m_config.stats.updateIntervalMs;
 
         // Правила (старый формат)

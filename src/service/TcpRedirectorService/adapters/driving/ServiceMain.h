@@ -139,6 +139,24 @@ public:
             return false;
         }
 
+        // Enable scheduled log rotation (config.json only, not in UI)
+        {
+            auto cfg = m_configManager->GetConfig();
+            infrastructure::LogRotator::Settings rotSettings;
+            rotSettings.enabled = cfg.log_rotation.enabled;
+            rotSettings.schedule = cfg.log_rotation.schedule;
+            rotSettings.hour = cfg.log_rotation.hour;
+            rotSettings.minute = cfg.log_rotation.minute;
+            rotSettings.max_age_days = cfg.log_rotation.max_age_days;
+            if (!cfg.log_rotation.archive_dir.empty()) {
+                rotSettings.archive_dir = std::wstring(
+                    cfg.log_rotation.archive_dir.begin(),
+                    cfg.log_rotation.archive_dir.end());
+            }
+            rotSettings.compress = cfg.log_rotation.compress;
+            m_logger->EnableScheduledRotation(rotSettings);
+        }
+
         // Record service start time for uptime tracking
         m_startTime = std::chrono::steady_clock::now();
 

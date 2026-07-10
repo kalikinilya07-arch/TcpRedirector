@@ -24,8 +24,10 @@
 #include <filesystem>
 #include <chrono>
 #include <cstdio>
+#include <memory>
 #include <windows.h>
 #include "../../domain/ports/IConnectionMonitor.h"
+#include "LogRotator.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -40,6 +42,11 @@ public:
                     domain::LogLevel level = domain::LogLevel::Info,
                     size_t max_file_size_mb = 10,
                     size_t max_files = 5);
+
+    // --- Scheduled rotation ---
+    // Call after Initialize() to enable time-based rotation.
+    // Settings come from config.json (log_rotation section), not UI.
+    void EnableScheduledRotation(const LogRotator::Settings& settings);
     void Shutdown();
 
     // --- ILogSink interface ---
@@ -123,6 +130,9 @@ private:
     std::unordered_map<uint64_t, ListenerCallback> m_listeners;
     uint64_t m_nextListenerId = 1;
     mutable std::mutex m_listenersMutex;
+
+    // Scheduled log rotation (separate thread with scheduler)
+    std::unique_ptr<LogRotator> m_rotator;
 };
 
 } // namespace infrastructure

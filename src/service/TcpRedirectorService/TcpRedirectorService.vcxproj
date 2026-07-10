@@ -62,6 +62,7 @@
     <ClCompile Include="infrastructure\capture\WinDivertCapture.cpp" />
     <ClCompile Include="infrastructure\config\ConfigManager.cpp" />
     <ClCompile Include="infrastructure\logging\Logger.cpp" />
+    <ClCompile Include="infrastructure\logging\LogRotator.cpp" />
     <ClCompile Include="infrastructure\stats\StatsCollector.cpp" />
     <ClCompile Include="infrastructure\auth\auth_sspi.cpp" />
   </ItemGroup>
@@ -83,8 +84,9 @@
     <ClInclude Include="infrastructure\config\Config.h" />
     <ClInclude Include="infrastructure\stats\StatsCollector.h" />
     <ClInclude Include="infrastructure\config\ConfigManager.h" />
-    <ClInclude Include="infrastructure\ipc\TcpIpcServer.h" />
+    <ClInclude Include="infrastructure\ipc\PipeServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />
+    <ClInclude Include="infrastructure\logging\LogRotator.h" />
     <ClInclude Include="infrastructure\auth\auth_sspi.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

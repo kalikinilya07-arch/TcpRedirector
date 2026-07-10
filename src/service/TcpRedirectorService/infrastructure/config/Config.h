@@ -51,6 +51,23 @@ struct LogSettings {
 };
 
 /**
+ * @brief Настройки ротации логов по расписанию.
+ *
+ * Отдельный поток LogRotator просыпается раз в минуту и
+ * выполняет ротацию + архивирование по расписанию.
+ * Настройка только в config.json, в UI не выводится.
+ */
+struct LogRotationSettings {
+    bool        enabled = true;       //!< Включить ротацию по расписанию
+    std::string schedule = "daily";   //!< "hourly" или "daily"
+    int         hour = 3;             //!< Час ротации (0-23, для daily)
+    int         minute = 0;           //!< Минута ротации (0-59)
+    int         max_age_days = 30;    //!< Срок хранения архивов (дней)
+    std::string archive_dir;          //!< Директория для архивов (пусто — logs/archive)
+    bool        compress = true;      //!< Сжимать старые логи в .zip
+};
+
+/**
  * @brief Настройки сбора статистики.
  */
 struct StatsSettings {
@@ -64,11 +81,12 @@ struct StatsSettings {
  * Предоставляет метод GetExeName() для извлечения имени файла из пути.
  */
 struct Config {
-    AppSettings   app;     //!< Настройки целевого процесса
-    ProxySettings proxy;   //!< Настройки прокси-сервера
-    AuthSettings  auth;    //!< Настройки авторизации
-    LogSettings   log;     //!< Настройки логирования
-    StatsSettings stats;   //!< Настройки статистики
+    AppSettings          app;           //!< Настройки целевого процесса
+    ProxySettings        proxy;         //!< Настройки прокси-сервера
+    AuthSettings         auth;          //!< Настройки авторизации
+    LogSettings          log;           //!< Настройки логирования
+    LogRotationSettings  log_rotation;  //!< Настройки ротации логов (только config, не UI)
+    StatsSettings        stats;         //!< Настройки статистики
 
     /**
      * @brief Извлечь имя исполняемого файла из полного пути.
