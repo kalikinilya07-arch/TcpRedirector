@@ -252,8 +252,7 @@ void LogRotator::DeleteOldArchives() {
                 if (ftime_sys < cutoff) {
                     std::filesystem::remove(entry.path(), ec);
                     if (!ec && m_log) {
-                        std::string name = std::string(
-                            entry.path().filename().u8string());
+                        std::string name = entry.path().filename().string();
                         m_log("Rotate: deleted old archive: " + name);
                     }
                 }
