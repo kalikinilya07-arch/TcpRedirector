@@ -13,7 +13,7 @@
 #include "../../infrastructure/capture/WinDivertCapture.h"
 #include "../../infrastructure/relay/ConnectionTable.h"
 #include "../../infrastructure/relay/TcpRelayServer.h"
-#include "../../infrastructure/ipc/TcpIpcServer.h"
+#include "../../infrastructure/ipc/PipeServer.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
 #include "../../adapters/driven/ProxyEngine.h"
@@ -142,8 +142,8 @@ public:
         // Record service start time for uptime tracking
         m_startTime = std::chrono::steady_clock::now();
 
-        // Initialize IPC server with IpcHandler
-        m_pipeServer = std::make_unique<infrastructure::TcpIpcServer>();
+        // Initialize IPC server with IpcHandler (C2: Named Pipe with ACL)
+        m_pipeServer = std::make_unique<infrastructure::PipeServer>();
         m_ipcHandler = std::make_unique<adapters::IpcHandler>(
             m_ruleEngine.get(), m_connectionTracker.get(),
             m_configManager.get(), m_logger.get(),
@@ -273,7 +273,7 @@ private:
     std::unique_ptr<domain::services::ConnectionTracker> m_connectionTracker;
     std::unique_ptr<infrastructure::ProxyEngine> m_proxyEngine;
     std::unique_ptr<domain::ports::ICapture> m_capture;
-    std::unique_ptr<infrastructure::TcpIpcServer> m_pipeServer;
+    std::unique_ptr<infrastructure::PipeServer> m_pipeServer;
     std::unique_ptr<adapters::IpcHandler> m_ipcHandler;
 
     // DST modification relay (храним через порты для injectable тестов)

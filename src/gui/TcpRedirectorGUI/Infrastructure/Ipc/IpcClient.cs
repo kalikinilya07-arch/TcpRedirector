@@ -1,5 +1,5 @@
 using System.IO;
-using System.Net.Sockets;
+using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using TcpRedirectorGUI.Domain.Entities;
@@ -8,15 +8,15 @@ using TcpRedirectorGUI.Domain.Ports;
 namespace TcpRedirectorGUI.Infrastructure.Ipc;
 
 /// <summary>
-/// Thread-safe TCP client for communicating with the TcpRedirector service.
-/// Protocol: newline-delimited JSON over TCP (127.0.0.1:34011).
+/// Thread-safe Named Pipe client for communicating with the TcpRedirector service.
+/// Protocol: JSON over Named Pipe (\\.\pipe\TcpRedirectorService).
+/// Pipe is secured with ACL: only Administrators and LOCAL_SYSTEM may connect.
 /// All I/O operations are serialized via SemaphoreSlim.
 /// </summary>
 public class IpcClient : ITcpRedirectorService, IDisposable
 {
     private readonly IConfigRepository _config;
-    private TcpClient? _tcp;
-    private NetworkStream? _stream;
+    private NamedPipeClientStream? _pipe;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly JsonSerializerOptions _json = new()
     {
@@ -24,15 +24,14 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         PropertyNameCaseInsensitive = true
     };
 
-    private const string Host = "127.0.0.1";
-    private const int Port = 34011;
+    private const string PipeName = "TcpRedirectorService";
 
     public IpcClient(IConfigRepository config)
     {
         _config = config;
     }
 
-    public bool IsConnected => _tcp?.Connected ?? false;
+    public bool IsConnected => _pipe?.IsConnected ?? false;
     public event Action<bool>? ConnectionStateChanged;
     public event Action<List<ConnectionRecord>>? ConnectionsUpdated = delegate { };
     public event Action<LogEntry>? LogEntryReceived = delegate { };
@@ -52,14 +51,18 @@ public class IpcClient : ITcpRedirectorService, IDisposable
 
     public async Task ConnectAsync()
     {
-        DiagLog($"ConnectAsync: connecting to {Host}:{Port}...");
+        DiagLog($"ConnectAsync: connecting to pipe {PipeName}...");
         await _lock.WaitAsync();
         try
         {
             DisconnectInternal();
-            _tcp = new TcpClient();
-            await _tcp.ConnectAsync(Host, Port).WaitAsync(TimeSpan.FromSeconds(3));
-            _stream = _tcp.GetStream();
+            _pipe = new NamedPipeClientStream(
+                ".",
+                PipeName,
+                PipeDirection.InOut,
+                PipeOptions.Asynchronous);
+
+            await _pipe.ConnectAsync(5000);
             DiagLog("ConnectAsync: connected OK");
             ConnectionStateChanged?.Invoke(true);
         }
@@ -82,10 +85,8 @@ public class IpcClient : ITcpRedirectorService, IDisposable
 
     private void DisconnectInternal()
     {
-        try { _stream?.Dispose(); } catch { }
-        try { _tcp?.Dispose(); } catch { }
-        _stream = null;
-        _tcp = null;
+        try { _pipe?.Dispose(); } catch { }
+        _pipe = null;
     }
 
     public async Task<ProxyConfig?> GetConfigAsync()
@@ -244,7 +245,7 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         await _lock.WaitAsync();
         try
         {
-            if (_tcp is null || !_tcp.Connected || _stream is null)
+            if (_pipe is null || !_pipe.IsConnected)
             {
                 DiagLog($"Call({method}): not connected");
                 return null;
@@ -262,27 +263,26 @@ public class IpcClient : ITcpRedirectorService, IDisposable
                 @params = paramsJson
             });
 
-            // TCP framing: newline-delimited
-            var reqBytes = Encoding.UTF8.GetBytes(req + "\n");
-            await _stream.WriteAsync(reqBytes);
-            await _stream.FlushAsync();
+            // Named Pipe in message mode: no newline delimiter needed.
+            var reqBytes = Encoding.UTF8.GetBytes(req);
+            await _pipe.WriteAsync(reqBytes, 0, reqBytes.Length);
+            await _pipe.FlushAsync();
 
-            // Read response line (up to newline)
+            // Read complete response message from the pipe.
             using var cts = new CancellationTokenSource(5000);
-            var reader = new StreamReader(_stream, Encoding.UTF8, false, 4096, true);
-            var line = await ReadLineAsync(reader, cts.Token);
+            var response = await ReadMessageAsync(_pipe, cts.Token);
 
-            if (string.IsNullOrEmpty(line))
+            if (string.IsNullOrEmpty(response))
             {
                 DiagLog($"Call({method}): empty response");
                 return null;
             }
 
-            LastRawResponse = line.Length > 200 ? line[..200] + "..." : line;
+            LastRawResponse = response.Length > 200 ? response[..200] + "..." : response;
             if (method == "get_stats")
-                DiagLog($"Call(get_stats) raw: {line}");
+                DiagLog($"Call(get_stats) raw: {response}");
 
-            return JsonSerializer.Deserialize<JsonElement>(line, _json);
+            return JsonSerializer.Deserialize<JsonElement>(response, _json);
         }
         catch (Exception ex)
         {
@@ -296,35 +296,37 @@ public class IpcClient : ITcpRedirectorService, IDisposable
     }
 
     /// <summary>
-    /// Read a newline-delimited line from the stream.
+    /// Read a complete response message from the Named Pipe.
+    /// The server uses message-mode pipes (PIPE_TYPE_MESSAGE), so
+    /// a single ReadAsync should return the complete message.
+    /// Falls back to buffer-accumulation for large messages.
     /// </summary>
-    private static async Task<string?> ReadLineAsync(StreamReader reader, CancellationToken ct)
+    private static async Task<string?> ReadMessageAsync(
+        Stream stream, CancellationToken ct)
     {
-        // StreamReader.ReadLineAsync doesn't support cancellation nicely,
-        // so we read byte-by-byte with a timeout approach.
         var sb = new StringBuilder();
-        var buf = new byte[1];
+        var buf = new byte[4096];
 
         while (!ct.IsCancellationRequested)
         {
-            var readTask = reader.BaseStream.ReadAsync(buf, 0, 1, ct);
             int n;
             try
             {
-                n = await readTask;
+                n = await stream.ReadAsync(buf, 0, buf.Length, ct);
             }
             catch (OperationCanceledException)
             {
                 return sb.Length > 0 ? sb.ToString() : null;
             }
 
-            if (n == 0) break; // EOF
+            if (n == 0) break; // EOF / pipe closed
 
-            if (buf[0] == '\n')
+            sb.Append(Encoding.UTF8.GetString(buf, 0, n));
+
+            // In message mode, a partial read (n < buf.Length) means
+            // the message is complete. Otherwise continue accumulating.
+            if (n < buf.Length)
                 return sb.ToString();
-
-            if (buf[0] != '\r')
-                sb.Append((char)buf[0]);
         }
 
         return sb.Length > 0 ? sb.ToString() : null;
