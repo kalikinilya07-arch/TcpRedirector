@@ -223,7 +223,10 @@ private:
             IpcLog(domain::LogLevel::Debug, "GUI client connected");
 
             // ---- Client I/O loop -------------------------------------------
-            char buffer[65536];
+            // M13: Buffer sized to detect oversized messages (> 1 MB).
+            // If a read fills the buffer, the message is truncated → reject.
+            static constexpr size_t IPC_READ_BUFFER = 65536;
+            char buffer[IPC_READ_BUFFER];
             DWORD bytesRead = 0;
 
             while (m_running.load(std::memory_order_relaxed)) {
@@ -231,6 +234,25 @@ private:
                                    &bytesRead, nullptr);
                 if (!ok || bytesRead == 0) {
                     break;  // client disconnected or error
+                }
+
+                // M13: If buffer is full, the message may be truncated.
+                // Reject to prevent partial JSON parse.
+                if (bytesRead >= sizeof(buffer) - 1) {
+                    IpcLog(domain::LogLevel::Warn,
+                           "IPC message too large, rejecting");
+                    std::string err =
+                        R"({"status":"error","error":"message_too_large"})";
+                    DWORD bw = 0;
+                    {
+                        std::lock_guard<std::mutex> lock(m_pipeMutex);
+                        if (m_hPipe == newPipe) {
+                            WriteFile(m_hPipe, err.data(),
+                                      static_cast<DWORD>(err.size()), &bw,
+                                      nullptr);
+                        }
+                    }
+                    continue;
                 }
 
                 buffer[bytesRead] = '\0';

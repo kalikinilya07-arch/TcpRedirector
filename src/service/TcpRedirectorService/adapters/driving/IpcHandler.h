@@ -49,9 +49,18 @@ public:
         , m_getUptime(std::move(getUptime)) {
     }
 
+    // M13: Maximum IPC message size to prevent OOM from giant JSON payloads
+    static constexpr size_t MAX_IPC_MESSAGE_SIZE = 1 * 1024 * 1024; // 1 MB
+
     void Handle(const std::string& method,
                 const std::string& params,
                 std::string& response) {
+        // M13: Reject oversized messages before parsing
+        if (params.size() > MAX_IPC_MESSAGE_SIZE) {
+            response = R"({"status":"error","error":"message_too_large"})";
+            return;
+        }
+
         nlohmann::json result;
 
         try {
