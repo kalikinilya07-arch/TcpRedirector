@@ -1,5 +1,48 @@
 # Конфигурация TcpRedirector
 
+## Структура config.json
+
+Файл: `%ProgramData%\TcpRedirector\config.json`
+
+```json
+{
+  "app": {
+    "exePath": "C:\\path\\to\\app.exe"
+  },
+  "proxy": {
+    "host": "127.0.0.1",
+    "port": 3128,
+    "enabled": true
+  },
+  "auth": {
+    "enabled": true,
+    "username": "user",
+    "encryptedPassword": "<DPAPI base64>",
+    "kerberos": false
+  },
+  "log": {
+    "level": 2,
+    "fileEnabled": true,
+    "maxSizeMB": 10
+  },
+  "log_rotation": {
+    "enabled": true,
+    "schedule": "daily",
+    "hour": 3,
+    "minute": 0,
+    "max_age_days": 30,
+    "archive_dir": "C:\\ProgramData\\TcpRedirector\\logs\\archive",
+    "compress": true
+  },
+  "stats": {
+    "updateIntervalMs": 2000
+  },
+  "rules": [...]
+}
+```
+
+### Секция `log_rotation` (только config, не UI)
+
 ## 1. Структура config.json
 
 Файл: `%ProgramData%\TcpRedirector\config.json`

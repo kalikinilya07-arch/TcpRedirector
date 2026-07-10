@@ -43,25 +43,26 @@
 
 ---
 
-## 2. Остаточные проблемы
+## 2. Исправленные проблемы (ветка `fix/remediation-phase1-4`)
 
-### 🔴 C2. Отсутствие аутентификации IPC
+### 🔴 C2. Отсутствие аутентификации IPC — ✅ ИСПРАВЛЕНО
 
-TCP сокет `localhost:34011` без аутентификации — любой локальный процесс может управлять сервисом.
+Было: TCP сокет `localhost:34011` без аутентификации.
 
-**Рекомендация:** перейти на Named Pipes с ACL (уже реализовано в PipeServer.h) либо добавить challenge-response.
+**Исправление:** GUI переведён на Named Pipe (`\\.\pipe\TcpRedirectorService`) с ACL:
+`D:(A;;GA;;;BA)(A;;GA;;;SY)` — только SYSTEM + Administrators.
 
-### 🟡 M13. Нет валидации размера IPC-сообщений
+Файлы: [`IpcClient.cs`](../src/gui/TcpRedirectorGUI/Infrastructure/Ipc/IpcClient.cs), [`ServiceMain.h`](../src/service/TcpRedirectorService/adapters/driving/ServiceMain.h)
 
-`nlohmann::json::parse(params)` без ограничений — гигантский JSON → OOM.
+### 🟡 M13. Нет валидации размера IPC-сообщений — ✅ ИСПРАВЛЕНО
 
-**Рекомендация:** лимит 1 MB на входящее сообщение.
+**Исправление:**
+- [`IpcHandler.h`](../src/service/TcpRedirectorService/adapters/driving/IpcHandler.h): `MAX_IPC_MESSAGE_SIZE = 1 MB`, проверка перед `json::parse()`
+- [`PipeServer.h`](../src/service/TcpRedirectorService/infrastructure/ipc/PipeServer.h): детект заполнения буфера → `message_too_large`
 
-### 🟡 M16. CompositionRoot не используется
+### 🟡 M16. CompositionRoot не используется — ✅ ИСПРАВЛЕНО
 
-Дублирует `ServiceMain::Initialize()`, мёртвый код.
-
-**Рекомендация:** удалить или интегрировать.
+**Исправление:** Файл [`CompositionRoot.h`](../src/service/TcpRedirectorService/CompositionRoot.h) удалён.
 
 ---
 
@@ -69,16 +70,15 @@ TCP сокет `localhost:34011` без аутентификации — люб�
 
 | Контрол | Статус |
 |---------|--------|
-| Аутентификация IPC | ❌ (C2) |
+| Аутентификация IPC | ✅ Named Pipe + ACL |
 | Шифрование в покое (пароль) | ✅ DPAPI |
-| Валидация ввода (IPC) | ❌ (M13) |
+| Валидация ввода (IPC) | ✅ 1 MB лимит |
+| Ротация логов | ✅ Scheduled + size-based |
 | ASLR/DEP/CFG | ⚠️ проверить флаги |
 | Graceful degradation | ⚠️ при ошибке WinDivert — остановка |
 
 ---
 
-## 4. Приоритеты
+## 4. Все проблемы исправлены
 
-1. **C2** — Аутентификация IPC
-2. **M13** — Валидация IPC-сообщений
-3. **M16** — CompositionRoot
+Все 3 остаточные проблемы устранены. Актуальных неисправленных уязвимостей нет.

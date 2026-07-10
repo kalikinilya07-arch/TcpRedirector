@@ -21,7 +21,8 @@ TcpRedirector — сервис перехвата и перенаправлен�
 │               │  Negotiate(SSPI) │  │   (service lifecycle)│     │
 │               │                  │  └──────────────────────┘     │
 ├───────────────┴──────────────────┴───────────────────────────────┤
-│  IPC: TCP socket (localhost:34011) — JSON-RPC style              │
+│  IPC: Named Pipe (\\.\pipe\TcpRedirectorService) — JSON-RPC       │
+│        ACL: SYSTEM + Administrators only                          │
 │  Config: %ProgramData%\TcpRedirector\config.json                 │
 │  Logs:  %ProgramData%\TcpRedirector\logs\                        │
 └──────────────────────────────────────────────────────────────────┘
