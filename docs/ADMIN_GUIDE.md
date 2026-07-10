@@ -134,15 +134,19 @@ sc start WinDivert
 
 ### 3.3. Запуск
 
+> ⚠️ **Критически важно:** GUI требует запущенный сервис. Если запустить GUI без сервиса — он покажет "Disconnected" и статистика не будет отображаться. Named Pipe создаётся сервисом, GUI к нему подключается.
+
 ```batch
-:: Запуск сервиса
-sc start TcpRedirectorService
+:: Способ 1: Быстрый запуск (из директории проекта)
+run.bat                          ← запускает сервис + GUI (от Администратора!)
 
-:: Или в консольном режиме (для отладки)
-C:\ProgramData\TcpRedirector\TcpRedirectorService.exe --console
+:: Способ 2: Windows-сервис + GUI
+sc start TcpRedirectorService    ← сервис (SYSTEM)
+C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe   ← GUI (Администратор)
 
-:: Запуск GUI
-C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe
+:: Способ 3: Консольный режим (для отладки)
+start /MIN C:\ProgramData\TcpRedirector\TcpRedirectorService.exe --console
+start C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe
 ```
 
 ### 3.4. Удаление

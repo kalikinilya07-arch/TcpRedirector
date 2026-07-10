@@ -63,14 +63,18 @@ build.bat
 
 ### 2. Быстрая отладка
 
+**Важно:** GUI требует запущенный сервис. Без сервиса GUI покажет "Disconnected".
+
 ```batch
-run.bat
+:: Правильный способ — запустить оба компонента:
+run.bat                    ← запускает сервис + GUI (от Администратора!)
+
+:: Или вручную (два отдельных окна от Администратора):
+start /MIN build\TcpRedirectorService.exe --console   ← сначала сервис
+start build\gui\TcpRedirectorGUI.exe                   ← потом GUI
 ```
 
-Или вручную:
-```batch
-start build\gui\TcpRedirectorGUI.exe
-```
+> ⚠️ **Не запускайте GUI отдельно без сервиса!** GUI подключается к сервису через Named Pipe `\\.\pipe\TcpRedirectorService`. Если сервис не запущен — GUI покажет "Disconnected" и статистика не будет отображаться.
 
 ### 3. Релиз
 
