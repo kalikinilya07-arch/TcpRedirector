@@ -155,7 +155,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     /// locates TcpRedirectorService.exe next to the GUI (or one level up)
     /// and launches it in console mode, then connects.
     /// </summary>
-    private async Task AutoStartAndConnectAsync()
+    public async Task AutoStartAndConnectAsync()
     {
         // 1. Try connecting to an already-running service
         try

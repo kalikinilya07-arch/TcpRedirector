@@ -180,6 +180,14 @@ private:
             // It will be destroyed by the unique_ptr at the end of this scope.
 
             if (newPipe == INVALID_HANDLE_VALUE) {
+                DWORD err = GetLastError();
+                IpcLog(domain::LogLevel::Warn,
+                    "CreateNamedPipe failed: " + std::to_string(err));
+                // If FIRST_PIPE_INSTANCE failed (e.g., stale handle from crash),
+                // clear the flag so retry succeeds.
+                if (err == ERROR_ACCESS_DENIED || err == ERROR_PIPE_BUSY) {
+                    isFirstInstance = false;
+                }
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 continue;
             }
@@ -198,6 +206,7 @@ private:
             }
 
             isFirstInstance = false;
+            IpcLog(domain::LogLevel::Info, "Named pipe created, waiting for GUI...");
 
             // Wait for a client to connect.
             BOOL connected = ConnectNamedPipe(newPipe, nullptr);
@@ -220,7 +229,7 @@ private:
             }
 
             m_connected.store(true, std::memory_order_release);
-            IpcLog(domain::LogLevel::Debug, "GUI client connected");
+            IpcLog(domain::LogLevel::Info, "GUI client connected via Named Pipe");
 
             // ---- Client I/O loop -------------------------------------------
             // M13: Buffer sized to detect oversized messages (> 1 MB).
