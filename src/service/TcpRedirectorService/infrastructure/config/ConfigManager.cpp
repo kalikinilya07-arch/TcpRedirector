@@ -11,7 +11,15 @@
 
 #include "ConfigManager.h"
 #include "../utf8_convert.h"
+#include "../paths/AppPaths.h"
 #include <cstdio>
+#include <algorithm>
+#include <set>
+#include <shlobj.h>       // SHGetKnownFolderPath, FOLDERID_ProgramData
+#include <knownfolders.h> // FOLDERID_ProgramData GUID
+
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -21,12 +29,85 @@ namespace infrastructure {
 // ====================================================================
 
 ConfigManager::ConfigManager() {
-    wchar_t progData[MAX_PATH] = {0};
-    if (GetEnvironmentVariableW(L"ProgramData", progData, MAX_PATH) > 0) {
-        m_configPath = std::filesystem::path(progData) / L"TcpRedirector" / L"config.json";
-    } else {
-        m_configPath = L"C:\\ProgramData\\TcpRedirector\\config.json";
+    // WP1: путь резолвится через AppPaths, единый способ для всего сервиса.
+    // Наличие %ProgramData%-fallback удалено — legacy-миграция выполняется
+    // в EnsureConfigMigrated() отдельным разовым шагом при старте сервиса.
+    m_configPath = std::filesystem::path(paths::GetConfigPathW());
+}
+
+ConfigManager::ConfigManager(std::filesystem::path explicitConfigPath)
+    : m_configPath(std::move(explicitConfigPath)) {
+    // Явный путь используется только тестами; никакой fallback-логики нет.
+}
+
+// ====================================================================
+// EnsureConfigMigrated — однократная миграция из %ProgramData% (WP1 §2.3)
+// ====================================================================
+
+ConfigManager::MigrationResult ConfigManager::EnsureConfigMigrated() {
+    MigrationResult result;
+
+    try {
+        // 1. newPath = <exeDir>\config.json
+        std::filesystem::path newPath;
+        try {
+            newPath = std::filesystem::path(paths::GetConfigPathW());
+        } catch (const std::exception& e) {
+            result.message = std::string("Config migration skipped: cannot resolve exe dir: ") + e.what();
+            return result;
+        }
+
+        // 2. legacyPath = <%ProgramData%>\TcpRedirector\config.json
+        PWSTR programData = nullptr;
+        HRESULT hr = SHGetKnownFolderPath(FOLDERID_ProgramData,
+                                          KF_FLAG_DEFAULT, nullptr, &programData);
+        if (FAILED(hr) || !programData) {
+            if (programData) CoTaskMemFree(programData);
+            result.message = "Config migration skipped: SHGetKnownFolderPath(FOLDERID_ProgramData) failed, HRESULT=0x"
+                             + std::to_string(static_cast<unsigned long>(hr));
+            return result;
+        }
+        std::filesystem::path legacyPath =
+            std::filesystem::path(programData) / L"TcpRedirector" / L"config.json";
+        CoTaskMemFree(programData);
+
+        std::error_code ec;
+
+        // Быстрый выход: новый файл уже существует.
+        if (std::filesystem::exists(newPath, ec)) {
+            // Ничего не логируем — не хочется засорять лог на каждом старте.
+            return result;
+        }
+
+        // Legacy отсутствует или не файл — нечего мигрировать.
+        if (!std::filesystem::exists(legacyPath, ec) ||
+            !std::filesystem::is_regular_file(legacyPath, ec)) {
+            return result;
+        }
+
+        // Миграция.
+        result.attempted = true;
+        // CopyFileW с bFailIfExists=TRUE. Дубликат existence-проверки выше нам не мешает —
+        // защита от гонки на случай, если другой процесс создал файл в промежутке.
+        BOOL ok = CopyFileW(legacyPath.c_str(), newPath.c_str(), TRUE /*bFailIfExists*/);
+        if (ok) {
+            result.succeeded = true;
+            result.message = "Migrated legacy config from %ProgramData% to "
+                             + WideToUtf8(newPath.wstring());
+        } else {
+            DWORD gle = GetLastError();
+            result.message = "Config migration failed: CopyFileW('"
+                             + WideToUtf8(legacyPath.wstring()) + "' -> '"
+                             + WideToUtf8(newPath.wstring())
+                             + "'), GLE=" + std::to_string(gle);
+        }
+    } catch (const std::exception& e) {
+        result.message = std::string("Config migration threw exception: ") + e.what();
+    } catch (...) {
+        result.message = "Config migration threw unknown exception";
     }
+
+    return result;
 }
 
 // ====================================================================
@@ -125,11 +206,16 @@ bool ConfigManager::SetLogLevel(domain::LogLevel level) {
 }
 
 std::filesystem::path ConfigManager::GetLogDirectory() const {
-    wchar_t progData[MAX_PATH] = {0};
-    if (GetEnvironmentVariableW(L"ProgramData", progData, MAX_PATH) > 0) {
-        return std::filesystem::path(progData) / L"TcpRedirector" / L"logs";
+    // WP1: логи теперь рядом с EXE, в <exeDir>\logs\.
+    // %ProgramData%-fallback удалён.
+    try {
+        return std::filesystem::path(paths::GetLogDirectoryW());
+    } catch (...) {
+        // Крайне маловероятно: если GetModuleFileNameW сломан, возвращаем
+        // текущую рабочую директорию + logs как последний рубеж, чтобы
+        // логгер не крашнулся. Ошибка уже была прологирована выше по стеку.
+        return std::filesystem::current_path() / L"logs";
     }
-    return L"C:\\ProgramData\\TcpRedirector\\logs";
 }
 
 uint32_t ConfigManager::GetMaxLogFileSizeMB() const {
@@ -228,52 +314,132 @@ bool ConfigManager::LoadImpl() {
         nlohmann::json j;
         file >> j;
 
-        // Загрузка Config
-        if (j.contains("app")) {
+        // -------- WP3: определение версии схемы --------
+        // v1 не содержит поля "config_version"; в v2 оно == 2.
+        // Промежуточные/будущие значения обрабатываем как «не хуже v2».
+        int schema = j.value("config_version", 0);
+        const bool isV1 = (schema < 2);
+
+        // Сброс v2-полей на дефолты — LoadImpl может вызываться повторно.
+        m_config.config_version = 2;
+        m_config.capture_mode   = CaptureMode::WinDivert;
+        m_config.wintun         = WintunSettings{};
+        m_config.apps.clear();
+
+        // -------- Загрузка v1-секций (без регресса) --------
+        if (j.contains("app") && j["app"].is_object()) {
             auto& a = j["app"];
-            std::string tmpExe = a["exePath"].get<std::string>();
+            std::string tmpExe = a.value("exePath", std::string());
             m_config.app.exePath = Utf8ToWide(tmpExe);
         }
-        if (j.contains("proxy")) {
+        if (j.contains("proxy") && j["proxy"].is_object()) {
             auto& p = j["proxy"];
             m_config.proxy.host = p.value("host", std::string("127.0.0.1"));
-            m_config.proxy.port = p.value("port", 3128);
+            m_config.proxy.port = static_cast<uint16_t>(p.value("port", 3128));
             m_config.proxy.enabled = p.value("enabled", true);
         }
-        if (j.contains("auth")) {
+        if (j.contains("auth") && j["auth"].is_object()) {
             auto& a = j["auth"];
             m_config.auth.enabled = a.value("enabled", false);
             m_config.auth.username = a.value("username", std::string());
             m_config.auth.encryptedPassword = a.value("encryptedPassword", std::string());
             m_config.auth.kerberos = a.value("kerberos", false);
         }
-        if (j.contains("log")) {
+        if (j.contains("log") && j["log"].is_object()) {
             auto& l = j["log"];
             m_config.log.level = l.value("level", 2);
             m_config.log.fileEnabled = l.value("fileEnabled", true);
             m_config.log.maxSizeMB = l.value("maxSizeMB", 10);
         }
-        if (j.contains("stats")) {
+        if (j.contains("stats") && j["stats"].is_object()) {
             auto& s = j["stats"];
             m_config.stats.updateIntervalMs = s.value("updateIntervalMs", 2000);
         }
 
-        // Загрузка правил (старый формат)
+        // -------- Legacy rules[] --------
+        // В обеих версиях парсим legacy-массив (в v2 он «зеркало», хранимое
+        // ради обратной совместимости со старыми читателями).
         if (j.contains("rules")) {
             m_rules = JsonToRules(j);
+        } else {
+            m_rules.clear();
+        }
+
+        // -------- v2 новые секции --------
+        // capture_mode
+        if (j.contains("capture_mode")) {
+            if (j["capture_mode"].is_string()) {
+                CaptureMode cm;
+                if (CaptureModeFromString(j["capture_mode"].get<std::string>(), cm)) {
+                    m_config.capture_mode = cm;
+                } else {
+                    std::fprintf(stderr,
+                        "[WARN] ConfigManager: unknown capture_mode '%s', coercing to 'windivert'\n",
+                        j["capture_mode"].get<std::string>().c_str());
+                    m_config.capture_mode = CaptureMode::WinDivert;
+                }
+            }
+        }
+        // wintun{...}
+        if (j.contains("wintun") && j["wintun"].is_object()) {
+            m_config.wintun = ParseWintunSettings(j["wintun"]);
+        }
+        // apps[]
+        if (j.contains("apps") && j["apps"].is_array()) {
+            for (const auto& ja : j["apps"]) {
+                if (!ja.is_object()) continue;
+                AppRule rule;
+                if (ParseAppRule(ja, rule)) {
+                    m_config.apps.push_back(std::move(rule));
+                }
+            }
+        }
+
+        // -------- v1 → v2 in-memory upgrade --------
+        // Если это v1 (нет поля config_version) — синтезируем apps[] из legacy rules[].
+        // Условие «apps не задан» проверяем по итоговому вектору, а не по факту
+        // отсутствия ключа: v1-файл его иметь не может.
+        if (isV1 && m_config.apps.empty()) {
+            m_config.apps = UpgradeLegacyRulesToApps(j.value("rules", nlohmann::json::array()));
         }
 
         return true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[ERROR] ConfigManager::LoadImpl exception: %s\n", e.what());
+        return false;
     } catch (...) {
+        std::fprintf(stderr,
+            "[ERROR] ConfigManager::LoadImpl: unknown exception\n");
         return false;
     }
 }
 
 bool ConfigManager::SaveImpl() {
+    // WP1: не «глотать» ошибки записи молча — печатаем причину в stderr.
+    // Логгер здесь недоступен (ConfigManager может быть создан до Logger).
     try {
-        std::filesystem::create_directories(m_configPath.parent_path());
+        std::error_code ec;
+        auto parent = m_configPath.parent_path();
+        if (!parent.empty()) {
+            std::filesystem::create_directories(parent, ec);
+            if (ec) {
+                std::fprintf(stderr,
+                    "[ERROR] ConfigManager: cannot create config directory '%s': %s\n",
+                    parent.string().c_str(), ec.message().c_str());
+                // create_directories возвращает ec, но директория могла уже существовать —
+                // не бросаем, а пытаемся писать; if truly missing, ofstream ниже упадёт.
+            }
+        }
 
+        // WP3: v2 file layout — version marker первым полем.
+        // nlohmann::json неупорядочен, но dump() пишет в порядке insertion,
+        // так что порядок ключей ниже определяет порядок в файле.
         nlohmann::json j;
+        j["config_version"] = 2;
+        j["capture_mode"]   = CaptureModeToString(m_config.capture_mode);
+
+        // v1-совместимые секции
         j["app"]["exePath"] = WideToUtf8(m_config.app.exePath);
         j["proxy"]["host"] = m_config.proxy.host;
         j["proxy"]["port"] = m_config.proxy.port;
@@ -287,32 +453,71 @@ bool ConfigManager::SaveImpl() {
         j["log"]["maxSizeMB"] = m_config.log.maxSizeMB;
         j["stats"]["updateIntervalMs"] = m_config.stats.updateIntervalMs;
 
-        // Правила (старый формат)
-        j["rules"] = RulesToJson(m_rules);
+        // v2: wintun{...} и apps[]
+        j["wintun"] = WintunSettingsToJson(m_config.wintun);
+        j["apps"]   = AppsToJson(m_config.apps);
+
+        // Legacy mirror: rules[] строится из apps[] для обратной совместимости
+        // со старыми (v1-only) читателями конфига.  Приоритет отдаём авто-«зеркалу»,
+        // если apps[] непусты; иначе оставляем то, что уже лежит в m_rules
+        // (unmodified v1 запись).
+        if (!m_config.apps.empty()) {
+            j["rules"] = BuildLegacyRulesMirror(m_config.apps);
+        } else {
+            j["rules"] = RulesToJson(m_rules);
+        }
 
         // Atomic write: write to temp file, then rename
         auto tmpPath = m_configPath;
         tmpPath += L".tmp";
         {
             std::ofstream file(tmpPath);
-            if (!file.is_open()) return false;
+            if (!file.is_open()) {
+                std::fprintf(stderr,
+                    "[ERROR] ConfigManager: cannot open '%s' for writing (errno=%d)\n",
+                    tmpPath.string().c_str(), errno);
+                return false;
+            }
             file << j.dump(4);
-            if (!file.good()) return false;
+            if (!file.good()) {
+                std::fprintf(stderr,
+                    "[ERROR] ConfigManager: write to '%s' failed (errno=%d)\n",
+                    tmpPath.string().c_str(), errno);
+                return false;
+            }
         }
-        std::filesystem::rename(tmpPath, m_configPath);
+        std::filesystem::rename(tmpPath, m_configPath, ec);
+        if (ec) {
+            std::fprintf(stderr,
+                "[ERROR] ConfigManager: rename '%s' -> '%s' failed: %s\n",
+                tmpPath.string().c_str(), m_configPath.string().c_str(),
+                ec.message().c_str());
+            return false;
+        }
         return true;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+            "[ERROR] ConfigManager::SaveImpl exception: %s\n", e.what());
+        return false;
     } catch (...) {
+        std::fprintf(stderr, "[ERROR] ConfigManager::SaveImpl: unknown exception\n");
         return false;
     }
 }
 
 bool ConfigManager::CreateDefaultConfig() {
+    // WP3: дефолты v2.  Все новые поля инициализированы конструкторами struct'ов;
+    // здесь только те, что должны отличаться от dev-нейтральных значений.
     m_config = Config();
+    m_config.config_version = 2;
+    m_config.capture_mode   = CaptureMode::WinDivert;
     m_config.app.exePath = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
     m_config.proxy.host = "127.0.0.1";
     m_config.proxy.port = 8888;
     m_config.proxy.enabled = true;
+    // WintunSettings и ExternalEngineSettings берут дефолты из Config.h.
 
+    // Legacy rules[] — одно правило для дефолтного приложения.
     domain::Rule defaultRule;
     defaultRule.id = "default";
     defaultRule.type = domain::RuleType::ProcessName;
@@ -321,7 +526,18 @@ bool ConfigManager::CreateDefaultConfig() {
     defaultRule.description = L"Redirect TcpRedirector traffic";
     defaultRule.priority = 1;
     defaultRule.enabled = true;
+    m_rules.clear();
     m_rules.push_back(defaultRule);
+
+    // v2 apps[] — синтезируем из того же правила, чтобы новый читатель
+    // (RuleEngine, WP4) имел непустой список.
+    AppRule defaultApp;
+    defaultApp.pattern           = "TransfersClient.exe";
+    defaultApp.proxy_id          = "default";
+    defaultApp.route_all_traffic = false;
+    defaultApp.ports.clear();       // Порты не заданы — правило будет warn'ить в LoadImpl.
+    m_config.apps.clear();
+    m_config.apps.push_back(std::move(defaultApp));
 
     return SaveImpl();
 }
@@ -410,6 +626,385 @@ nlohmann::json ConfigManager::RulesToJson(const std::vector<domain::Rule>& rules
             default: r["action"] = "proxy"; break;
         }
         arr.push_back(r);
+    }
+    return arr;
+}
+
+// ====================================================================
+// WP3: schema v2 helpers — accessors, parse/serialize, upgrader
+// ====================================================================
+
+// --- Публичные accessors (thread-safe копии под shared_lock) ---
+
+std::vector<AppRule> ConfigManager::GetAppRules() const {
+    std::shared_lock lock(m_mutex);
+    return m_config.apps;
+}
+
+CaptureMode ConfigManager::GetCaptureMode() const {
+    std::shared_lock lock(m_mutex);
+    return m_config.capture_mode;
+}
+
+WintunSettings ConfigManager::GetWintunSettings() const {
+    std::shared_lock lock(m_mutex);
+    return m_config.wintun;
+}
+
+// --- Валидаторы (внутренние, без state) --------------------------------------
+
+namespace {
+
+// Лёгкая проверка IPv4-CIDR: "A.B.C.D/N", A..D ∈ [0,255], N ∈ [0,32].
+// Возвращает true при валидности; строгую валидацию делает WP7 preflight.
+bool IsLikelyValidIpv4Cidr(const std::string& s) {
+    auto slash = s.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= s.size()) return false;
+    std::string addr = s.substr(0, slash);
+    std::string pfx  = s.substr(slash + 1);
+    // Prefix: 1-2 цифры, 0..32.
+    if (pfx.empty() || pfx.size() > 2) return false;
+    for (char c : pfx) if (c < '0' || c > '9') return false;
+    int prefix = std::atoi(pfx.c_str());
+    if (prefix < 0 || prefix > 32) return false;
+    // Address: ровно 4 октета.
+    int octets = 0;
+    size_t pos = 0;
+    while (pos <= addr.size()) {
+        size_t dot = addr.find('.', pos);
+        std::string oct = addr.substr(pos, (dot == std::string::npos) ? std::string::npos : (dot - pos));
+        if (oct.empty() || oct.size() > 3) return false;
+        for (char c : oct) if (c < '0' || c > '9') return false;
+        int v = std::atoi(oct.c_str());
+        if (v < 0 || v > 255) return false;
+        ++octets;
+        if (dot == std::string::npos) break;
+        pos = dot + 1;
+    }
+    return octets == 4;
+}
+
+// Очень лёгкая проверка IPv6-CIDR: содержит ':' и '/'; префикс — число 0..128.
+bool IsLikelyValidIpv6Cidr(const std::string& s) {
+    auto slash = s.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= s.size()) return false;
+    if (s.find(':') == std::string::npos) return false;
+    std::string pfx = s.substr(slash + 1);
+    if (pfx.empty() || pfx.size() > 3) return false;
+    for (char c : pfx) if (c < '0' || c > '9') return false;
+    int prefix = std::atoi(pfx.c_str());
+    return prefix >= 0 && prefix <= 128;
+}
+
+// Проверка формы "host:port"; port ∈ [1..65535].  Host не валидируется.
+bool IsLikelyValidHostPort(const std::string& s) {
+    auto colon = s.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= s.size()) return false;
+    std::string portStr = s.substr(colon + 1);
+    if (portStr.empty() || portStr.size() > 5) return false;
+    for (char c : portStr) if (c < '0' || c > '9') return false;
+    int port = std::atoi(portStr.c_str());
+    return port >= 1 && port <= 65535;
+}
+
+} // anonymous namespace
+
+// --- Парсинг WintunSettings из JSON ------------------------------------------
+
+WintunSettings ConfigManager::ParseWintunSettings(const nlohmann::json& jw) const {
+    WintunSettings w;  // start from defaults
+    if (!jw.is_object()) return w;
+
+    w.adapter_name = jw.value("adapter_name", w.adapter_name);
+    w.adapter_guid = jw.value("adapter_guid", w.adapter_guid);
+
+    // tunnel_ipv4_cidr — light validate; fallback на дефолт при провале.
+    {
+        std::string v4 = jw.value("tunnel_ipv4_cidr", w.tunnel_ipv4_cidr);
+        if (!v4.empty() && !IsLikelyValidIpv4Cidr(v4)) {
+            std::fprintf(stderr,
+                "[WARN] ConfigManager: wintun.tunnel_ipv4_cidr '%s' invalid, using default '%s'\n",
+                v4.c_str(), w.tunnel_ipv4_cidr.c_str());
+        } else {
+            w.tunnel_ipv4_cidr = v4;
+        }
+    }
+
+    // tunnel_ipv6_cidr — пусто ОК; иначе лёгкая проверка.
+    {
+        std::string v6 = jw.value("tunnel_ipv6_cidr", std::string());
+        if (!v6.empty() && !IsLikelyValidIpv6Cidr(v6)) {
+            std::fprintf(stderr,
+                "[WARN] ConfigManager: wintun.tunnel_ipv6_cidr '%s' invalid, disabling IPv6 tunnel\n",
+                v6.c_str());
+            w.tunnel_ipv6_cidr.clear();
+        } else {
+            w.tunnel_ipv6_cidr = v6;
+        }
+    }
+
+    // mtu — clamp в [576; 65535].
+    {
+        int mtu = jw.value("mtu", w.mtu);
+        if (mtu < 576)   mtu = 576;
+        if (mtu > 65535) mtu = 65535;
+        w.mtu = mtu;
+    }
+
+    // engine — enum + fallback.
+    if (jw.contains("engine") && jw["engine"].is_string()) {
+        WintunEngineKind e;
+        if (WintunEngineKindFromString(jw["engine"].get<std::string>(), e)) {
+            w.engine = e;
+        } else {
+            std::fprintf(stderr,
+                "[WARN] ConfigManager: wintun.engine '%s' unknown, coercing to 'embedded'\n",
+                jw["engine"].get<std::string>().c_str());
+            w.engine = WintunEngineKind::Embedded;
+        }
+    }
+
+    // external_engine{...}
+    if (jw.contains("external_engine") && jw["external_engine"].is_object()) {
+        const auto& je = jw["external_engine"];
+        w.external_engine.executable   = je.value("executable",   w.external_engine.executable);
+        // extra_args (массив строк) — берём как есть, невалидные элементы пропускаем.
+        w.external_engine.extra_args.clear();
+        if (je.contains("extra_args") && je["extra_args"].is_array()) {
+            for (const auto& a : je["extra_args"]) {
+                if (a.is_string()) w.external_engine.extra_args.push_back(a.get<std::string>());
+            }
+        }
+        // socks5_listen — light validate; на провале фолбэк на 127.0.0.1:1080.
+        {
+            std::string sl = je.value("socks5_listen", w.external_engine.socks5_listen);
+            if (!IsLikelyValidHostPort(sl)) {
+                std::fprintf(stderr,
+                    "[WARN] ConfigManager: wintun.external_engine.socks5_listen '%s' invalid, using '127.0.0.1:1080'\n",
+                    sl.c_str());
+                w.external_engine.socks5_listen = "127.0.0.1:1080";
+            } else {
+                w.external_engine.socks5_listen = sl;
+            }
+        }
+        w.external_engine.restart_on_crash    = je.value("restart_on_crash",    w.external_engine.restart_on_crash);
+        w.external_engine.restart_backoff_ms  = je.value("restart_backoff_ms",  w.external_engine.restart_backoff_ms);
+    }
+
+    return w;
+}
+
+// --- Парсинг одного AppRule ---------------------------------------------------
+
+bool ConfigManager::ParseAppRule(const nlohmann::json& ja, AppRule& out) const {
+    if (!ja.is_object()) return false;
+
+    out = AppRule{};  // reset to defaults
+    out.exe_path         = ja.value("exe_path", std::string());
+    out.pattern          = ja.value("pattern",  std::string());
+    out.proxy_id         = ja.value("proxy_id", std::string());
+    out.route_all_traffic = ja.value("route_all_traffic", false);
+
+    // pattern — обязателен. Пустой — пропустить с warn'ом.
+    if (out.pattern.empty()) {
+        std::fprintf(stderr,
+            "[WARN] ConfigManager: apps[] entry skipped: empty 'pattern'\n");
+        return false;
+    }
+
+    // ports[] — деduplicate + валидация 1..65535.
+    if (ja.contains("ports") && ja["ports"].is_array()) {
+        std::set<uint16_t> seen;
+        for (const auto& p : ja["ports"]) {
+            if (!p.is_number_integer() && !p.is_number_unsigned()) {
+                std::fprintf(stderr,
+                    "[WARN] ConfigManager: apps[%s] non-integer port entry skipped\n",
+                    out.pattern.c_str());
+                continue;
+            }
+            long long v = p.get<long long>();
+            if (v < 1 || v > 65535) {
+                std::fprintf(stderr,
+                    "[WARN] ConfigManager: apps[%s] port %lld out of range, skipped\n",
+                    out.pattern.c_str(), v);
+                continue;
+            }
+            uint16_t port = static_cast<uint16_t>(v);
+            if (seen.insert(port).second) {
+                out.ports.push_back(port);
+            }
+        }
+    }
+
+    // port_ranges[] — валидация from<=to и обоих в 1..65535.
+    if (ja.contains("port_ranges") && ja["port_ranges"].is_array()) {
+        for (const auto& r : ja["port_ranges"]) {
+            if (!r.is_object()) continue;
+            long long from = r.value("from", (long long)0);
+            long long to   = r.value("to",   (long long)0);
+            if (from < 1 || from > 65535 || to < 1 || to > 65535 || from > to) {
+                std::fprintf(stderr,
+                    "[WARN] ConfigManager: apps[%s] invalid port_range {from=%lld,to=%lld}, skipped\n",
+                    out.pattern.c_str(), from, to);
+                continue;
+            }
+            PortRange pr;
+            pr.from = static_cast<uint16_t>(from);
+            pr.to   = static_cast<uint16_t>(to);
+            out.port_ranges.push_back(pr);
+        }
+    }
+
+    // Semantic warning: правило не отматчит ничего.
+    if (!out.route_all_traffic && out.ports.empty() && out.port_ranges.empty()) {
+        std::fprintf(stderr,
+            "[WARN] ConfigManager: app '%s' has no ports and route_all_traffic=false; will match nothing\n",
+            out.pattern.c_str());
+    }
+
+    return true;
+}
+
+// --- v1 → v2 in-memory upgrader ----------------------------------------------
+
+std::vector<AppRule> ConfigManager::UpgradeLegacyRulesToApps(const nlohmann::json& jrules) const {
+    std::vector<AppRule> apps;
+    if (!jrules.is_array()) return apps;
+
+    apps.reserve(jrules.size());
+    for (const auto& r : jrules) {
+        if (!r.is_object()) continue;
+
+        AppRule a;
+        // v1 rules[] могут иметь поле "exe" ИЛИ "pattern" (в разных исторических
+        // ревизиях).  Пробуем оба; предпочтение "exe" — как в WP3 спеке.
+        std::string exeName = r.value("exe", std::string());
+        if (exeName.empty()) exeName = r.value("pattern", std::string());
+        if (exeName.empty()) continue;   // пустой pattern — правило неопределено, пропускаем
+
+        a.pattern  = exeName;
+        // proxyId (легаси) / proxy_id (нейтральный ключ) — оба принимаются.
+        a.proxy_id = r.value("proxyId", r.value("proxy_id", std::string("default")));
+        a.route_all_traffic = false;
+
+        // v1 хранил один порт в поле "port".  0 или отсутствие ⇒ ports[]=[].
+        if (r.contains("port") && r["port"].is_number_integer()) {
+            long long v = r["port"].get<long long>();
+            if (v >= 1 && v <= 65535) {
+                a.ports.push_back(static_cast<uint16_t>(v));
+            }
+        }
+
+        // port_ranges в v1 отсутствовал.
+        apps.push_back(std::move(a));
+    }
+    return apps;
+}
+
+// --- Сериализация WintunSettings → JSON --------------------------------------
+
+nlohmann::json ConfigManager::WintunSettingsToJson(const WintunSettings& w) const {
+    nlohmann::json j;
+    j["adapter_name"]     = w.adapter_name;
+    j["adapter_guid"]     = w.adapter_guid;
+    j["tunnel_ipv4_cidr"] = w.tunnel_ipv4_cidr;
+    j["tunnel_ipv6_cidr"] = w.tunnel_ipv6_cidr;
+    j["mtu"]              = w.mtu;
+    j["engine"]           = WintunEngineKindToString(w.engine);
+
+    nlohmann::json je;
+    je["executable"]         = w.external_engine.executable;
+    je["extra_args"]         = w.external_engine.extra_args;
+    je["socks5_listen"]      = w.external_engine.socks5_listen;
+    je["restart_on_crash"]   = w.external_engine.restart_on_crash;
+    je["restart_backoff_ms"] = w.external_engine.restart_backoff_ms;
+    j["external_engine"]     = je;
+
+    return j;
+}
+
+// --- Сериализация apps[] → JSON ----------------------------------------------
+
+nlohmann::json ConfigManager::AppsToJson(const std::vector<AppRule>& apps) const {
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& a : apps) {
+        nlohmann::json j;
+        j["exe_path"]          = a.exe_path;
+        j["pattern"]           = a.pattern;
+        j["proxy_id"]          = a.proxy_id;
+        j["route_all_traffic"] = a.route_all_traffic;
+        j["ports"]             = a.ports;
+
+        nlohmann::json ranges = nlohmann::json::array();
+        for (const auto& r : a.port_ranges) {
+            nlohmann::json jr;
+            jr["from"] = r.from;
+            jr["to"]   = r.to;
+            ranges.push_back(jr);
+        }
+        j["port_ranges"] = ranges;
+
+        arr.push_back(j);
+    }
+    return arr;
+}
+
+// --- Legacy mirror: apps[] → rules[] (best-effort, cap 128) ------------------
+
+nlohmann::json ConfigManager::BuildLegacyRulesMirror(const std::vector<AppRule>& apps) const {
+    // Cap total flat entries; сверх cap'а — пропускаем расширение диапазонов
+    // и логируем debug-сообщение.  Cap = 128 (см. WP3 spec).
+    constexpr size_t kLegacyCap = 128;
+
+    nlohmann::json arr = nlohmann::json::array();
+    size_t emitted = 0;
+    bool truncated = false;
+
+    auto emit = [&](const std::string& pattern, uint16_t port, const std::string& proxyId) {
+        if (emitted >= kLegacyCap) { truncated = true; return; }
+        nlohmann::json r;
+        r["exe"]     = pattern;
+        r["port"]    = port;
+        r["proxyId"] = proxyId.empty() ? std::string("default") : proxyId;
+        arr.push_back(r);
+        ++emitted;
+    };
+
+    for (const auto& a : apps) {
+        if (a.pattern.empty()) continue;
+
+        // route_all_traffic — НЕ эмитим в legacy: старый читатель применил бы
+        // это некорректно (port=0 не совпадает ни с чем), а «any-port» v1
+        // выразить нельзя.
+        if (a.route_all_traffic) continue;
+
+        // Дискретные порты
+        for (uint16_t p : a.ports) {
+            emit(a.pattern, p, a.proxy_id);
+            if (truncated) break;
+        }
+        if (truncated) break;
+
+        // Диапазоны — расширяем ТОЛЬКО если после расширения общее число
+        // записей остаётся ≤ cap.
+        for (const auto& r : a.port_ranges) {
+            // Сколько записей добавит этот диапазон.
+            size_t span = (r.to >= r.from) ? (size_t)(r.to - r.from) + 1 : 0;
+            if (span == 0) continue;
+            if (emitted + span > kLegacyCap) { truncated = true; break; }
+            for (uint32_t p = r.from; p <= r.to; ++p) {
+                emit(a.pattern, static_cast<uint16_t>(p), a.proxy_id);
+            }
+        }
+        if (truncated) break;
+    }
+
+    if (truncated) {
+        // Debug-канал: логгер здесь ещё может быть неинициализирован;
+        // stderr достаточно для диагностики.
+        std::fprintf(stderr,
+            "[DEBUG] ConfigManager: legacy rules[] mirror truncated at %zu entries\n",
+            emitted);
     }
     return arr;
 }

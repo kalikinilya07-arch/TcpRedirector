@@ -6,7 +6,8 @@
  *
  * Отвечает за загрузку, сохранение и уведомление об изменении
  * конфигурации. Реализует доменный порт IConfigStore.
- * - Загружает/сохраняет config.json в %ProgramData%\TcpRedirector\
+ * - Загружает/сохраняет config.json РЯДОМ С EXE сервиса
+ *   (см. infrastructure/paths/AppPaths.h — WP1).
  * - Потокобезопасен (shared_mutex)
  * - Уведомляет listener'ов при изменении конфига
  * - Шифрует пароль через DPAPI (SecretsManager)
@@ -41,8 +42,52 @@ namespace infrastructure {
  */
 class ConfigManager : public domain::ports::IConfigStore {
 public:
+    /**
+     * @brief Конструктор по умолчанию: путь к config.json резолвится
+     *        через AppPaths::GetConfigPathW() — рядом с EXE сервиса.
+     */
     ConfigManager();
+
+    /**
+     * @brief Конструктор с явным путём к файлу конфигурации.
+     *        Используется только в тестах — обычный код должен использовать
+     *        конструктор по умолчанию, чтобы путь резолвился рядом с EXE.
+     * @param explicitConfigPath Абсолютный путь к config.json.
+     */
+    explicit ConfigManager(std::filesystem::path explicitConfigPath);
+
     ~ConfigManager() override = default;
+
+    /**
+     * @brief Результат однократной миграции legacy-конфига.
+     */
+    struct MigrationResult {
+        bool         attempted = false;   //!< Была ли попытка миграции (legacy existed, new missing).
+        bool         succeeded = false;   //!< Копирование удалось.
+        std::string  message;             //!< Человекочитаемое сообщение для лога (утф-8).
+    };
+
+    /**
+     * @brief Однократная миграция legacy config из %ProgramData%\TcpRedirector\
+     *        в директорию рядом с EXE сервиса.
+     *
+     * Логика (WP1 §2.3):
+     *  1. Резолвит newPath = <exeDir>\config.json и
+     *     legacyPath = <%ProgramData%>\TcpRedirector\config.json
+     *     (через SHGetKnownFolderPath(FOLDERID_ProgramData)).
+     *  2. Если newPath НЕ существует, а legacyPath существует и является
+     *     регулярным файлом — копирует legacyPath → newPath
+     *     (CopyFileW с bFailIfExists=TRUE). Legacy-файл НЕ удаляется
+     *     (сохраняем возможность отката).
+     *  3. При любой ошибке — не бросает исключений, только формирует
+     *     сообщение в MigrationResult::message. Сервис должен стартовать
+     *     даже если миграция не удалась.
+     *
+     * Должна вызываться один раз при старте сервиса ПЕРЕД созданием
+     * ConfigManager с путём по умолчанию. Возвращаемое сообщение вызывающая
+     * сторона обязана прологировать после инициализации логгера.
+     */
+    static MigrationResult EnsureConfigMigrated();
 
     // --- IConfigStore interface ---
 
@@ -137,6 +182,26 @@ public:
      */
     bool UpdateConfigNoSave(const Config& newConfig);
 
+    // --- WP3: schema v2 accessors ---
+
+    /**
+     * @brief Получить копию списка пер-приложение правил (schema v2 apps[]).
+     * @return Вектор AppRule (под shared_lock).
+     */
+    std::vector<AppRule> GetAppRules() const;
+
+    /**
+     * @brief Получить активный режим захвата трафика.
+     * @return CaptureMode (WinDivert по умолчанию).
+     */
+    CaptureMode GetCaptureMode() const;
+
+    /**
+     * @brief Получить настройки Wintun-адаптера / tun2socks-движка.
+     * @return Копия WintunSettings.
+     */
+    WintunSettings GetWintunSettings() const;
+
     // --- DPAPI для пароля ---
 
     /**
@@ -225,6 +290,62 @@ private:
      */
     nlohmann::json RulesToJson(const std::vector<domain::Rule>& rules) const;
 
+    // --- WP3: schema v2 helpers ---
+
+    /**
+     * @brief Разобрать WintunSettings из JSON-объекта c валидацией и fallback-ами.
+     *        Никогда не бросает — некорректные поля заменяются дефолтами.
+     * @param jw JSON-объект секции "wintun" (может быть null/пустым).
+     * @return Заполненная структура WintunSettings.
+     */
+    WintunSettings ParseWintunSettings(const nlohmann::json& jw) const;
+
+    /**
+     * @brief Разобрать один AppRule из JSON-объекта.
+     * @param ja JSON-объект элемента "apps[]".
+     * @param out Результирующий AppRule (заполняется частично при частично-невалидных полях).
+     * @return true, если правило пригодно к использованию; false — пропустить.
+     */
+    bool ParseAppRule(const nlohmann::json& ja, AppRule& out) const;
+
+    /**
+     * @brief Сериализовать WintunSettings в JSON.
+     */
+    nlohmann::json WintunSettingsToJson(const WintunSettings& w) const;
+
+    /**
+     * @brief Сериализовать вектор AppRule в JSON-массив.
+     */
+    nlohmann::json AppsToJson(const std::vector<AppRule>& apps) const;
+
+    /**
+     * @brief Построить legacy-массив rules[] как «зеркало» apps[] для
+     *        обратной совместимости со старыми читателями конфига (v1).
+     *        route_all_traffic-правила НЕ отражаются: старый читатель их
+     *        всё равно применит некорректно (нулевой порт не совпадает
+     *        ни с чем).  Диапазоны разворачиваются в отдельные записи
+     *        только если суммарное количество записей ≤ 128.
+     * @param apps Источник (v2).
+     * @return JSON-массив в legacy-формате { exe, port, proxyId }.
+     */
+    nlohmann::json BuildLegacyRulesMirror(const std::vector<AppRule>& apps) const;
+
+    /**
+     * @brief Разобрать legacy-массив rules[] (v1) и синтезировать соответствующие
+     *        AppRule для in-memory upgrade v1 → v2.
+     *
+     * Правило маппинга (см. §3.3 плана и WP3-спеку):
+     *   pattern           = r.exe (или пусто);
+     *   proxy_id          = r.proxyId (или "default");
+     *   route_all_traffic = false;
+     *   ports             = [r.port] если port валиден, иначе [];
+     *   port_ranges       = [].
+     *
+     * @param jrules Массив rules[] из v1-файла.
+     * @return Синтезированные AppRule (могут быть пустыми).
+     */
+    std::vector<AppRule> UpgradeLegacyRulesToApps(const nlohmann::json& jrules) const;
+
     // --- DPAPI helpers ---
 
     /**
@@ -258,8 +379,8 @@ private:
     mutable std::shared_mutex m_mutex;   //!< Мьютекс для потокобезопасного доступа
 
     std::filesystem::path m_configPath;  //!< Путь к файлу конфигурации
-    Config m_config;                     //!< Текущая конфигурация
-    std::vector<domain::Rule> m_rules;   //!< Текущие правила
+    Config m_config;                     //!< Текущая конфигурация (schema v2)
+    std::vector<domain::Rule> m_rules;   //!< Legacy rules[] (в v2 остаётся как «зеркало»)
 
     // Listener'ы
     std::unordered_map<uint64_t, ConfigChangeListener> m_listeners; //!< Карта подписчиков

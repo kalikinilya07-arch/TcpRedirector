@@ -72,8 +72,10 @@ public:
         m_connectionMonitor = monitor;
     }
 
-    void SetRuleEngine(domain::services::RuleEngine* engine) {
+    // WP6: Now overrides ICapture::SetRuleEngine.
+    bool SetRuleEngine(domain::services::RuleEngine* engine) override {
         m_ruleEngine = engine;
+        return true;
     }
 
     std::vector<domain::RedirectEvent> GetPendingRedirects(
@@ -82,10 +84,11 @@ public:
     domain::DriverStats GetStats() override;
     void* GetEventHandle() const override;
 
-    // Expose byte counters for IPC stats
-    uint64_t GetTotalRxBytes() const { return m_totalRxBytes.load(std::memory_order_relaxed); }
-    uint64_t GetTotalTxBytes() const { return m_totalTxBytes.load(std::memory_order_relaxed); }
-    uint32_t GetActiveConnections() const {
+    // WP6: byte counters and active-connections accessor now override ICapture
+    // — removes the need for static_cast<WinDivertCapture*> in ServiceMain.
+    uint64_t GetTotalRxBytes() const override { return m_totalRxBytes.load(std::memory_order_relaxed); }
+    uint64_t GetTotalTxBytes() const override { return m_totalTxBytes.load(std::memory_order_relaxed); }
+    uint32_t GetActiveConnections() const override {
         return m_connTable ? static_cast<uint32_t>(m_connTable->GetTrackedCount()) : 0u;
     }
 

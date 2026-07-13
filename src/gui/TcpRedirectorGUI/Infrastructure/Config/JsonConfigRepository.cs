@@ -7,20 +7,44 @@ using TcpRedirectorGUI.Domain.Ports;
 namespace TcpRedirectorGUI.Infrastructure.Config;
 
 /// <summary>
-/// Reads/writes the TcpRedirector config.json in %ProgramData%\TcpRedirector\.
-/// Thread-safe: re-reads from disk on every call (config is small, <1KB).
-/// Creates file + directory automatically if missing.
+/// Reads/writes the TcpRedirector <c>config.json</c> from the install
+/// directory shared with the Windows service (resolved via
+/// <see cref="AppPaths.GetConfigPath"/>). Runs a one-shot migration from
+/// <c>%ProgramData%\TcpRedirector\config.json</c> on first launch after
+/// upgrade.
+///
+/// Thread-safe in the sense that every call re-reads from disk (config is
+/// small, &lt;1KB). Creates the file automatically on first access.
 /// Maps between backend JSON schema and .NET entity types.
+///
+/// WP5: v2 schema support added. On write, both the v2 shape
+/// (<c>config_version</c>, <c>capture_mode</c>, <c>wintun{…}</c>, <c>apps[]</c>)
+/// and the legacy <c>rules[]</c> mirror are emitted so pre-WP3 service
+/// binaries can still parse the file. JSON field names use snake_case to
+/// match the C++ side (WP3, <see cref="ConfigManager.cpp"/>).
 /// </summary>
 public sealed class JsonConfigRepository : IConfigRepository
 {
+    private const int kLegacyRulesCap = 128;
+
     private readonly string _configPath;
 
     public JsonConfigRepository()
     {
-        _configPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "TcpRedirector", "config.json");
+        // One-shot migration from %ProgramData%. Never throws.
+        AppPaths.EnsureConfigMigrated();
+        _configPath = AppPaths.GetConfigPath();
+    }
+
+    /// <summary>
+    /// Test / advanced-scenario overload — bypasses path resolution and
+    /// migration. Callers are responsible for pointing at a valid location.
+    /// </summary>
+    public JsonConfigRepository(string configPath)
+    {
+        if (string.IsNullOrWhiteSpace(configPath))
+            throw new ArgumentException("configPath must be a non-empty path", nameof(configPath));
+        _configPath = configPath;
     }
 
     // ── Read ─────────────────────────────────────────
@@ -103,6 +127,134 @@ public sealed class JsonConfigRepository : IConfigRepository
         }
     }
 
+    // ── WP5 v2 read paths ────────────────────────────
+
+    public CaptureMode ReadCaptureMode()
+    {
+        try
+        {
+            var j = Load();
+            var s = j["capture_mode"]?.GetValue<string>();
+            return CaptureModeFromString(s);
+        }
+        catch
+        {
+            return CaptureMode.WinDivert;
+        }
+    }
+
+    public WintunSettings ReadWintunSettings()
+    {
+        var w = new WintunSettings();
+        try
+        {
+            var j = Load();
+            var jw = j["wintun"]?.AsObject();
+            if (jw is null) return w;
+
+            w.AdapterName    = jw["adapter_name"]?.GetValue<string>() ?? w.AdapterName;
+            w.AdapterGuid    = jw["adapter_guid"]?.GetValue<string>() ?? w.AdapterGuid;
+            w.TunnelIpv4Cidr = jw["tunnel_ipv4_cidr"]?.GetValue<string>() ?? w.TunnelIpv4Cidr;
+            w.TunnelIpv6Cidr = jw["tunnel_ipv6_cidr"]?.GetValue<string>() ?? w.TunnelIpv6Cidr;
+
+            if (jw["mtu"] is JsonNode mtuNode && mtuNode is JsonValue mtuVal && mtuVal.TryGetValue<int>(out var mtu))
+                w.Mtu = mtu;
+
+            w.Engine = WintunEngineFromString(jw["engine"]?.GetValue<string>());
+
+            var je = jw["external_engine"]?.AsObject();
+            if (je is not null)
+            {
+                w.ExternalEngine.Executable   = je["executable"]?.GetValue<string>()   ?? w.ExternalEngine.Executable;
+                w.ExternalEngine.Socks5Listen = je["socks5_listen"]?.GetValue<string>() ?? w.ExternalEngine.Socks5Listen;
+
+                if (je["restart_on_crash"] is JsonValue rocVal && rocVal.TryGetValue<bool>(out var roc))
+                    w.ExternalEngine.RestartOnCrash = roc;
+
+                if (je["restart_backoff_ms"] is JsonValue rbVal && rbVal.TryGetValue<int>(out var rb))
+                    w.ExternalEngine.RestartBackoffMs = rb;
+
+                var extra = je["extra_args"]?.AsArray();
+                if (extra is not null)
+                {
+                    w.ExternalEngine.ExtraArgs.Clear();
+                    foreach (var a in extra)
+                    {
+                        var s = a?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(s))
+                            w.ExternalEngine.ExtraArgs.Add(s);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Any parse failure → return defaults (already partially populated).
+        }
+        return w;
+    }
+
+    public List<AppRule> ReadApps()
+    {
+        var apps = new List<AppRule>();
+        try
+        {
+            var j = Load();
+            var arr = j["apps"]?.AsArray();
+            if (arr is not null)
+            {
+                foreach (var item in arr)
+                {
+                    var obj = item?.AsObject();
+                    if (obj is null) continue;
+                    var a = ParseAppRule(obj);
+                    if (a is not null) apps.Add(a);
+                }
+                return apps;
+            }
+
+            // v1 → v2 in-memory upgrade: synthesise apps[] from legacy rules[].
+            // Mirrors ConfigManager::UpgradeLegacyRulesToApps (C++ WP3).
+            var rules = j["rules"]?.AsArray();
+            if (rules is null) return apps;
+            foreach (var item in rules)
+            {
+                var obj = item?.AsObject();
+                if (obj is null) continue;
+
+                // v1 rules had either "exe" or "pattern"; prefer "exe" (WP3 spec).
+                var exeName = obj["exe"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(exeName))
+                    exeName = obj["pattern"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(exeName)) continue;
+
+                // proxyId (legacy) or proxy_id (neutral).
+                var proxyId = obj["proxyId"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(proxyId))
+                    proxyId = obj["proxy_id"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(proxyId)) proxyId = "default";
+
+                var app = new AppRule
+                {
+                    Pattern         = exeName,
+                    ProxyId         = proxyId,
+                    RouteAllTraffic = false
+                };
+
+                // v1 held one port under "port". 0 or absent → ports[]=[].
+                if (obj["port"] is JsonValue pv && pv.TryGetValue<int>(out var p) && p >= 1 && p <= 65535)
+                    app.Ports.Add(p);
+
+                apps.Add(app);
+            }
+        }
+        catch
+        {
+            // Parse failure — return whatever we accumulated.
+        }
+        return apps;
+    }
+
     // ── Write ────────────────────────────────────────
 
     public bool WriteFull(ProxyConfig config, string exePath, List<Rule> rules)
@@ -180,6 +332,70 @@ public sealed class JsonConfigRepository : IConfigRepository
         }
     }
 
+    public bool WriteFullV2(
+        ProxyConfig config,
+        CaptureMode captureMode,
+        WintunSettings wintun,
+        List<AppRule> apps)
+    {
+        try
+        {
+            // Preserve existing log level / password / stats / app.exePath from disk.
+            var logLevel = ReadInt("log", "level", 2);
+            var encPwd = ReadString("auth", "encryptedPassword");
+            var existingExePath = ReadString("app", "exePath");
+            // Fallback: derive exePath from an AppRule if the legacy field was empty
+            // (v1 readers still consult "app.exePath").
+            var exePath = string.IsNullOrEmpty(existingExePath)
+                ? apps.FirstOrDefault(a => !string.IsNullOrEmpty(a.ExePath))?.ExePath
+                  ?? apps.FirstOrDefault(a => !string.IsNullOrEmpty(a.Pattern))?.Pattern
+                  ?? ""
+                : existingExePath;
+
+            var j = new JsonObject
+            {
+                ["config_version"] = 2,
+                ["capture_mode"]   = CaptureModeToString(captureMode),
+                ["wintun"]         = WintunToJson(wintun),
+                ["app"]            = new JsonObject { ["exePath"] = exePath },
+                ["proxy"] = new JsonObject
+                {
+                    ["host"] = config.Host,
+                    ["port"] = config.Port,
+                    ["enabled"] = true
+                },
+                ["auth"] = new JsonObject
+                {
+                    ["enabled"] = config.AuthRequired,
+                    ["username"] = config.Login,
+                    ["kerberos"] = config.KerberosEnabled
+                },
+                ["log"] = new JsonObject
+                {
+                    ["level"] = logLevel,
+                    ["fileEnabled"] = true,
+                    ["maxSizeMB"] = 10
+                },
+                ["stats"] = new JsonObject
+                {
+                    ["updateIntervalMs"] = 2000
+                },
+                ["apps"]  = AppsToJson(apps),
+                ["rules"] = BuildLegacyRulesMirror(apps)
+            };
+
+            if (!string.IsNullOrEmpty(encPwd))
+                j["auth"]!["encryptedPassword"] = encPwd;
+
+            Save(j);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public void WriteInt(string section, string key, int value)
     {
         try
@@ -227,7 +443,50 @@ public sealed class JsonConfigRepository : IConfigRepository
             Directory.CreateDirectory(dir);
 
         if (!File.Exists(_configPath))
-            File.WriteAllText(_configPath, "{ }");
+        {
+            // Seed a default schema-preserving skeleton so the file appears
+            // next to the install with a valid structure that mirrors what
+            // WriteFullV2 produces.
+            var seed = BuildDefaultSkeleton();
+            Save(seed);
+        }
+    }
+
+    private static JsonObject BuildDefaultSkeleton()
+    {
+        var defaults = new ProxyConfig();
+        var wintun = new WintunSettings();
+        return new JsonObject
+        {
+            ["config_version"] = 2,
+            ["capture_mode"]   = CaptureModeToString(CaptureMode.WinDivert),
+            ["wintun"]         = WintunToJson(wintun),
+            ["app"] = new JsonObject { ["exePath"] = defaults.ExePath },
+            ["proxy"] = new JsonObject
+            {
+                ["host"] = defaults.Host,
+                ["port"] = defaults.Port,
+                ["enabled"] = true
+            },
+            ["auth"] = new JsonObject
+            {
+                ["enabled"] = defaults.AuthRequired,
+                ["username"] = defaults.Login,
+                ["kerberos"] = defaults.KerberosEnabled
+            },
+            ["log"] = new JsonObject
+            {
+                ["level"] = 2,
+                ["fileEnabled"] = true,
+                ["maxSizeMB"] = 10
+            },
+            ["stats"] = new JsonObject
+            {
+                ["updateIntervalMs"] = 2000
+            },
+            ["apps"]  = new JsonArray(),
+            ["rules"] = new JsonArray()
+        };
     }
 
     private JsonObject ResetToEmpty()
@@ -235,6 +494,182 @@ public sealed class JsonConfigRepository : IConfigRepository
         var root = new JsonObject();
         Save(root);
         return root;
+    }
+
+    // ---- v2 JSON helpers (snake_case, mirroring C++ WP3) ------------------
+
+    private static string CaptureModeToString(CaptureMode m) => m switch
+    {
+        CaptureMode.Wintun => "wintun",
+        _ => "windivert"
+    };
+
+    private static CaptureMode CaptureModeFromString(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return CaptureMode.WinDivert;
+        return s.Trim().ToLowerInvariant() switch
+        {
+            "wintun" => CaptureMode.Wintun,
+            _ => CaptureMode.WinDivert
+        };
+    }
+
+    private static string WintunEngineToString(WintunEngineKind e) => e switch
+    {
+        WintunEngineKind.External => "external",
+        _ => "embedded"
+    };
+
+    private static WintunEngineKind WintunEngineFromString(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return WintunEngineKind.Embedded;
+        return s.Trim().ToLowerInvariant() switch
+        {
+            "external" => WintunEngineKind.External,
+            _ => WintunEngineKind.Embedded
+        };
+    }
+
+    private static JsonObject WintunToJson(WintunSettings w)
+    {
+        var extraArgs = new JsonArray();
+        foreach (var a in w.ExternalEngine.ExtraArgs)
+            extraArgs.Add(a);
+
+        return new JsonObject
+        {
+            ["adapter_name"]     = w.AdapterName,
+            ["adapter_guid"]     = w.AdapterGuid,
+            ["tunnel_ipv4_cidr"] = w.TunnelIpv4Cidr,
+            ["tunnel_ipv6_cidr"] = w.TunnelIpv6Cidr,
+            ["mtu"]              = w.Mtu,
+            ["engine"]           = WintunEngineToString(w.Engine),
+            ["external_engine"]  = new JsonObject
+            {
+                ["executable"]          = w.ExternalEngine.Executable,
+                ["extra_args"]          = extraArgs,
+                ["socks5_listen"]       = w.ExternalEngine.Socks5Listen,
+                ["restart_on_crash"]    = w.ExternalEngine.RestartOnCrash,
+                ["restart_backoff_ms"]  = w.ExternalEngine.RestartBackoffMs
+            }
+        };
+    }
+
+    private static JsonArray AppsToJson(List<AppRule> apps)
+    {
+        var arr = new JsonArray();
+        foreach (var a in apps)
+        {
+            var ports = new JsonArray();
+            foreach (var p in a.Ports) ports.Add(p);
+
+            var ranges = new JsonArray();
+            foreach (var r in a.PortRanges)
+                ranges.Add(new JsonObject { ["from"] = r.From, ["to"] = r.To });
+
+            arr.Add(new JsonObject
+            {
+                ["exe_path"]          = a.ExePath,
+                ["pattern"]           = a.Pattern,
+                ["proxy_id"]          = string.IsNullOrEmpty(a.ProxyId) ? "default" : a.ProxyId,
+                ["route_all_traffic"] = a.RouteAllTraffic,
+                ["ports"]             = ports,
+                ["port_ranges"]       = ranges
+            });
+        }
+        return arr;
+    }
+
+    /// <summary>
+    /// Emit a legacy v1 <c>rules[]</c> mirror from v2 <c>apps[]</c>. Matches
+    /// C++ <see cref="ConfigManager.BuildLegacyRulesMirror"/> semantics:
+    /// <c>route_all_traffic=true</c> apps are skipped (v1 cannot express
+    /// any-port); discrete ports are always emitted; ranges are expanded
+    /// only if the total flat-entry count stays ≤ 128. Truncation is silent.
+    /// </summary>
+    private static JsonArray BuildLegacyRulesMirror(List<AppRule> apps)
+    {
+        var arr = new JsonArray();
+        var emitted = 0;
+        var truncated = false;
+
+        void Emit(string pattern, int port, string proxyId)
+        {
+            if (emitted >= kLegacyRulesCap) { truncated = true; return; }
+            arr.Add(new JsonObject
+            {
+                ["exe"]     = pattern,
+                ["port"]    = port,
+                ["proxyId"] = string.IsNullOrEmpty(proxyId) ? "default" : proxyId
+            });
+            emitted++;
+        }
+
+        foreach (var a in apps)
+        {
+            if (truncated) break;
+            if (string.IsNullOrEmpty(a.Pattern)) continue;
+            if (a.RouteAllTraffic) continue;
+
+            foreach (var p in a.Ports)
+            {
+                Emit(a.Pattern, p, a.ProxyId);
+                if (truncated) break;
+            }
+            if (truncated) break;
+
+            foreach (var r in a.PortRanges)
+            {
+                var span = r.To >= r.From ? (r.To - r.From + 1) : 0;
+                if (span <= 0) continue;
+                if (emitted + span > kLegacyRulesCap) { truncated = true; break; }
+                for (int p = r.From; p <= r.To; p++)
+                    Emit(a.Pattern, p, a.ProxyId);
+            }
+        }
+
+        return arr;
+    }
+
+    private static AppRule? ParseAppRule(JsonObject obj)
+    {
+        var pattern = obj["pattern"]?.GetValue<string>();
+        if (string.IsNullOrEmpty(pattern)) return null;
+
+        var a = new AppRule
+        {
+            Pattern         = pattern,
+            ExePath         = obj["exe_path"]?.GetValue<string>() ?? "",
+            ProxyId         = obj["proxy_id"]?.GetValue<string>() ?? "default",
+            RouteAllTraffic = obj["route_all_traffic"] is JsonValue rv && rv.TryGetValue<bool>(out var rb) && rb
+        };
+
+        var ports = obj["ports"]?.AsArray();
+        if (ports is not null)
+        {
+            var seen = new HashSet<int>();
+            foreach (var pn in ports)
+            {
+                if (pn is JsonValue pv && pv.TryGetValue<int>(out var p) && p >= 1 && p <= 65535)
+                    if (seen.Add(p)) a.Ports.Add(p);
+            }
+        }
+
+        var ranges = obj["port_ranges"]?.AsArray();
+        if (ranges is not null)
+        {
+            foreach (var rn in ranges)
+            {
+                var ro = rn?.AsObject();
+                if (ro is null) continue;
+                if (ro["from"] is not JsonValue fv || !fv.TryGetValue<int>(out var from)) continue;
+                if (ro["to"]   is not JsonValue tv || !tv.TryGetValue<int>(out var to))   continue;
+                if (from < 1 || from > 65535 || to < 1 || to > 65535 || from > to) continue;
+                a.PortRanges.Add(new PortRange { From = from, To = to });
+            }
+        }
+
+        return a;
     }
 
     /// <summary>Map JSON value (int or string) to RuleType int.</summary>

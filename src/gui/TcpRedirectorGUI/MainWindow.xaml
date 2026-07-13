@@ -1,14 +1,37 @@
 <Window x:Class="TcpRedirectorGUI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
         xmlns:vm="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels"
         xmlns:ctl="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.Controls"
+        xmlns:dom="clr-namespace:TcpRedirectorGUI.Domain.Entities"
         Title="TcpRedirector"
         Height="800" Width="1100" MinHeight="600" MinWidth="900"
         Background="#1E1E1E"
         FontFamily="Segoe UI"
         TextElement.Foreground="#CCCCCC"
         WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <!-- WP5: enum ItemsSource providers for CaptureMode / WintunEngineKind combos.
+             The corresponding VM properties expose IReadOnlyList<T>; we use them
+             through the DataContext, but keep these ObjectDataProviders around as
+             a safety net so the ComboBox items appear even if the VM binding path
+             changes. Not currently referenced from bindings — kept for future use. -->
+
+        <!-- Red border + tooltip for TextBox with a validation error (WP5 port spec). -->
+        <Style x:Key="PortSpecTextBox" TargetType="TextBox"
+               BasedOn="{StaticResource {x:Type TextBox}}">
+            <Style.Triggers>
+                <Trigger Property="Validation.HasError" Value="True">
+                    <Setter Property="BorderBrush" Value="#F44747"/>
+                    <Setter Property="ToolTip"
+                            Value="{Binding RelativeSource={RelativeSource Self},
+                                            Path=(Validation.Errors)[0].ErrorContent}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
 
 
     <Grid>
@@ -157,8 +180,115 @@
                         </Grid>
                     </Border>
 
-                    <!-- Rules -->
-                    <TextBlock Text="RULES" Style="{StaticResource SectionHeader}"/>
+                    <!-- WP5: Capture mode + Wintun settings -->
+                    <TextBlock Text="РЕЖИМ ЗАХВАТА ТРАФИКА" Style="{StaticResource SectionHeader}"/>
+                    <Border Style="{StaticResource SectionBorder}">
+                        <StackPanel>
+                            <!-- Mode selector -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                <TextBlock Text="Режим:" VerticalAlignment="Center"
+                                           Width="90" Margin="0,2"/>
+                                <ComboBox Width="180"
+                                          ItemsSource="{Binding Settings.CaptureModes}"
+                                          SelectedItem="{Binding Settings.CaptureMode, Mode=TwoWay}"
+                                          Margin="0,2"/>
+                            </StackPanel>
+
+                            <!-- Wintun sub-panel — enabled only in Wintun mode -->
+                            <Border BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
+                                    Margin="0,6,0,0" Padding="0,6,0,0"
+                                    IsEnabled="{Binding Settings.IsWintunSelected}">
+                                <StackPanel>
+                                    <TextBlock Text="Настройки Wintun"
+                                               Foreground="#DCDCAA" FontWeight="Bold"
+                                               Margin="0,0,0,4"/>
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="150"/>
+                                            <ColumnDefinition Width="250"/>
+                                            <ColumnDefinition Width="100"/>
+                                            <ColumnDefinition Width="150"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0"
+                                                   Text="Имя адаптера:"
+                                                   VerticalAlignment="Center" Margin="0,2"/>
+                                        <TextBox Grid.Row="0" Grid.Column="1"
+                                                 Text="{Binding Settings.WintunAdapterName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2"/>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="2"
+                                                   Text="MTU:"
+                                                   VerticalAlignment="Center" Margin="8,2,0,2"/>
+                                        <TextBox Grid.Row="0" Grid.Column="3"
+                                                 Text="{Binding Settings.WintunMtu, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="8,2,0,2"/>
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0"
+                                                   Text="IPv4 CIDR туннеля:"
+                                                   VerticalAlignment="Center" Margin="0,2"/>
+                                        <TextBox Grid.Row="1" Grid.Column="1"
+                                                 Text="{Binding Settings.WintunTunnelIpv4Cidr, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Margin="0,2"/>
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0"
+                                                   Text="Движок:"
+                                                   VerticalAlignment="Center" Margin="0,2"/>
+                                        <ComboBox Grid.Row="2" Grid.Column="1"
+                                                  ItemsSource="{Binding Settings.WintunEngines}"
+                                                  SelectedItem="{Binding Settings.WintunEngine, Mode=TwoWay}"
+                                                  Margin="0,2"/>
+                                    </Grid>
+
+                                    <!-- External engine sub-panel — visible only when engine==External -->
+                                    <StackPanel Margin="0,6,0,0"
+                                                Visibility="{Binding Settings.IsExternalEngine, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Внешний (tun2socks.exe)"
+                                                   Foreground="#DCDCAA" FontWeight="Bold"
+                                                   Margin="0,0,0,4"/>
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="150"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <TextBlock Grid.Row="0" Grid.Column="0"
+                                                       Text="Путь к EXE:"
+                                                       VerticalAlignment="Center" Margin="0,2"/>
+                                            <TextBox Grid.Row="0" Grid.Column="1"
+                                                     Text="{Binding Settings.ExternalExecutable, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Margin="0,2"/>
+
+                                            <TextBlock Grid.Row="1" Grid.Column="0"
+                                                       Text="SOCKS5 listen:"
+                                                       VerticalAlignment="Center" Margin="0,2"/>
+                                            <TextBox Grid.Row="1" Grid.Column="1"
+                                                     Text="{Binding Settings.ExternalSocks5Listen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Margin="0,2"/>
+
+                                            <CheckBox Grid.Row="2" Grid.Column="1"
+                                                      Content="Перезапускать при сбое"
+                                                      IsChecked="{Binding Settings.ExternalRestartOnCrash, Mode=TwoWay}"
+                                                      Margin="0,2"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- WP5: Apps (multi-port per-app rules) -->
+                    <TextBlock Text="ПРИЛОЖЕНИЯ" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -168,10 +298,10 @@
                             </Grid.RowDefinitions>
 
                             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
-                                <Button Content="+ Add Rule"
+                                <Button Content="+ Добавить приложение"
                                         Command="{Binding Settings.AddRuleCommand}"
                                         Padding="12,6" Margin="0,0,8,0"/>
-                                <Button Content="Save"
+                                <Button Content="Сохранить"
                                         Command="{Binding Settings.SaveAsyncCommand}"
                                         Style="{StaticResource PrimaryButton}"
                                         Padding="12,6"/>
@@ -181,20 +311,44 @@
                             </StackPanel>
 
                             <DataGrid Grid.Row="1"
-                                      ItemsSource="{Binding Settings.Rules}"
-                                      SelectedItem="{Binding Settings.SelectedRule}"
+                                      ItemsSource="{Binding Settings.Apps}"
+                                      SelectedItem="{Binding Settings.SelectedApp}"
                                       AutoGenerateColumns="False"
                                       CanUserAddRows="False"
                                       FontSize="12"
                                       MinHeight="60" MaxHeight="400">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*" IsReadOnly="True"/>
-                                    <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="150" IsReadOnly="True"/>
-                                    <DataGridTemplateColumn Header="" Width="60">
+                                    <DataGridTextColumn Header="Шаблон имени EXE"
+                                                        Binding="{Binding Pattern}"
+                                                        Width="180"/>
+                                    <DataGridTextColumn Header="Полный путь"
+                                                        Binding="{Binding ExePath}"
+                                                        Width="*"/>
+                                    <DataGridTextColumn Header="ID прокси"
+                                                        Binding="{Binding ProxyId}"
+                                                        Width="90"/>
+                                    <DataGridCheckBoxColumn Header="Весь трафик через прокси"
+                                                            Binding="{Binding RouteAllTraffic, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="90"/>
+                                    <DataGridTemplateColumn Header="Порты (например: 80, 443, 8000-8100)"
+                                                            Width="260">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBox Style="{StaticResource PortSpecTextBox}"
+                                                         Text="{Binding PortSpec, Mode=TwoWay,
+                                                                        UpdateSourceTrigger=LostFocus,
+                                                                        ValidatesOnNotifyDataErrors=True,
+                                                                        NotifyOnValidationError=True}"
+                                                         IsEnabled="{Binding PortsEditable}"
+                                                         ToolTip="Формат: 80, 443, 8000-8100"/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="" Width="40">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
                                                 <Button Content="✕"
-                                                        Command="{Binding DataContext.Settings.DeleteRuleCommand, RelativeSource={RelativeSource AncestorType={x:Type DataGrid}}}"
+                                                        Command="{Binding DataContext.Settings.DeleteAppCommand, RelativeSource={RelativeSource AncestorType={x:Type DataGrid}}}"
                                                         CommandParameter="{Binding}"
                                                         Background="#5A1D1D" Foreground="#F44747"
                                                         BorderThickness="0" FontSize="11"/>
@@ -205,7 +359,7 @@
                             </DataGrid>
 
                             <TextBlock Grid.Row="2" Foreground="#858585" Margin="0,4,0,0" FontSize="12">
-                                Total: <Run Text="{Binding Settings.Rules.Count, Mode=OneWay}" FontWeight="Bold"/> rules
+                                Всего: <Run Text="{Binding Settings.Apps.Count, Mode=OneWay}" FontWeight="Bold"/> прил.
                             </TextBlock>
                         </Grid>
                     </Border>

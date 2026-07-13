@@ -13,11 +13,16 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <cstdint>
 #include "../entities/ProxyConfig.h"
 #include "IConnectionTable.h"
 
 namespace tcp_redirector {
 namespace domain {
+
+// Forward declaration to avoid pulling RuleEngine.h (which pulls Config.h) here.
+namespace services { class RuleEngine; }
+
 namespace ports {
 
 /**
@@ -109,6 +114,38 @@ public:
      * @return Указатель на объект события (HANDLE).
      */
     virtual void* GetEventHandle() const = 0;
+
+    // --- WP6: полиморфные accessor-ы (заменяют static_cast<WinDivertCapture*>) ---
+
+    /**
+     * @brief Установить движок правил (RuleEngine) для матчинга процессов/портов.
+     *
+     * По умолчанию — no-op (не все реализации нуждаются в RuleEngine
+     * или могут прикреплять его иным путём). Конкретные реализации
+     * могут переопределить и вернуть true при успешном присоединении.
+     * @param engine Сырой указатель на RuleEngine (может быть nullptr).
+     * @return true, если движок принят к использованию.
+     */
+    virtual bool SetRuleEngine(domain::services::RuleEngine* /*engine*/) { return false; }
+
+    /**
+     * @brief Суммарные принятые (RX) байты на уровне capture-engine.
+     *
+     * Дефолтная реализация возвращает 0 — позволяет консюмерам
+     * (IPC/StatsCollector) работать через базовый интерфейс без
+     * static_cast к конкретной реализации.
+     */
+    virtual uint64_t GetTotalRxBytes() const { return 0; }
+
+    /**
+     * @brief Суммарные отправленные (TX) байты на уровне capture-engine.
+     */
+    virtual uint64_t GetTotalTxBytes() const { return 0; }
+
+    /**
+     * @brief Текущее число активных соединений (по данным connection table).
+     */
+    virtual uint32_t GetActiveConnections() const { return 0; }
 };
 
 } // namespace ports

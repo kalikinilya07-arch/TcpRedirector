@@ -1,4 +1,5 @@
 #include "WinDivertCapture.h"
+#include "../utf8_convert.h"
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
@@ -562,6 +563,24 @@ int WinDivertCapture::CheckProcessRule(uint32_t src_ip, uint16_t src_port,
         if (lastSlash != std::wstring::npos)
             procName = procName.substr(lastSlash + 1);
 
+        // WP4: сначала проверяем новый port-aware API (v2 app-правила).
+        // Если совпало — используем его результат; иначе — падаем в legacy
+        // Match(name, path), который остаётся рабочим для v1-правил.
+        std::string procNameUtf8 = WideToUtf8(procName);
+        std::string procPathUtf8 = WideToUtf8(procPath);
+        auto appMatch = m_ruleEngine->MatchForFlow(
+            procNameUtf8, procPathUtf8, static_cast<uint16_t>(dst_port));
+        if (appMatch.matched) {
+            if (m_proxyHost.empty() || m_proxyPort == 0) {
+                return 0; // DIRECT — no proxy configured
+            }
+            // proxy_id из appMatch — hint для мультипрокси (WP4 не вводит
+            // мультипрокси; передаём 0 совместимо с существующим ABI).
+            if (out_proxy_config_id) *out_proxy_config_id = 0;
+            return 1; // PROXY
+        }
+
+        // Legacy path: старый матчер по имени/пути процесса.
         auto action = m_ruleEngine->Match(procName, procPath);
         if (action == domain::RuleAction::Block) {
             return 2; // BLOCK

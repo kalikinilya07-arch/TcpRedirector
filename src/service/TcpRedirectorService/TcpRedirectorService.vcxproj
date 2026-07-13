@@ -53,7 +53,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;iphlpapi.lib;psapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;iphlpapi.lib;psapi.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -69,11 +69,13 @@
     <ClInclude Include="infrastructure\relay\ConnectionTable.h" />
     <ClInclude Include="infrastructure\relay\TcpRelayServer.h" />
     <ClInclude Include="infrastructure\capture\WinDivertCapture.h" />
+    <ClInclude Include="infrastructure\capture\WintunCapture.h" />
     <ClInclude Include="adapters\driven\ProxyEngine.h" />
     <ClInclude Include="adapters\driving\ServiceMain.h" />
     <ClInclude Include="adapters\driving\IpcHandler.h" />
     <ClInclude Include="domain\entities\ProxyConfig.h" />
     <ClInclude Include="domain\ports\ICapture.h" />
+    <ClInclude Include="domain\ports\ICapturePreflight.h" />
     <ClInclude Include="domain\ports\IConfigStore.h" />
     <ClInclude Include="domain\ports\IConnectionMonitor.h" />
     <ClInclude Include="domain\ports\IDriverCommunicator.h" />
@@ -86,6 +88,9 @@
     <ClInclude Include="infrastructure\ipc\TcpIpcServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />
     <ClInclude Include="infrastructure\auth\auth_sspi.h" />
+    <ClInclude Include="infrastructure\paths\AppPaths.h" />
+    <ClInclude Include="infrastructure\preflight\WinDivertPreflight.h" />
+    <ClInclude Include="infrastructure\preflight\WintunPreflight.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
