@@ -162,6 +162,7 @@ public:
 
         // Initialize IPC server with IpcHandler (C2: Named Pipe with ACL)
         m_pipeServer = std::make_unique<infrastructure::PipeServer>();
+        m_pipeServer->SetLogSink(m_logger.get());
         m_ipcHandler = std::make_unique<adapters::IpcHandler>(
             m_ruleEngine.get(), m_connectionTracker.get(),
             m_configManager.get(), m_logger.get(),
@@ -182,7 +183,11 @@ public:
             });
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {
-            m_logger->Info("service", "IPC server started");
+            if (m_pipeServer->WaitForPipe(std::chrono::seconds(5))) {
+                m_logger->Info("service", "IPC server started");
+            } else {
+                m_logger->Error("service", "IPC pipe creation timed out");
+            }
         }
 
         m_initialized = true;

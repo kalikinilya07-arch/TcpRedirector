@@ -49,7 +49,19 @@ public:
 
     bool Start() override {
         m_running = true;
+        m_pipeReady = false;
         m_thread = std::thread([this]() { PipeThread(); });
+        return true;
+    }
+
+    /// Wait until the pipe is created and ready to accept connections.
+    bool WaitForPipe(std::chrono::milliseconds timeout = std::chrono::seconds(10)) {
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!m_pipeReady.load(std::memory_order_acquire)) {
+            if (std::chrono::steady_clock::now() > deadline)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
         return true;
     }
 
@@ -183,11 +195,9 @@ private:
                 DWORD err = GetLastError();
                 IpcLog(domain::LogLevel::Warn,
                     "CreateNamedPipe failed: " + std::to_string(err));
-                // If FIRST_PIPE_INSTANCE failed (e.g., stale handle from crash),
-                // clear the flag so retry succeeds.
-                if (err == ERROR_ACCESS_DENIED || err == ERROR_PIPE_BUSY) {
-                    isFirstInstance = false;
-                }
+                // Clear FIRST_PIPE_INSTANCE on ANY error — retrying with
+                // the flag set is guaranteed to fail again for the same reason.
+                isFirstInstance = false;
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 continue;
             }
@@ -206,6 +216,7 @@ private:
             }
 
             isFirstInstance = false;
+            m_pipeReady.store(true, std::memory_order_release);
             IpcLog(domain::LogLevel::Info, "Named pipe created, waiting for GUI...");
 
             // Wait for a client to connect.
@@ -351,12 +362,19 @@ private:
         if (m_logSink) {
             m_logSink->Log(level, "pipe", msg);
         }
+        // Always write warnings/errors to stderr so GUI can capture
+        // them via RedirectStandardError for diagnostics.
+        if (level == domain::LogLevel::Warn || level == domain::LogLevel::Error) {
+            fprintf(stderr, "[PIPE] %s\n", msg.c_str());
+            fflush(stderr);
+        }
     }
 
     domain::ports::ILogSink* m_logSink = nullptr;
     std::thread m_thread;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_connected{false};
+    std::atomic<bool> m_pipeReady{false};
     RequestCallback m_requestCallback;
 };
 

@@ -49,4 +49,9 @@ public interface IServiceController
     Task<bool> RestartServiceAsync();
     Task<ServiceState> GetStateAsync();
     bool IsAdministrator();
+    /// <summary>
+    /// Last startup error captured from backend stderr.
+    /// Returns null after being read (one-shot).
+    /// </summary>
+    string? LastStartupError { get; }
 }

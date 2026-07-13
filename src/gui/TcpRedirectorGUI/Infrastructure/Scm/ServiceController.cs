@@ -40,42 +40,98 @@ public class ServiceController : IServiceController
     {
         try
         {
-            // ВСЕГДА запускаем как --console, даже если сервис установлен в SCM.
-            // Причина: SCM запускает сервис в session 0, а test_proxy.py (прокси)
-            // работает в session 1. Loopback (127.0.0.1) изолирован по сессиям,
-            // поэтому relay НЕ может соединиться с прокси из session 0.
-            // Console-mode запускает сервис в той же сессии, что и GUI.
             return await Task.Run(() =>
             {
-                if (IsProcessRunning()) return true;
+                if (IsProcessRunning())
+                {
+                    DiagLog("StartServiceAsync: process already running, skip launch");
+                    return true;
+                }
 
                 var exePath = FindServiceExe();
-                if (exePath == null) return false;
-
-                var proc = new Process
+                if (exePath == null)
                 {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = exePath,
-                        Arguments = "--console",
-                        UseShellExecute = true,
-                        CreateNoWindow = false
-                    }
+                    DiagLog("StartServiceAsync: backend exe NOT FOUND");
+                    return false;
+                }
+                DiagLog($"StartServiceAsync: launching {exePath} --console");
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = "--console",
+                    UseShellExecute = false,
+                    CreateNoWindow = false,
+                    // Only redirect stderr for diagnostics.
+                    // DO NOT redirect stdout — the backend writes extensive logs
+                    // to stdout and will deadlock if the buffer fills up with no reader.
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = true,
+                    WorkingDirectory = Path.GetDirectoryName(exePath)
                 };
-                proc.Start();
-                Thread.Sleep(2000);
-                return IsProcessRunning();
+
+                var proc = new Process { StartInfo = psi };
+                var errBuilder = new System.Text.StringBuilder();
+
+                proc.ErrorDataReceived += (_, e) =>
+                {
+                    if (e.Data != null)
+                        lock (errBuilder) errBuilder.AppendLine(e.Data);
+                };
+
+                try
+                {
+                    proc.Start();
+                    proc.BeginErrorReadLine();
+                }
+                catch (Exception ex)
+                {
+                    DiagLog($"StartServiceAsync: process start FAILED: {ex.Message}");
+                    return false;
+                }
+
+                // Wait for the backend to initialize (up to 8 seconds)
+                for (int i = 0; i < 16; i++)
+                {
+                    Thread.Sleep(500);
+                    if (proc.HasExited)
+                    {
+                        string diag;
+                        lock (errBuilder) diag = errBuilder.ToString();
+                        DiagLog($"StartServiceAsync: backend EXITED early (code {proc.ExitCode}): {diag.TrimEnd()}");
+                        // Store diagnostics for the ViewModel to display
+                        _lastStartupError = diag.TrimEnd();
+                        return false;
+                    }
+                }
+
+                bool running = IsProcessRunning();
+                DiagLog($"StartServiceAsync: after 8s wait, process running={running}");
+                return running;
             });
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            DiagLog($"StartServiceAsync: exception: {ex.Message}");
+            return false;
+        }
     }
+
+    /// <summary>
+    /// Last startup error captured from backend stderr. Read by ShellViewModel
+    /// to display when start fails.
+    /// </summary>
+    public string? LastStartupError
+    {
+        get { var err = _lastStartupError; _lastStartupError = null; return err; }
+    }
+    private volatile string? _lastStartupError;
 
     public async Task<bool> StopServiceAsync()
     {
         try
         {
-            // ВСЕГДА убиваем процесс напрямую (console mode).
-            // См. StartServiceAsync — сервис всегда запускается как --console.
+            // Always kill the process directly (console mode).
             return await Task.Run(() =>
             {
                 var procs = Process.GetProcessesByName(ProcessName);
@@ -111,7 +167,6 @@ public class ServiceController : IServiceController
     {
         try
         {
-            // IsServiceInstalled() на thread pool — не блокируем UI
             return await Task.Run(() =>
             {
                 if (IsServiceInstalled())
@@ -150,9 +205,9 @@ public class ServiceController : IServiceController
             Path.Combine(guiDir, "TcpRedirectorService.exe"),
             // Parent dir (e.g. build/ when GUI is in build/gui/)
             Path.Combine(guiDir, "..", "TcpRedirectorService.exe"),
-            // build/ dir — новейшая сборка (приоритет выше deploy/)
+            // build/ dir — priority build (MSBuild output)
             Path.Combine(guiDir, "..", "..", "build", "TcpRedirectorService.exe"),
-            // deploy/ dir — старая сборка (фолбэк)
+            // deploy/ dir — release deploy (CI/CD)
             Path.Combine(guiDir, "..", "..", "deploy", "TcpRedirectorService.exe"),
         };
 
@@ -162,5 +217,19 @@ public class ServiceController : IServiceController
             if (File.Exists(full)) return full;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Write diagnostic log to gui_diag.log next to the GUI executable.
+    /// </summary>
+    private static void DiagLog(string msg)
+    {
+        try
+        {
+            var dir = AppDomain.CurrentDomain.BaseDirectory;
+            var path = Path.Combine(dir, "gui_diag.log");
+            File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} [SCM] {msg}\n");
+        }
+        catch { }
     }
 }

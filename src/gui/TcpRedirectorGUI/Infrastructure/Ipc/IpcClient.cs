@@ -43,15 +43,15 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         try
         {
             var dir = AppDomain.CurrentDomain.BaseDirectory;
-            var path = Path.Combine(dir, "ipc_diag.log");
-            File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} {msg}\n");
+            var path = Path.Combine(dir, "gui_diag.log");
+            File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} [IPC] {msg}\n");
         }
         catch { }
     }
 
     public async Task ConnectAsync()
     {
-        DiagLog($"ConnectAsync: connecting to pipe {PipeName}...");
+        DiagLog($"ConnectAsync: connecting to pipe \\\\.\\pipe\\{PipeName}...");
         await _lock.WaitAsync();
         try
         {
@@ -62,13 +62,31 @@ public class IpcClient : ITcpRedirectorService, IDisposable
                 PipeDirection.InOut,
                 PipeOptions.Asynchronous);
 
+            DiagLog("ConnectAsync: calling ConnectAsync(5000)...");
             await _pipe.ConnectAsync(5000);
-            DiagLog("ConnectAsync: connected OK");
+            DiagLog($"ConnectAsync: connected OK, IsConnected={_pipe.IsConnected}");
             ConnectionStateChanged?.Invoke(true);
+        }
+        catch (TimeoutException ex)
+        {
+            DiagLog($"ConnectAsync: TIMEOUT — {ex.Message}");
+            ConnectionStateChanged?.Invoke(false);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            DiagLog($"ConnectAsync: ACCESS DENIED — {ex.Message}");
+            ConnectionStateChanged?.Invoke(false);
+        }
+        catch (IOException ex)
+        {
+            DiagLog($"ConnectAsync: IO ERROR — {ex.GetType().Name}: {ex.Message}");
+            ConnectionStateChanged?.Invoke(false);
         }
         catch (Exception ex)
         {
             DiagLog($"ConnectAsync: FAILED — {ex.GetType().Name}: {ex.Message}");
+            if (ex.InnerException != null)
+                DiagLog($"ConnectAsync: inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
             ConnectionStateChanged?.Invoke(false);
         }
         finally

@@ -28,11 +28,6 @@ public partial class MainWindow : Window
             PwdBox.Clear();
         };
 
-        // Auto-start backend on window load
-        Loaded += async (_, _) =>
-        {
-            await _vm.AutoStartAndConnectAsync();
-        };
     }
 }
 
