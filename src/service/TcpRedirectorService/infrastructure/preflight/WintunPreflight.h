@@ -34,6 +34,8 @@
 #include "../../domain/ports/ICapturePreflight.h"
 #include "../config/Config.h"
 #include "../paths/AppPaths.h"
+#include "../capture/wintun/WintunApi.h"
+#include "../utf8_convert.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -99,7 +101,58 @@ public:
                 + m_cfg.tunnel_ipv4_cidr + "'");
         }
 
-        // 6. External engine — только если выбрано.
+        // 6. WP10: физическая загрузка wintun.dll.  Файл на диске мы уже
+        //    проверили в п.2 — теперь превращаем «файл существует» в
+        //    «библиотека загружается + имеет все нужные экспорты».  Это
+        //    ловит битые DLL, ARM-DLL в x64-сборке, отсутствие экспортов
+        //    после чужой замены файла и т.п.  Handle сразу отпускаем —
+        //    Wintun сам загрузится ещё раз при Open.
+        {
+            std::string dllErr;
+            auto probe = capture::wintun::WintunApi::Load(&dllErr);
+            if (!probe) {
+                r.failures.push_back(
+                    "wintun.dll failed to load: " + dllErr);
+            } else {
+                const uint32_t drvVer = probe->RunningDriverVersion();
+                r.warnings.push_back(
+                    "wintun.dll loaded (driver_version=0x"
+                    + Uint32ToHex(drvVer) + ")");
+                // Явно освобождаем handle — иначе он будет висеть до
+                // deletе-момента shared_ptr, а мы не хотим держать DLL
+                // между preflight и Open (это разные подсистемы).
+                probe.reset();
+            }
+        }
+
+        // 7. WP10: soft-проверка на коллизию по имени адаптера.  Пытаемся
+        //    открыть адаптер с настроенным именем; если открылось — это
+        //    stale-адаптер от предыдущего краха сервиса, ничего страшного,
+        //    Open() его переиспользует.  WARN — не FAIL: если под этим
+        //    именем сидит адаптер другого драйвера (напр., WireGuard),
+        //    OpenAdapter вернёт ошибку, мы это тоже отдельно не диагностируем
+        //    (нет способа узнать «кто сейчас владелец» без открытия).
+        //    Полноценный owner-check — задача не WP10.
+        if (!m_cfg.adapter_name.empty()) {
+            std::string probeErr;
+            auto probeApi = capture::wintun::WintunApi::Load(&probeErr);
+            if (probeApi) {
+                const std::wstring nameW = Utf8ToWide(m_cfg.adapter_name);
+                WINTUN_ADAPTER_HANDLE h = probeApi->OpenAdapter(nameW.c_str());
+                if (h != nullptr) {
+                    r.warnings.push_back(
+                        "Existing Wintun adapter '" + m_cfg.adapter_name
+                        + "' found; will reuse on Open()");
+                    probeApi->CloseAdapter(h);
+                }
+                // Ошибка OpenAdapter НЕ логируется как warning — это норма,
+                // когда никакого адаптера с таким именем нет.
+                probeApi.reset();
+            }
+            // Если сам Load провалился — это уже отражено в п.6 как failure.
+        }
+
+        // 8. External engine — только если выбрано.
         if (m_cfg.engine == WintunEngineKind::External) {
             CheckExternalEngine(exeDir, r);
         }
@@ -149,6 +202,18 @@ private:
     }
 
     // ---- Утилиты ----------------------------------------------------------
+
+    // Форматирование 32-битного значения в 8-символьный hex (без "0x"-префикса).
+    // Локальный хелпер — не тянем sprintf/iostreams в header.
+    static std::string Uint32ToHex(uint32_t v) {
+        static const char* kDigits = "0123456789ABCDEF";
+        std::string s(8, '0');
+        for (int i = 7; i >= 0; --i) {
+            s[i] = kDigits[v & 0xFu];
+            v >>= 4;
+        }
+        return s;
+    }
 
     static bool IsProcessElevated() {
         HANDLE token = nullptr;

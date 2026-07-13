@@ -222,10 +222,42 @@ public:
                     break;
                 }
                 case infrastructure::CaptureMode::Wintun: {
+                    const auto wintun = m_configManager->GetWintunSettings();
+                    const bool external =
+                        (wintun.engine == infrastructure::WintunEngineKind::External);
                     m_logger->Info("service",
-                        "Capture mode: Wintun (stub \xE2\x80\x94 WP10 will finalize)");
+                        std::string("Capture mode: Wintun (")
+                        + (external ? "external engine)" : "embedded engine)"));
+
+                    // WP12a — до старта capture'а поднимаем SOCKS5-слушатель
+                    // на TcpRelayServer (только для external-движка).  Он
+                    // будет upstream'ом для tun2socks.exe, которую WP12 запустит
+                    // после Open()'а capture'а.
+                    //
+                    // ВНИМАНИЕ: НЕ активируем при embedded — движок ходит на
+                    // relay напрямую как loopback TCP-клиент, SOCKS5 не нужен.
+                    // Preflight (WP7) уже проверил формат socks5_listen и что
+                    // порт свободен; здесь мы просто биндим.
+                    if (external) {
+                        auto hp = infrastructure::relay::Socks5Adapter::ParseHostPort(
+                            wintun.external_engine.socks5_listen);
+                        auto* relay =
+                            static_cast<infrastructure::TcpRelayServer*>(m_relayServer.get());
+                        std::string err;
+                        if (!relay->EnableSocks5Listener(hp.first, hp.second, &err)) {
+                            m_logger->Error("relay",
+                                "Failed to enable SOCKS5 listener: " + err);
+                            m_logger->Shutdown();
+                            return false;
+                        }
+                    }
+
+                    // WP10: реальный WintunCapture-фасад.  Порт релея
+                    // передаём в конструктор — движок форвардит принятые
+                    // из туннеля flow'ы именно на 127.0.0.1:relayPort.
                     auto capture = std::make_unique<infrastructure::WintunCapture>(
-                        m_configManager->GetWintunSettings(),
+                        wintun,
+                        relayPort,
                         m_logger.get());
                     // Non-ICapture hooks kept parallel to WinDivert branch.
                     capture->SetConnectionMonitor(m_connectionTracker.get());

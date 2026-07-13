@@ -1,0 +1,178 @@
+#pragma once
+
+/**
+ * @file Tun2SocksEngineEmbedded.h
+ * @brief WP9 — встроенный tun2socks-движок на lwIP 2.2.0.
+ *
+ * ЖИЗНЕННЫЙ ЦИКЛ:
+ *   engine = Tun2SocksEngineEmbedded::Create(session, relayPort, onFlow?);
+ *   engine->Start(&err);              // поднимает lwIP + engine-тред
+ *   ...                               // движок сам crank'ает трафик
+ *   engine->Stop();                   // закрывает все flow'ы, снимает netif
+ *
+ * ЧТО ДЕЛАЕТ ДВИЖОК:
+ *   1. Инициализирует lwIP один раз на процесс (см. §"NO_SYS notes" ниже).
+ *   2. Создаёт struct netif, чей linkoutput отправляет исходящие IP-пакеты
+ *      обратно в туннель через WintunSession::Send().
+ *   3. Запускает dedicated engine-тред, который:
+ *        • Ждёт на WaitForMultipleObjects({ session.ReadWaitEvent, stop_event, timer }).
+ *        • При событии от wintun'а — читает пакет (WintunSession::ReceiveInto),
+ *          заворачивает в pbuf и толкает в netif->input.
+ *        • При таймере — вызывает sys_check_timeouts().
+ *        • При stop_event — выходит.
+ *   4. Держит catch-all TCP-listener: pcb, забинденный на IP_ANY_TYPE:0, чей
+ *      accept-хук LWIP_HOOK_IP4_INPUT (см. lwip_hooks_impl.c) заставляет
+ *      lwIP «принять» ЛЮБОЙ TCP-пакет из туннеля.
+ *   5. На каждый accept:
+ *        • Запоминает pcb->local_ip:local_port как original-dst.
+ *        • Открывает NON-BLOCKING SOCKET к 127.0.0.1:relayPort.
+ *        • Регистрирует tcp_recv/tcp_sent/tcp_err на pcb + запускает per-flow
+ *          «socket→pcb» ридер-тред.  «pcb→socket» половина работает целиком
+ *          в engine-треде через tcp_recv-callback.
+ *        • Опционально вызывает onFlow(FlowMeta{originalDstIp, port, ...}).
+ *
+ * NO_SYS notes:
+ *   • lwIP_init() вызывается ЕДИНОЖДЫ на процесс — повторный Start после Stop
+ *     в текущем WP не поддерживается (см. Start() ниже, guard'ится флагом
+ *     s_lwip_inited).  Причин две: (а) lwip_init не имеет обратной
+ *     lwip_deinit, (б) наш netif удаляется через netif_remove при Stop, но
+ *     подсистемы вроде mempool остаются в глобальном состоянии — Start после
+ *     Stop может выделять из «мусора».  WP10, если понадобится, обернёт это.
+ *   • Весь TCP-API lwIP вызывается ТОЛЬКО из engine-треда.  Все внешние
+ *     события (socket-half ридеры) синхронизируются с ним через SRWLOCK
+ *     `m_core_lock` — критическая секция вокруг любого вызова
+ *     tcp_write/tcp_recved/tcp_output/tcp_close.
+ *
+ * ЭТОТ WP не подключает движок к сервису.  WP10 обернёт его в WintunCapture.
+ */
+
+#define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <windows.h>
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+
+#include "ITunEngine.h"
+#include "WintunSession.h"
+
+namespace tcp_redirector {
+namespace infrastructure {
+namespace capture {
+namespace wintun {
+
+/**
+ * @brief Метаданные принятого TCP-flow (для observer-хука).
+ *
+ * Заполняются в момент tcp_accept ДО того, как байты начали течь.  Строки
+ * IP — точечная форма (a.b.c.d).  Порты — host byte order.
+ */
+struct FlowMeta {
+    std::string original_dst_ip;   //!< dotted-IPv4, например "10.6.7.42".
+    uint16_t    original_dst_port; //!< host byte order.
+    std::string source_ip;         //!< dotted-IPv4 источника (TUN-side ephemeral).
+    uint16_t    source_port;       //!< host byte order.
+};
+
+/**
+ * @brief Встроенный tun2socks-движок (реализация ITunEngine).
+ *
+ * Все методы, кроме конструктора/Start/Stop, потоко-безопасны.
+ */
+class Tun2SocksEngineEmbedded : public ITunEngine {
+public:
+    /**
+     * @brief Конструктор.
+     *
+     * @param session   Уже открытая WintunSession (owned выше по стеку).
+     *                  Мы держим shared_ptr — движок не переживает сессию,
+     *                  но и наоборот тоже: Stop() не закрывает сессию.
+     * @param relay_port Порт локального TcpRelayServer (127.0.0.1:relay_port).
+     *                   Именно туда движок форвардит каждый принятый flow.
+     * @param on_flow   [опционально] observer, вызываемый при каждом
+     *                  успешно установленном flow'е.  Выполняется в engine-треде;
+     *                  callback обязан быть быстрым, иначе он тормозит весь стек.
+     */
+    Tun2SocksEngineEmbedded(std::shared_ptr<WintunSession> session,
+                            uint16_t relay_port,
+                            std::function<void(const FlowMeta&)> on_flow = {});
+
+    ~Tun2SocksEngineEmbedded() override;
+
+    Tun2SocksEngineEmbedded(const Tun2SocksEngineEmbedded&) = delete;
+    Tun2SocksEngineEmbedded& operator=(const Tun2SocksEngineEmbedded&) = delete;
+    Tun2SocksEngineEmbedded(Tun2SocksEngineEmbedded&&) = delete;
+    Tun2SocksEngineEmbedded& operator=(Tun2SocksEngineEmbedded&&) = delete;
+
+    // --- ITunEngine ---
+    bool Start(std::string* outError) override;
+    void Stop() override;
+    uint64_t RxBytes() const override { return m_rx_bytes.load(std::memory_order_relaxed); }
+    uint64_t TxBytes() const override { return m_tx_bytes.load(std::memory_order_relaxed); }
+    uint32_t ActiveFlows() const override { return m_active_flows.load(std::memory_order_relaxed); }
+
+private:
+    // Полное объявление скрыто в .cpp — здесь только opaque struct fwd
+    // (per-flow state держит tcp_pcb*, socket, буферы, ридер-тред).
+    struct Flow;
+
+    // engine-thread entry
+    void EngineThreadMain();
+
+    // per-flow socket-half reader thread entry
+    void FlowSocketReader(Flow* flow);
+
+    // lwIP callback trampolines живут в анонимном namespace .cpp — их
+    // сигнатуры зависят от lwIP-типов, а тянуть lwIP-headers в .h мы не хотим
+    // (весь наружный API этого класса — pure C++/WinAPI).  friend-декларация
+    // нужна, чтобы trampolines могли достучаться до приватного состояния.
+    friend struct EngineTramp;
+
+    // Утилиты
+    void CloseFlow(Flow* flow, bool from_engine_thread);
+
+    // --- члены ---
+    std::shared_ptr<WintunSession> m_session;
+    uint16_t                       m_relay_port;
+    std::function<void(const FlowMeta&)> m_on_flow;
+
+    HANDLE                         m_stop_event = nullptr;
+    std::thread                    m_engine_thread;
+    std::atomic<bool>              m_running{false};
+
+    // Глобальный «core lock» — единая критическая секция вокруг любого вызова
+    // lwIP API из «внешних» тредов (socket-half ридеры).  engine-тред держит
+    // его перманентно, пока крутится — беря/отдавая только на wait'ах.
+    // Реализация: std::recursive_mutex (сокет-ридер держит его пока пушит
+    // байты и обновляет счётчики).
+    mutable std::recursive_mutex   m_core_lock;
+
+    // Список активных flow'ов.  key — void* на pcb (только для быстрой
+    // диагностики; owning storage — unique_ptr в значении).
+    std::mutex                     m_flows_mu;
+    std::unordered_map<void*, std::unique_ptr<Flow>> m_flows;
+
+    // Указатели на lwIP-объекты (void*, чтобы не тянуть lwIP-headers в .h)
+    void*                          m_netif = nullptr;        // struct netif*
+    void*                          m_listen_pcb = nullptr;   // struct tcp_pcb*
+
+    // Счётчики для ITunEngine
+    std::atomic<uint64_t>          m_rx_bytes{0};
+    std::atomic<uint64_t>          m_tx_bytes{0};
+    std::atomic<uint32_t>          m_active_flows{0};
+
+    // Одноразовая инициализация lwIP (per-process).  См. Start() и §"NO_SYS notes"
+    // выше — Start после Stop в v1 не поддерживается.
+    static std::atomic<bool>       s_lwip_inited;
+};
+
+} // namespace wintun
+} // namespace capture
+} // namespace infrastructure
+} // namespace tcp_redirector

@@ -25,6 +25,7 @@
 #include "../../domain/entities/ProxyConfig.h"
 #include "../../infrastructure/auth/auth_sspi.h"
 #include "../utf8_convert.h"
+#include "Socks5Adapter.h"     // WP12a — optional SOCKS5 upstream listener
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -143,6 +144,16 @@ public:
         if (!m_running) return;
         m_running = false;
 
+        // WP12a — tear down SOCKS5 listener BEFORE closing the WinDivert
+        // listen sockets, so no new SOCKS5 handshakes race with WSACleanup().
+        // Handed-off SOCKS5 sockets are already accounted for in m_activePairs.
+        if (m_socks5) {
+            m_socks5->Stop();
+            m_socks5.reset();
+        }
+        m_socks5BindHost.clear();
+        m_socks5BindPort = 0;
+
         if (m_listenSock != INVALID_SOCKET) {
             shutdown(m_listenSock, SD_BOTH);
             closesocket(m_listenSock);
@@ -172,7 +183,123 @@ public:
 
     uint16_t GetPort() const override { return m_relayPort; }
 
+    // ---- WP12a — SOCKS5 adapter listener ---------------------------------
+    //
+    // Optionally start a SOCKS5 listener that forwards accepted connections
+    // into the SAME accept path used by WinDivert loopback flows.
+    //
+    // Idempotent: calling twice with the same bind is a no-op; calling with
+    // a different bind first disables the previous listener.
+    // Safe to call before OR after Start() — the listener is independent of
+    // the main relay's INADDR_ANY listener; both live in this object.
+    //
+    // Activated ONLY by ServiceMain when capture_mode="wintun" AND
+    // wintun.engine="external".  No other code path calls this.
+    bool EnableSocks5Listener(const std::string& bind_host,
+                              uint16_t bind_port,
+                              std::string* outError) {
+        // Idempotent: reuse existing adapter if bind matches.
+        if (m_socks5) {
+            if (m_socks5BindHost == bind_host && m_socks5BindPort == bind_port
+                && m_socks5->IsRunning()) {
+                return true;
+            }
+            // Different bind or dead adapter — tear it down first.
+            m_socks5->Stop();
+            m_socks5.reset();
+        }
+
+        relay::Socks5Adapter::Deps deps{};
+        deps.log = m_logSink;
+        deps.handOff = [this](SOCKET c, uint32_t orig_dst_ip_be,
+                              uint16_t orig_dst_port_host) {
+            this->EnrollSocks5Connection(c, orig_dst_ip_be, orig_dst_port_host);
+        };
+
+        m_socks5 = std::make_unique<relay::Socks5Adapter>(
+            bind_host, bind_port, std::move(deps));
+
+        if (!m_socks5->Start(outError)) {
+            m_socks5.reset();
+            return false;
+        }
+        m_socks5BindHost = bind_host;
+        m_socks5BindPort = bind_port;
+        return true;
+    }
+
+    void DisableSocks5Listener() {
+        if (m_socks5) {
+            m_socks5->Stop();
+            m_socks5.reset();
+        }
+        m_socks5BindHost.clear();
+        m_socks5BindPort = 0;
+    }
+
+    bool Socks5Enabled() const {
+        return m_socks5 && m_socks5->IsRunning();
+    }
+
 private:
+    // WP12a — feed a freshly-accepted SOCKS5 socket into the same handler
+    // that WinDivert loopback flows use.
+    //
+    // This is a STRICT extension of the accept path — no refactoring of
+    // HandleNewConnection was required.  The WinDivert path inserts the
+    // (client_port → orig_dst) mapping BEFORE the relay accepts the socket
+    // (via IConnectionTable::Add in the WinDivert capture callback); the
+    // SOCKS5 path has to insert that same mapping HERE, because the socket
+    // arrived from tun2socks which never touched ConnectionTable.  After
+    // Add(...) we call the exact same HandleNewConnection() the WinDivert
+    // AcceptLoop calls.  Byte pump, HTTP CONNECT, Basic/Kerberos auth, TLS
+    // handling and stats all live inside HandleNewConnection → they are
+    // shared 1:1 with the WinDivert path.  There is no duplication of
+    // relay logic.
+    void EnrollSocks5Connection(SOCKET c,
+                                uint32_t orig_dst_ip_be,
+                                uint16_t orig_dst_port_host) {
+        // getpeername → ephemeral src port of tun2socks' client-side socket.
+        sockaddr_in peer{};
+        int addrlen = sizeof(peer);
+        if (getpeername(c, (sockaddr*)&peer, &addrlen) != 0) {
+            Log(domain::LogLevel::Error,
+                "SOCKS5 enroll: getpeername failed: "
+                + std::to_string(WSAGetLastError()));
+            closesocket(c);
+            return;
+        }
+        const uint16_t client_port = ntohs(peer.sin_port);
+        const uint32_t client_ip_be = peer.sin_addr.s_addr;
+
+        // Register the mapping so HandleNewConnection's ConnectionTable::Get
+        // hit works exactly like it does for the WinDivert path.
+        // proxy_config_id=1 matches the default used by SetProxyConfig().
+        m_connTable.Add(client_port,
+                        client_ip_be,
+                        orig_dst_ip_be,
+                        orig_dst_port_host,
+                        m_proxyConfigId);
+
+        Log(domain::LogLevel::Debug,
+            "SOCKS5 enroll: client_port=" + std::to_string(client_port)
+            + " → orig_dst=" + Ipv4BeToStr(orig_dst_ip_be)
+            + ":" + std::to_string(orig_dst_port_host));
+
+        // Exact same entry point the WinDivert AcceptLoop uses.  is_ipv6=false
+        // because the SOCKS5 listener is bound to 127.0.0.1 (IPv4) — SOCKS5
+        // IPv6 handshakes (ATYP=0x04) are rejected in Socks5Adapter before
+        // we ever reach here.
+        HandleNewConnection(c, client_port, /*is_ipv6*/false, /*client_addr6*/nullptr);
+    }
+
+    static std::string Ipv4BeToStr(uint32_t be) {
+        char buf[INET_ADDRSTRLEN] = {};
+        struct in_addr in; in.s_addr = be;
+        InetNtopA(AF_INET, &in, buf, sizeof(buf));
+        return buf;
+    }
+
     void AcceptLoop() {
         while (m_running) {
             fd_set read_fds;
@@ -630,6 +757,12 @@ private:
 
     std::atomic<uint64_t> m_totalRxBytes{0};
     std::atomic<uint64_t> m_totalTxBytes{0};
+
+    // WP12a — optional SOCKS5 upstream listener (nullptr unless enabled by
+    // ServiceMain for capture_mode=wintun + wintun.engine=external).
+    std::unique_ptr<relay::Socks5Adapter> m_socks5;
+    std::string m_socks5BindHost;
+    uint16_t    m_socks5BindPort = 0;
 };
 
 } // namespace infrastructure

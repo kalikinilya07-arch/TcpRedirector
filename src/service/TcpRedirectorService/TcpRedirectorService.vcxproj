@@ -46,7 +46,13 @@
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;_WINSOCK_DEPRECATED_NO_WARNINGS;WIN32;_WINDOWS;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..\..\external;$(ProjectDir)..\..\..\external\boost</AdditionalIncludeDirectories>
+      <!--
+        Include order matters for lwIP (WP9):
+          - $(ProjectDir)infrastructure\capture\wintun\lwip   → наш lwipopts.h, arch/cc.h, arch/sys_arch.h, lwip_hooks.h
+          - $(ProjectDir)..\..\..\external\lwip\src\include   → vendor'ные lwip/*.h
+        Vendor-исходники редактировать нельзя (см. WP9 в WINTUN_INTEGRATION_PLAN.md §11).
+      -->
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..\..\external;$(ProjectDir)..\..\..\external\boost;$(ProjectDir)infrastructure\capture\wintun\lwip;$(ProjectDir)..\..\..\external\lwip\src\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -60,16 +66,70 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="infrastructure\capture\WinDivertCapture.cpp" />
+    <ClCompile Include="infrastructure\capture\WintunCapture.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\WintunApi.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\WintunAdapter.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\WintunSession.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\Tun2SocksEngineEmbedded.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\Tun2SocksEngineExternal.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\RouteInstaller.cpp" />
+    <!-- WP12: process supervisor (Job Object + pipes + restart backoff) -->
+    <ClCompile Include="infrastructure\process\ChildProcessSupervisor.cpp" />
     <ClCompile Include="infrastructure\config\ConfigManager.cpp" />
     <ClCompile Include="infrastructure\logging\Logger.cpp" />
     <ClCompile Include="infrastructure\stats\StatsCollector.cpp" />
     <ClCompile Include="infrastructure\auth\auth_sspi.cpp" />
+    <!-- WP9: lwIP glue (project-owned) -->
+    <ClCompile Include="infrastructure\capture\wintun\lwip\sys_now_msvc.cpp" />
+    <ClCompile Include="infrastructure\capture\wintun\lwip\lwip_hooks_impl.c" />
+    <!-- WP9: vendored lwIP 2.2.0 sources (external\lwip\src) — DO NOT EDIT.
+         Отбор файлов согласован с lwipopts.h:
+           LWIP_TCP=1, LWIP_IPV4=1, LWIP_IPV6=0, LWIP_ETHERNET=0, LWIP_UDP=0,
+           LWIP_DNS=0, LWIP_DHCP=0, LWIP_AUTOIP=0, LWIP_IGMP=0.
+         Всё, что относится к IPv6/UDP/DNS/DHCP/эзернет-стеку и т.п., НЕ включаем.
+         (файлы всё равно скомпилировались бы «пусто» из-за opt.h #ifdef'ов, но
+         не платим за них ссылками и временем сборки.) -->
+    <ClCompile Include="..\..\..\external\lwip\src\core\init.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\def.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\inet_chksum.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\ip.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\mem.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\memp.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\netif.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\pbuf.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\raw.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\stats.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\sys.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\tcp.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\tcp_in.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\tcp_out.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\timeouts.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\altcp.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\altcp_alloc.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\altcp_tcp.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\ipv4\ip4.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\ipv4\ip4_addr.c" />
+    <ClCompile Include="..\..\..\external\lwip\src\core\ipv4\ip4_frag.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="infrastructure\relay\ConnectionTable.h" />
     <ClInclude Include="infrastructure\relay\TcpRelayServer.h" />
+    <ClInclude Include="infrastructure\relay\Socks5Adapter.h" />
     <ClInclude Include="infrastructure\capture\WinDivertCapture.h" />
     <ClInclude Include="infrastructure\capture\WintunCapture.h" />
+    <ClInclude Include="infrastructure\capture\wintun\WintunApi.h" />
+    <ClInclude Include="infrastructure\capture\wintun\WintunAdapter.h" />
+    <ClInclude Include="infrastructure\capture\wintun\WintunSession.h" />
+    <ClInclude Include="infrastructure\capture\wintun\ITunEngine.h" />
+    <ClInclude Include="infrastructure\capture\wintun\Tun2SocksEngineEmbedded.h" />
+    <ClInclude Include="infrastructure\capture\wintun\Tun2SocksEngineExternal.h" />
+    <ClInclude Include="infrastructure\capture\wintun\RouteInstaller.h" />
+    <ClInclude Include="infrastructure\process\ChildProcessSupervisor.h" />
+    <ClInclude Include="infrastructure\capture\wintun\lwip\lwipopts.h" />
+    <ClInclude Include="infrastructure\capture\wintun\lwip\lwip_hooks.h" />
+    <ClInclude Include="infrastructure\capture\wintun\lwip\arch\cc.h" />
+    <ClInclude Include="infrastructure\capture\wintun\lwip\arch\sys_arch.h" />
+    <ClInclude Include="..\..\..\external\wintun\wintun.h" />
     <ClInclude Include="adapters\driven\ProxyEngine.h" />
     <ClInclude Include="adapters\driving\ServiceMain.h" />
     <ClInclude Include="adapters\driving\IpcHandler.h" />

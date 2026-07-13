@@ -2,92 +2,107 @@
 
 /**
  * @file WintunCapture.h
- * @brief WP6 stub-реализация Wintun-based capture-движка.
+ * @brief WP10 — реальный ICapture-фасад для Wintun-based режима захвата.
  *
- * ЭТОТ ФАЙЛ — ЗАГЛУШКА, ВНЕСЁННАЯ В РАМКАХ WP6.
- * Полная реализация появится в WP8..WP10 (см. plans/WINTUN_INTEGRATION_PLAN.md
- * §6, §11).  Здесь мы:
- *   • реализуем весь ICapture-контракт минимальными безопасными no-op-ами,
- *   • при выборе режима capture_mode="wintun" сервис компилируется и запускается,
- *   • Open() ЛОГИРУЕТ INFO-строку и возвращает true, чтобы preflight WP7
- *     (а не эта заглушка) отвечал за отказ, когда рантайм-поддержка отсутствует,
- *   • НЕ грузит wintun.dll, НЕ создаёт адаптер, НЕ поднимает потоки/сокеты.
+ * WP10 ЗАМЕНИЛ WP6-ЗАГЛУШКУ:
+ *   Класс теперь ДЕЙСТВИТЕЛЬНО поднимает Wintun-стек:
+ *     1) Загружает wintun.dll (WintunApi).
+ *     2) Создаёт/открывает адаптер (WintunAdapter) с опциональным
+ *        стабильным GUID из WintunSettings.
+ *     3) Назначает IPv4-адрес адаптеру (WintunAdapter::ConfigureIpv4).
+ *     4) Ставит split-tunnel маршруты 0.0.0.0/1 + 128.0.0.0/1 через
+ *        RouteInstaller (Option 2b, §6.7-§6.8 плана).
+ *     5) Открывает data-сессию (WintunSession).
+ *     6) Поднимает встроенный tun2socks-движок
+ *        (Tun2SocksEngineEmbedded, ITunEngine), который принимает
+ *        TCP-соединения из TUN'а и форвардит их на 127.0.0.1:relay_port.
  *
- * Сохраняем WintunSettings как член класса — WP10 будет из них читать
- * adapter_name / tunnel_ipv4_cidr / mtu / engine и т.д.
+ *   Только engine="embedded" поддерживается в WP10. External-движок и
+ *   Socks5Adapter появятся в WP12/WP12a.
+ *
+ * TEARDOWN (Close):
+ *   LIFO-порядок: engine.Stop → session end → маршруты Uninstall →
+ *   адаптер Close → API Unload.  Каждый шаг идемпотентен и не бросает —
+ *   мы хотим, чтобы Close всегда доводил уборку до конца.
+ *
+ * RULE ENGINE:
+ *   Wintun-путь по Option 2b маршрутизирует ВЕСЬ IPv4-TCP через туннель.
+ *   Фильтрация по PID/процессу внутри движка — задача WP-hardening; здесь
+ *   мы только сохраняем указатель, чтобы позже не менять контракт.
+ *
+ * STATS:
+ *   RX/TX-байты и число активных flow'ов берутся у ITunEngine (если он
+ *   поднят); иначе — нули.
  */
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <atomic>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 #include "../../domain/ports/ICapture.h"
-#include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/ports/IConnectionMonitor.h"
+#include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/services/RuleEngine.h"
 #include "../config/Config.h"
 
 namespace tcp_redirector {
 namespace infrastructure {
+namespace capture {
+namespace wintun {
+class WintunApi;
+class WintunAdapter;
+class WintunSession;
+class ITunEngine;
+} // namespace wintun
+} // namespace capture
 
 /**
- * @brief Заглушка Wintun-based capture — WP6.
+ * @brief ICapture-реализация на базе Wintun + tun2socks (embedded).
  *
- * Реализует ICapture так, чтобы жизненный цикл сервиса корректно проходил
- * с capture_mode="wintun".  Единственное побочное действие — одна INFO-запись
- * при Open().  Остальные операции — безопасные no-op-ы, возвращающие нули.
+ * ВНЕШНИЙ КОНТРАКТ — тот же, что у [`WinDivertCapture`](WinDivertCapture.h:41):
+ *   Open/Close/IsOpen + ICapture-геттеры/сеттеры.  Внутри — совсем другой
+ *   механизм: не WinDivert-фильтр, а полноценный TUN-интерфейс с
+ *   пользовательским TCP-стеком (lwIP) внутри.
  */
 class WintunCapture : public domain::ports::ICapture {
 public:
     /**
      * @brief Конструктор.
-     * @param settings Настройки Wintun-секции (сохраняются для WP10).
-     * @param logSink  Опциональный ILogSink — если задан, при Open() пишется
-     *                 INFO-строка о выборе Wintun-режима.
+     *
+     * @param settings    Настройки секции wintun из config.json (копия).
+     * @param relay_port  Порт локального TcpRelayServer.  Именно в этот
+     *                    порт embedded-движок будет форвардить каждое
+     *                    принятое из туннеля TCP-соединение.
+     * @param log         Опциональный ILogSink.  Может быть nullptr — тогда
+     *                    капчур молча делает свою работу без логов.
      */
-    explicit WintunCapture(WintunSettings settings,
-                           domain::ports::ILogSink* logSink = nullptr)
-        : m_settings(std::move(settings)),
-          m_logSink(logSink) {
-    }
+    WintunCapture(WintunSettings settings,
+                  uint16_t relay_port,
+                  domain::ports::ILogSink* log = nullptr);
 
-    ~WintunCapture() override = default;
+    ~WintunCapture() override;
+
+    WintunCapture(const WintunCapture&) = delete;
+    WintunCapture& operator=(const WintunCapture&) = delete;
+    WintunCapture(WintunCapture&&) = delete;
+    WintunCapture& operator=(WintunCapture&&) = delete;
 
     // --- ICapture: жизненный цикл ---
 
-    /**
-     * @brief WP6 stub: логирует INFO и возвращает true.
-     *
-     * НЕ грузит wintun.dll, НЕ создаёт адаптер, НЕ поднимает потоки.
-     * Реальный отказ ("wintun.dll не найден", "нет админ-прав" и т.п.)
-     * — задача preflight WP7, а не этой заглушки.
-     */
-    bool Open() override {
-        if (m_logSink) {
-            m_logSink->Log(
-                domain::LogLevel::Info,
-                "wintun",
-                "[WintunCapture] Selected \xE2\x80\x94 full implementation lands in WP10.");
-        }
-        m_opened = true;
-        return true;
-    }
+    bool Open() override;
+    void Close() override;
+    bool IsOpen() const override { return m_open.load(std::memory_order_acquire); }
 
-    void Close() override {
-        // No-op: ничего не открывали.
-        m_opened = false;
-    }
-
-    bool IsOpen() const override { return m_opened; }
-
-    // --- ICapture: конфигурация захвата (setters сохраняют, ничего не делают) ---
+    // --- ICapture: конфигурация (в Wintun-режиме частично no-op) ---
 
     void SetTargetProcess(const std::wstring& exePath) override {
-        // Wintun-режим матчит через RuleEngine (apps[]); поле сохраняется
-        // только для совместимости.
+        // В Wintun-режиме матчинг делает RuleEngine (apps[]).  Поле сохраняем
+        // только для симметрии с WinDivertCapture и потенциального логирования.
         m_targetProcessPath = exePath;
     }
 
@@ -102,66 +117,85 @@ public:
         m_connTable = table;
     }
 
-    // --- ICapture: события перенаправления (заглушки) ---
+    // --- ICapture: события перенаправления (в Wintun-режиме не используются) ---
 
     std::vector<domain::RedirectEvent> GetPendingRedirects(
-        uint32_t /*timeout_ms*/ = 1000) override {
-        return {};
-    }
+        uint32_t /*timeout_ms*/ = 1000) override { return {}; }
 
     bool AckRedirect(uint64_t /*redirect_id*/) override { return true; }
 
     // --- ICapture: статистика/системные ---
 
     domain::DriverStats GetStats() override { return {}; }
-
     void* GetEventHandle() const override { return nullptr; }
 
-    // --- WP6: полиморфные accessor-ы (переопределяют ICapture) ---
+    // --- ICapture: полиморфные accessor-ы (WP6) ---
 
     bool SetRuleEngine(domain::services::RuleEngine* engine) override {
         m_ruleEngine = engine;
         return true;
     }
 
-    uint64_t GetTotalRxBytes()       const override { return 0; }
-    uint64_t GetTotalTxBytes()       const override { return 0; }
-    uint32_t GetActiveConnections()  const override {
-        return m_connTable
-            ? static_cast<uint32_t>(m_connTable->GetTrackedCount())
-            : 0u;
-    }
+    uint64_t GetTotalRxBytes()  const override;
+    uint64_t GetTotalTxBytes()  const override;
+    uint32_t GetActiveConnections() const override;
 
-    // --- Инфраструктурные setters (не в ICapture, но повторяют форму WinDivertCapture) ---
+    // --- Инфраструктурные setters (не в ICapture, симметрия с WinDivertCapture) ---
 
-    void SetLogSink(domain::ports::ILogSink* sink) { m_logSink = sink; }
+    void SetLogSink(domain::ports::ILogSink* sink) { m_log = sink; }
     void SetConnectionMonitor(domain::ports::IConnectionMonitor* mon) {
         m_connectionMonitor = mon;
     }
 
-    // Доступ к сохранённым настройкам (WP10 подхватит).
+    /// Read-only доступ к сохранённым Wintun-настройкам.
     const WintunSettings& GetSettings() const { return m_settings; }
 
 private:
-    // Сохранённые настройки Wintun (WP10 consume).
-    WintunSettings m_settings;
+    // Аккуратный TearDown — вызывается из Close() и из ветвей ошибки в Open().
+    // Идемпотентен, порядок LIFO (см. §6.6 плана).
+    void TearDown();
 
-    // Логирование (может быть nullptr — тогда Open() тихо возвращает true).
-    domain::ports::ILogSink* m_logSink = nullptr;
+    // Разбирает "a.b.c.d/N" из WintunSettings.tunnel_ipv4_cidr и возвращает
+    // host-часть как wide-строку "a.b.c.d" — используется как next-hop
+    // для split-tunnel маршрутов (сам TUN-интерфейс является шлюзом).
+    // false при ошибке парсинга (пишет outError).
+    static bool ExtractGatewayFromCidr(const std::string& cidr,
+                                       std::wstring& gwOut,
+                                       std::string* outError);
 
-    // ICapture wiring.
-    domain::ports::IConnectionTable*        m_connTable         = nullptr;
-    domain::ports::IConnectionMonitor*      m_connectionMonitor = nullptr;
-    domain::services::RuleEngine*           m_ruleEngine        = nullptr;
+    // Опционально парсит adapter_guid из WintunSettings в GUID.  Если поле
+    // пустое или некорректное — возвращает std::nullopt (адаптер получит
+    // случайный GUID от wintun'а).
+    static bool TryParseGuid(const std::string& s, GUID& out);
 
-    // Сохранённая конфигурация (для WP10).
-    std::wstring m_targetProcessPath;
-    std::string  m_proxyHost;
-    uint16_t     m_proxyPort = 0;
-    uint16_t     m_relayPort = 0;
+    // Логирование — тонкая обёртка вокруг ILogSink с nullptr-guard'ом.
+    void LogInfo (const std::string& msg) const;
+    void LogWarn (const std::string& msg) const;
+    void LogError(const std::string& msg) const;
+    void LogDebug(const std::string& msg) const;
 
-    // Псевдо-состояние жизненного цикла.
-    bool m_opened = false;
+    // --- Настройки ---
+
+    WintunSettings                             m_settings;
+    uint16_t                                   m_relayPort;
+    domain::ports::ILogSink*                   m_log = nullptr;
+    domain::services::RuleEngine*              m_ruleEngine = nullptr;
+    domain::ports::IConnectionTable*           m_connTable = nullptr;
+    domain::ports::IConnectionMonitor*         m_connectionMonitor = nullptr;
+    std::wstring                               m_targetProcessPath;
+    std::string                                m_proxyHost;
+    uint16_t                                   m_proxyPort = 0;
+
+    // --- Runtime state ---
+
+    // shared_ptr — сессия/движок держат живой API, пока живы они.
+    std::shared_ptr<capture::wintun::WintunApi>     m_api;
+    std::unique_ptr<capture::wintun::WintunAdapter> m_adapter;
+    std::shared_ptr<capture::wintun::WintunSession> m_session;
+    std::unique_ptr<capture::wintun::ITunEngine>    m_engine;
+    bool                                       m_routesInstalled = false;
+
+    std::atomic<bool>                          m_open{false};
 };
 
 } // namespace infrastructure
