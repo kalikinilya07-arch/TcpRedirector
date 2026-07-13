@@ -76,15 +76,60 @@ if errorlevel 1 echo [FAIL] & pause & exit /b 1
 copy /Y "build\service\x64\Release\TcpRedirectorService.exe" "%ROOT%\build\" >nul 2>&1
 echo [OK]
 
-:: Copy WinDivert.dll + WinDivert64.sys to build directory
+:: --------------------------------------------------------------------
+:: Copy WinDivert.dll + WinDivert64.sys to build\ (OPTIONAL - service
+:: only needs them when capture_mode="windivert").  Missing files are
+:: NOT a build failure per WP13; wintun-only users may not have them.
+:: --------------------------------------------------------------------
 if exist "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" (
     copy /Y "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
     copy /Y "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert64.sys" "%ROOT%\build\" >nul 2>&1
+    echo     [OK] WinDivert.dll + WinDivert64.sys copied
 ) else if exist "%ROOT%\deploy\WinDivert.dll" (
     copy /Y "%ROOT%\deploy\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
     if exist "%ROOT%\deploy\WinDivert64.sys" (
         copy /Y "%ROOT%\deploy\WinDivert64.sys" "%ROOT%\build\" >nul 2>&1
     )
+    echo     [OK] WinDivert copied from deploy\
+) else (
+    echo     [SKIP] WinDivert not found - build will run in wintun-only mode
+)
+
+:: --------------------------------------------------------------------
+:: WP13: Copy Wintun.dll (x64) from .bin\ to build\ if present.
+:: Absence is NOT a failure - WinDivert-only builds are still valid.
+:: --------------------------------------------------------------------
+if exist "%ROOT%\.bin\wintun\x64\wintun.dll" (
+    copy /Y "%ROOT%\.bin\wintun\x64\wintun.dll" "%ROOT%\build\" >nul 2>&1
+    echo     [OK] wintun.dll (x64) copied
+) else if exist "%ROOT%\.bin\wintun.dll" (
+    copy /Y "%ROOT%\.bin\wintun.dll" "%ROOT%\build\" >nul 2>&1
+    echo     [OK] wintun.dll copied
+) else (
+    echo     [SKIP] wintun.dll not found in .bin\ - wintun mode will fail preflight until admin drops it in
+)
+
+:: --------------------------------------------------------------------
+:: WP13: Copy tun2socks.exe (external engine child process) if present.
+:: Only consulted when wintun.engine="external"; absence is fine.
+:: --------------------------------------------------------------------
+if exist "%ROOT%\.bin\tun2socks\tun2socks.exe" (
+    if not exist "%ROOT%\build\.bin\tun2socks" mkdir "%ROOT%\build\.bin\tun2socks" >nul 2>&1
+    copy /Y "%ROOT%\.bin\tun2socks\tun2socks.exe" "%ROOT%\build\.bin\tun2socks\" >nul 2>&1
+    echo     [OK] tun2socks.exe copied to build\.bin\tun2socks\
+) else (
+    echo     [SKIP] tun2socks.exe not found in .bin\tun2socks\ - external engine will fail preflight if selected
+)
+
+:: --------------------------------------------------------------------
+:: WP13: Seed config.default.json into build\ if a shipped default
+:: exists.  If absent, CreateDefaultConfig() runs at first service start.
+:: --------------------------------------------------------------------
+if exist "%ROOT%\installer\config.default.json" (
+    copy /Y "%ROOT%\installer\config.default.json" "%ROOT%\build\config.default.json" >nul 2>&1
+    echo     [OK] config.default.json seed copied
+) else (
+    echo     [SKIP] no installer\config.default.json seed - service will self-generate on first run
 )
 
 echo.

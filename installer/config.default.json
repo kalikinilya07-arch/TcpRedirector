@@ -1,0 +1,51 @@
+{
+    "config_version": 2,
+    "capture_mode": "windivert",
+
+    "app": {
+        "exePath": ""
+    },
+
+    "proxy": {
+        "host": "127.0.0.1",
+        "port": 8888,
+        "enabled": true
+    },
+
+    "auth": {
+        "enabled": false,
+        "kerberos": false,
+        "username": "",
+        "encryptedPassword": ""
+    },
+
+    "log": {
+        "level": 2,
+        "fileEnabled": true,
+        "maxSizeMB": 10
+    },
+
+    "stats": {
+        "updateIntervalMs": 2000
+    },
+
+    "wintun": {
+        "adapter_name": "TcpRedirector",
+        "adapter_guid": "",
+        "tunnel_ipv4_cidr": "10.6.7.1/24",
+        "tunnel_ipv6_cidr": "",
+        "mtu": 1500,
+        "engine": "embedded",
+        "external_engine": {
+            "executable": ".bin/tun2socks/tun2socks.exe",
+            "extra_args": [],
+            "socks5_listen": "127.0.0.1:1080",
+            "restart_on_crash": true,
+            "restart_backoff_ms": 2000
+        }
+    },
+
+    "apps": [],
+
+    "rules": []
+}
