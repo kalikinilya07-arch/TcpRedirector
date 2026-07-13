@@ -1,7 +1,7 @@
 # Руководство администратора — TcpRedirector
 
 **Версия:** 1.0.0  
-**Дата:** 10.07.2026  
+**Дата:** 13.07.2026  
 **Ветка:** `fix/remediation-phase1-4`
 
 ---
@@ -48,7 +48,7 @@ TcpRedirector — сервис прозрачного перехвата и пе
 | `TcpRedirectorService.exe` | `%ProgramData%\TcpRedirector\` | Windows-сервис (основной процесс) |
 | `TcpRedirectorGUI.exe` | `%ProgramData%\TcpRedirector\gui\` | Графический интерфейс управления |
 | `WinDivert.dll` | `%ProgramData%\TcpRedirector\` | Библиотека перехвата пакетов |
-| `WinDivert64.sys` | `%ProgramData%\TcpRedirector\` | Драйвер ядра NDIS |
+| `WinDivert64.sys` | `C:\Windows\System32\drivers\` | Драйвер ядра (устанавливается как служба) |
 | `config.json` | `%ProgramData%\TcpRedirector\` | Конфигурация |
 | `logs\` | `%ProgramData%\TcpRedirector\logs\` | Файлы логов |
 
@@ -57,14 +57,18 @@ TcpRedirector — сервис прозрачного перехвата и пе
 | Порт | Протокол | Назначение | Направление |
 |------|----------|-----------|-------------|
 | 34010 | TCP | TcpRelayServer — приём перенаправленных соединений | localhost |
-| 34011 | TCP | **УДАЛЁН** (бывший IPC) | — |
 | Named Pipe | IPC | `\\.\pipe\TcpRedirectorService` — связь GUI ↔ сервис | local |
 
 ### Учётные записи и права
 
-- **Сервис**: `SYSTEM` (устанавливается через SCM)
-- **GUI**: запускается от **Администратора** (требуется для Named Pipe с ACL)
-- **WinDivert**: требует прав Администратора / SYSTEM (драйвер ядра)
+| Действие | Кто выполняет | Требуемые права |
+|----------|--------------|-----------------|
+| **Установка** (1 раз) | Администратор | Администратор |
+| **Ежедневный запуск** GUI | Пользователь | **Не требуются** |
+| Сервис TcpRedirector | SYSTEM (SCM) | SYSTEM |
+| Драйвер WinDivert | Служба WinDivert (auto-start) | SYSTEM |
+
+**Важно:** После первичной установки администратором, пользователь запускает GUI без прав администратора. WinDivert работает как Windows-служба с автостартом.
 
 ---
 
@@ -79,15 +83,6 @@ TcpRedirector — сервис прозрачного перехвата и пе
 | Диск | ~100 MB (установка) + место под логи |
 | .NET | **Не требуется** (GUI self-contained) |
 
-### Права
-
-| Действие | Требуемые права |
-|----------|-----------------|
-| Установка сервиса | Администратор |
-| Запуск сервиса | Администратор / SYSTEM (авто) |
-| Запуск GUI | Администратор |
-| Редактирование config.json | Администратор |
-
 ### Upstream прокси
 
 | Требование | Примечание |
@@ -101,62 +96,108 @@ TcpRedirector — сервис прозрачного перехвата и пе
 
 ## 3. Установка
 
-### 3.1. Из релиза
+Установка состоит из двух этапов:
 
-Релиз находится в `releases\vX.Y.Z\`. Запуск **от Администратора**:
+1. **Администратор** (один раз): установка драйвера WinDivert + сервиса + настройка
+2. **Пользователь** (ежедневно): запуск GUI
+
+### 3.1. Подготовка: защита от антивируса
+
+Windows Defender может удалить драйвер WinDivert. Добавьте исключение **перед** установкой:
 
 ```batch
-cd C:\ProgramData\TcpRedirector
+:: Запустить от Администратора!
+powershell -Command "Add-MpPreference -ExclusionPath 'C:\ProgramData\TcpRedirector'"
+powershell -Command "Add-MpPreference -ExclusionPath 'C:\Windows\System32\drivers\WinDivert64.sys'"
+```
 
-:: 1. Копирование файлов
+### 3.2. Установка драйвера WinDivert (один раз, администратор)
+
+WinDivert работает как Windows-служба с автостартом. Это гарантирует, что:
+- Драйвер загружается при загрузке системы
+- Пользователь не требует прав администратора для работы
+- Антивирус не блокирует загрузку (если добавлено исключение)
+
+```batch
+:: Запустить от Администратора!
+
+:: Вариант A: через WinDivertInstall.exe (если есть в дистрибутиве)
+cd C:\ProgramData\TcpRedirector
+WinDivertInstall.exe install
+
+:: Вариант B: через sc (если WinDivertInstall.exe отсутствует)
+sc create WinDivert type= kernel binPath= "C:\Windows\System32\drivers\WinDivert64.sys"
+sc start WinDivert
+```
+
+Проверка:
+```batch
+sc query WinDivert
+:: Должен показать STATE: RUNNING
+```
+
+### 3.3. Установка сервиса TcpRedirector (один раз, администратор)
+
+```batch
+:: Запустить от Администратора!
+
+:: Копирование файлов
 mkdir C:\ProgramData\TcpRedirector\logs
 mkdir C:\ProgramData\TcpRedirector\gui
 
 copy TcpRedirectorService.exe C:\ProgramData\TcpRedirector\
 copy WinDivert.dll C:\ProgramData\TcpRedirector\
-copy WinDivert64.sys C:\ProgramData\TcpRedirector\
+copy WinDivert64.sys C:\Windows\System32\drivers\
 xcopy /E /I gui\* C:\ProgramData\TcpRedirector\gui\
 
-:: 2. Установка Windows-сервиса
+:: Установка сервиса
 C:\ProgramData\TcpRedirector\TcpRedirectorService.exe --install
 ```
 
-Результат: сервис `TcpRedirectorService` появляется в `services.msc`.
+Результат: сервис `TcpRedirectorService` появляется в `services.msc` с типом запуска `Automatic`.
 
-### 3.2. Регистрация драйвера WinDivert
-
-Драйвер регистрируется автоматически при первом запуске сервиса через `EnsureDriverRunning()`. При необходимости — ручная регистрация:
+### 3.4. Настройка конфигурации (администратор)
 
 ```batch
-sc create WinDivert type= kernel binPath= "C:\ProgramData\TcpRedirector\WinDivert64.sys"
-sc start WinDivert
+:: Создать config.json в C:\ProgramData\TcpRedirector\config.json
+:: См. раздел 4. Конфигурация
 ```
 
-### 3.3. Запуск
-
-> ⚠️ **Критически важно:** GUI требует запущенный сервис. Если запустить GUI без сервиса — он покажет "Disconnected" и статистика не будет отображаться. Named Pipe создаётся сервисом, GUI к нему подключается.
+### 3.5. Запуск сервиса (администратор)
 
 ```batch
-:: Способ 1: Быстрый запуск (из директории проекта)
-run.bat                          ← запускает сервис + GUI (от Администратора!)
-
-:: Способ 2: Windows-сервис + GUI
-sc start TcpRedirectorService    ← сервис (SYSTEM)
-C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe   ← GUI (Администратор)
-
-:: Способ 3: Консольный режим (для отладки)
-start /MIN C:\ProgramData\TcpRedirector\TcpRedirectorService.exe --console
-start C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe
+:: Запустить от Администратора!
+sc start TcpRedirectorService
 ```
 
-### 3.4. Удаление
+### 3.6. Ежедневный запуск GUI (пользователь, без прав администратора)
+
+После установки пользователь запускает GUI **без прав администратора**:
 
 ```batch
+:: Запускается обычным пользователем (двойной клик)
+C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe
+```
+
+GUI подключается к сервису через Named Pipe. Сервис и драйвер уже работают.
+
+### 3.7. Консольный режим (для отладки, администратор)
+
+```batch
+:: Запустить от Администратора!
+C:\ProgramData\TcpRedirector\TcpRedirectorService.exe --console
+```
+
+### 3.8. Удаление
+
+```batch
+:: Запустить от Администратора!
+
 :: Остановка и удаление сервиса
 sc stop TcpRedirectorService
 C:\ProgramData\TcpRedirector\TcpRedirectorService.exe --uninstall
 
-:: Удаление драйвера
+:: Удаление драйвера WinDivert
 sc stop WinDivert
 sc delete WinDivert
 
@@ -397,10 +438,8 @@ TcpRedirector использует **двухуровневую систему �
 Плановую ротацию можно форсировать через PowerShell (от Администратора):
 
 ```powershell
-# Установить minute = текущая минута + 1, дождаться срабатывания
-# Или перезапустить сервис — ротатор запустится с чистым last_rotate
-sc stop TcpRedirectorService
-sc start TcpRedirectorService
+# Принудительная ротация логов
+Restart-Service TcpRedirectorService
 ```
 
 ---
@@ -409,317 +448,233 @@ sc start TcpRedirectorService
 
 ### 6.1. Basic Authentication
 
-**Настройка через GUI:**
-1. Settings → Proxy → Auth Required: **включить**
-2. Username: ввести логин
-3. Password: ввести пароль
-4. Сохранить
+Логин задаётся в GUI, пароль шифруется через DPAPI (машина + пользователь SYSTEM).
 
-Пароль шифруется через **DPAPI** и хранится в `config.json` как `auth.encryptedPassword` (Base64). В открытом виде нигде не сохраняется.
-
-### 6.2. Kerberos/Negotiate (Windows-домен)
-
-**Требования:**
-- Машина в домене Active Directory
-- Сервис запущен от `SYSTEM` (машинный аккаунт) или доменного пользователя
-- Прокси поддерживает `Negotiate` (SPNEGO)
-
-**Настройка через GUI:**
-1. Settings → Proxy → Use Kerberos: **включить**
-2. Auth Required включится автоматически
-3. Сохранить
-
-**SPN прокси** формируется автоматически: `HTTP/<proxy_host>`.
-
-**Ограничение:** максимум 3 раунда SSPI-negotiation.
-
-### 6.3. Проверка Kerberos
-
-```powershell
-# Проверить наличие Kerberos-тикетов
-klist
-
-# Проверить доступность SPN прокси
-setspn -Q HTTP/proxyhost.domain.local
 ```
+GUI → DPAPI Encrypt → config.json (encryptedPassword)
+SCM/service → DPAPI Decrypt → HTTP CONNECT Proxy-Authorization: Basic ...
+```
+
+### 6.2. Kerberos / Negotiate
+
+Включается в GUI (Settings → Kerberos). Требования:
+
+- Windows-домен
+- Сервис TcpRedirector работает под `SYSTEM` (делегация доверена системе)
+- SPN `HTTP/{proxy-fqdn}` зарегистрирован в AD для компьютера
 
 ---
 
 ## 7. Проверка работоспособности
 
-### 7.1. Проверка сервиса
+### 7.1. После установки (администратор)
 
 ```batch
-:: Статус сервиса
-sc query TcpRedirectorService
-
-:: Должен быть: STATE: 4 RUNNING
-```
-
-### 7.2. Проверка драйвера WinDivert
-
-```batch
-:: Статус драйвера
+:: 1. Проверить драйвер WinDivert
 sc query WinDivert
+:: STATE: RUNNING
 
-:: Должен быть: STATE: 4 RUNNING
+:: 2. Проверить сервис
+sc query TcpRedirectorService
+:: STATE: RUNNING
+
+:: 3. Проверить Named Pipe
+powershell -Command "Get-ChildItem \\.\pipe\ -ErrorAction SilentlyContinue | Where-Object Name -eq 'TcpRedirectorService'"
+:: Должен быть в списке
+
+:: 4. Проверить лог сервиса
+type C:\ProgramData\TcpRedirector\logs\tcp_redirector.log
+:: Должен содержать "Service is running"
 ```
 
-### 7.3. Проверка через GUI
+### 7.2. Ежедневная проверка (пользователь)
 
-1. Запустить `gui\TcpRedirectorGUI.exe` от Администратора
-2. Нажать **Connect** — статус: "Connected"
-3. Вкладка **Stats**: отображается `Active Connections`, `Total Rx/Tx`
-4. Вкладка **Connections**: список активных соединений
-
-### 7.4. Проверка перенаправления
-
-1. Запустить целевое приложение (указанное в `app.exePath`)
-2. Выполнить действие, инициирующее TCP-соединение (открыть сайт)
-3. В GUI → Stats: `Active Connections` > 0
-4. В логах (`%ProgramData%\TcpRedirector\logs\tcp_redirector.log`):
-   ```
-   [INFO ] [relay       ] CONNECT <host>:<port> → 200 Established
-   ```
-
-### 7.5. Проверка Named Pipe (IPC)
-
-```batch
-:: Проверить доступность пайпа
-powershell -Command "Test-Path \\.\pipe\TcpRedirectorService"
-
-:: Должен вернуть: True
-```
+1. Запустить `C:\ProgramData\TcpRedirector\gui\TcpRedirectorGUI.exe`
+2. В правом нижнем углу должно быть: **Connected**
+3. Открыть вкладку **Stats** — должна отображаться статистика трафика
+4. Открыть вкладку **Connections** — должны отображаться активные соединения
 
 ---
 
 ## 8. Управление сервисом
 
-### 8.1. Команды SCM
+### 8.1. Через GUI
+
+Кнопки **Start** / **Stop** в главном окне GUI. GUI подключается к уже запущенному сервису через Named Pipe.
+
+### 8.2. Через командную строку (администратор)
 
 ```batch
-sc start   TcpRedirectorService    :: Запуск
-sc stop    TcpRedirectorService    :: Остановка
-sc query   TcpRedirectorService    :: Статус
-sc config  TcpRedirectorService start= auto  :: Автозапуск
+:: Запуск
+sc start TcpRedirectorService
+
+:: Остановка
+sc stop TcpRedirectorService
+
+:: Перезапуск
+sc stop TcpRedirectorService && sc start TcpRedirectorService
+
+:: Статус
+sc query TcpRedirectorService
 ```
 
-### 8.2. Команды сервиса
+### 8.3. Через services.msc
 
-```batch
-TcpRedirectorService.exe --install     :: Установить сервис
-TcpRedirectorService.exe --uninstall   :: Удалить сервис
-TcpRedirectorService.exe --console     :: Консольный режим (Ctrl+C для остановки)
-```
-
-### 8.3. Управление драйвером WinDivert
-
-```batch
-sc start  WinDivert    :: Запуск драйвера
-sc stop   WinDivert    :: Остановка драйвера
-sc query  WinDivert    :: Статус драйвера
-```
-
-Обычно ручное управление драйвером не требуется — сервис запускает его автоматически.
+Сервис `TcpRedirectorService` — тип запуска `Automatic`.
 
 ---
 
 ## 9. Диагностика и логи
 
-### 9.1. Расположение логов
+### 9.1. Файлы логов
 
-```
-%ProgramData%\TcpRedirector\logs\
-├── tcp_redirector.log              ← текущий лог
-├── tcp_redirector.1.log            ← размерная ротация
-├── tcp_redirector.2.log
-├── ...
-├── tcp_redirector_2026-07-10_0300.log  ← временная ротация
-└── archive\
-    └── logs_2026-07-10_0300.zip        ← архивы
-```
+| Файл | Расположение | Назначение |
+|------|-------------|------------|
+| `tcp_redirector.log` | `%ProgramData%\TcpRedirector\logs\` | Основной лог сервиса |
+| `gui_diag.log` | Рядом с `TcpRedirectorGUI.exe` | Диагностический лог GUI |
+| `windivert_debug.log` | `%ProgramData%\TcpRedirector\logs\` | Лог WinDivert (сетевое ядро) |
 
 ### 9.2. Уровни логирования
 
 | Уровень | Значение | Когда использовать |
 |---------|----------|-------------------|
-| TRACE | 0 | Максимальная детализация: каждый пакет `[PROXIED]`/`[MISSED]`/`[DIRECT]` |
-| DEBUG | 1 | Отладка проблем соединения |
-| INFO | 2 | Нормальная работа (запуск, остановка, CONNECT) |
-| WARN | 3 | Предупреждения |
-| ERROR | 4 | Только ошибки |
+| 0 | TRACE | Полная трассировка всех пакетов |
+| 1 | DEBUG | Отладка (рекомендуется для диагностики) |
+| 2 | INFO | Нормальная работа |
+| 3 | WARN | Только предупреждения |
+| 4 | ERROR | Только ошибки |
 
-**Изменение уровня** — в GUI: Settings → Log Level, или в `config.json` → `log.level`.
+### 9.3. Диагностический лог GUI
 
-### 9.3. Формат записи
-
-```
-[2026-07-10 14:30:15.123] [INFO ] [relay       ] CONNECT google.com:443 → 200 Established
-[2026-07-10 14:30:15.456] [DEBUG] [capture     ] [PROXIED] chrome.exe:49823 → 142.250.185.142:443 (120 bytes)
-[2026-07-10 14:30:20.789] [WARN ] [windivert   ] PID lookup failed for port 50123
-```
-
-### 9.4. Потоки в логах
-
-| Logger | Источник |
-|--------|----------|
-| `service` | ServiceMain — жизненный цикл сервиса |
-| `relay` | TcpRelayServer — CONNECT, bridge |
-| `capture` | WinDivertCapture — перехват пакетов |
-| `windivert` | WinDivert API — ошибки драйвера |
-| `pipe` | PipeServer — IPC (GUI ↔ сервис) |
-| `config` | ConfigManager — загрузка/сохранение конфига |
-| `rotator` | LogRotator — ротация логов |
-
-### 9.5. Диагностический лог GUI
-
-При проблемах подключения GUI пишет в `%ProgramData%\TcpRedirector\gui\ipc_diag.log`:
-
-```
-14:30:15.123 ConnectAsync: connecting to pipe TcpRedirectorService...
-14:30:15.234 ConnectAsync: connected OK
-```
+Включает детальные сообщения о каждом шаге запуска, подключения к Named Pipe и командах IPC. Полезен при проблемах с подключением GUI к сервису.
 
 ---
 
 ## 10. Безопасность
 
-### 10.1. Модель угроз
+### 10.1. IPC (Named Pipe)
 
-| Актив | Защита |
-|-------|--------|
-| Канал GUI ↔ Сервис | Named Pipe `\\.\pipe\TcpRedirectorService` + ACL: `D:(A;;GA;;;BA)(A;;GA;;;SY)` |
-| Пароль прокси | DPAPI (`CryptProtectData`) + Base64 в config.json |
-| Ключи Kerberos | SSPI (не сохраняются) |
-| Буфер IPC | Лимит 1 MB → защита от OOM |
-| Размерная ротация | Мгновенная, предотвращает переполнение диска |
-| Архивы логов | Автоочистка старше `max_age_days` |
+- Pipe name: `\\.\pipe\TcpRedirectorService`
+- ACL: только `BUILTIN\Administrators` и `LOCAL_SYSTEM`
+- Максимальный размер сообщения: 1 MB
+- Формат: JSON
 
-### 10.2. Кто может подключиться к сервису
+### 10.2. Пароль (DPAPI)
 
-Только:
-- **SYSTEM** (сам сервис)
-- **BUILTIN\Administrators** (пользователь, запускающий GUI)
+- Пароль шифруется через `CryptProtectData` с `CRYPTPROTECT_UI_FORBIDDEN`
+- Ключ привязан к машине + учётной записи SYSTEM
+- Расшифровать можно только на той же машине, под тем же пользователем
 
-Обычные пользователи **не могут** подключиться к Named Pipe.
+### 10.3. WinDivert
 
-### 10.3. Хранение пароля
-
-Пароль шифруется Windows DPAPI с флагом `CRYPTPROTECT_UI_FORBIDDEN`:
-- Привязан к учётной записи, выполнившей шифрование
-- Не может быть расшифрован на другой машине
-- Не может быть расшифрован другим пользователем (если сервис и GUI от разных пользователей — требуется доменный контекст)
+- Драйвер работает как Windows-служба с правами SYSTEM
+- После установки через `WinDivertInstall.exe` или `sc create` — драйвер загружается при старте системы
+- Не требует прав администратора у пользователя, запускающего GUI
 
 ---
 
 ## 11. Устранение неполадок
 
-### 11.1. Сервис не запускается
+### 11.1. WinDivert: ошибка 5 (ERROR_ACCESS_DENIED)
 
-| Симптом | Причина | Решение |
-|---------|---------|---------|
-| `sc start` → не запускается | WinDivert не загружен | `sc query WinDivert` → `sc start WinDivert` |
-| `sc start` → ошибка 1053 | Сервис упал при инициализации | Запустить `--console`, смотреть логи |
-| GUI: статус "Disconnected" | Named Pipe не создан | Запустить GUI от Администратора |
+**Причина:** Windows Defender удалил `WinDivert64.sys`, или драйвер не установлен.
 
-### 11.2. Трафик не перенаправляется
+**Решение (администратор):**
 
-| Симптом | Причина | Решение |
-|---------|---------|---------|
-| GUI: Active Connections = 0 | Правила не совпадают | Проверить `app.exePath` и `rules` в config.json |
-| `[MISSED]` в логах | Пакет от процесса не из правил | Добавить правило для процесса |
-| `[DIRECT]` в логах | Правило с `action: "direct"` | Изменить `action` на `"proxy"` |
+```batch
+:: 1. Добавить исключение Defender
+powershell -Command "Add-MpPreference -ExclusionPath 'C:\ProgramData\TcpRedirector'"
+powershell -Command "Add-MpPreference -ExclusionPath 'C:\Windows\System32\drivers\WinDivert64.sys'"
 
-### 11.3. Ошибка подключения к прокси
+:: 2. Переустановить драйвер
+sc create WinDivert type= kernel binPath= "C:\Windows\System32\drivers\WinDivert64.sys"
+sc start WinDivert
 
-| Симптом | Причина | Решение |
-|---------|---------|---------|
-| `CONNECT ... → 407` | Требуется аутентификация | Включить `auth.enabled`, указать логин/пароль или Kerberos |
-| `CONNECT ... → timeout` | Прокси недоступен | Проверить `proxy.host` и `proxy.port` |
-| `WinDivert err=2` | Драйвер не найден | `sc create WinDivert ...` → `sc start WinDivert` |
+:: 3. Проверить
+sc query WinDivert
+```
 
-### 11.4. Проблемы с Named Pipe (IPC)
+### 11.2. WinDivert: ошибка 2 (ERROR_FILE_NOT_FOUND)
 
-| Симптом | Причина | Решение |
-|---------|---------|---------|
-| GUI: "Access Denied" | Запущен не от Администратора | Запустить GUI от Администратора |
-| GUI: "Pipe not found" | Сервис не запущен | `sc start TcpRedirectorService` |
-| GUI: таймаут подключения (5с) | Сервис запущен, но пайп занят | Перезапустить сервис |
+**Причина:** `WinDivert64.sys` удалён антивирусом. Требуется переустановка.
 
-### 11.5. Проблемы с логами
+**Решение:** см. п. 11.1.
 
-| Симптом | Причина | Решение |
-|---------|---------|---------|
-| Лог не пишется | Нет прав на `%ProgramData%\TcpRedirector\logs` | Создать папку от Администратора |
-| Лог растёт бесконечно | `log_rotation.enabled = false` | Включить ротацию в config.json |
-| Архивы не создаются | PowerShell заблокирован | Проверить: `powershell Get-ExecutionPolicy` |
+### 11.3. GUI показывает "Disconnected"
+
+**Причина:** Сервис не запущен, или Named Pipe не создан.
+
+**Проверка:**
+```batch
+sc query TcpRedirectorService
+:: Если STOPPED: sc start TcpRedirectorService
+
+:: Проверить Named Pipe
+powershell -Command "Get-ChildItem \\.\pipe\ -ErrorAction SilentlyContinue | Where-Object Name -eq 'TcpRedirectorService'"
+```
+
+### 11.4. GUI показывает "Start failed"
+
+**Причина:** Сервис не запускается, или GUI не может подключиться к Named Pipe.
+
+**Диагностика:** Открыть `gui_diag.log` рядом с `TcpRedirectorGUI.exe` и найти последние записи с `[SCM]` или `[IPC]`.
+
+### 11.5. GUI не отображает статистику
+
+**Причина:** GUI подключён к сервису, но не получает push-уведомления о статистике.
+
+**Проверка:**
+1. Открыть вкладку Stats — если данные пустые, проверить `gui_diag.log` на `PollLoop: IPC error`
+2. Перезапустить GUI
+
+### 11.6. Лог-файлы не ротируются
+
+**Проверка:**
+```batch
+:: Проверить секцию log_rotation в config.json
+type C:\ProgramData\TcpRedirector\config.json | find "log_rotation"
+
+:: Проверить, что enabled: true
+:: Проверить права на запись в archive_dir
+```
 
 ---
 
 ## 12. Обновление
 
-### 12.1. Процедура обновления
-
-```batch
-:: 1. Остановить сервис
-sc stop TcpRedirectorService
-
-:: 2. Сделать резервную копию конфига
-copy C:\ProgramData\TcpRedirector\config.json C:\backup\config.json.bak
-
-:: 3. Заменить файлы из нового релиза
-copy /Y releases\vX.Y.Z\TcpRedirectorService.exe C:\ProgramData\TcpRedirector\
-copy /Y releases\vX.Y.Z\WinDivert.dll C:\ProgramData\TcpRedirector\
-copy /Y releases\vX.Y.Z\WinDivert64.sys C:\ProgramData\TcpRedirector\
-xcopy /E /Y releases\vX.Y.Z\gui\* C:\ProgramData\TcpRedirector\gui\
-
-:: 4. Проверить config.json на новые поля (см. пример в разделе 4.1)
-
-:: 5. Запустить сервис
-sc start TcpRedirectorService
-
-:: 6. Проверить статус
-sc query TcpRedirectorService
-```
-
-### 12.2. Откат
+### 12.1. Остановка сервиса
 
 ```batch
 sc stop TcpRedirectorService
-copy /Y C:\backup\config.json.bak C:\ProgramData\TcpRedirector\config.json
-:: Восстановить файлы предыдущей версии
+```
+
+### 12.2. Замена файлов
+
+```batch
+:: Копировать новые версии
+copy /Y TcpRedirectorService.exe C:\ProgramData\TcpRedirector\
+copy /Y WinDivert.dll C:\ProgramData\TcpRedirector\
+xcopy /E /Y gui\* C:\ProgramData\TcpRedirector\gui\
+```
+
+### 12.3. Запуск сервиса
+
+```batch
 sc start TcpRedirectorService
 ```
 
----
+### 12.4. Обновление драйвера WinDivert
 
-## Приложение А: Быстрый старт (checklist)
+Если новая версия WinDivert:
 
-- [ ] `WinDivert64.sys` и `WinDivert.dll` в `C:\ProgramData\TcpRedirector\`
-- [ ] `TcpRedirectorService.exe --install` от Администратора
-- [ ] `sc start WinDivert`
-- [ ] `sc start TcpRedirectorService`
-- [ ] `config.json`: указан `app.exePath`, `proxy.host`, `proxy.port`
-- [ ] `sc query TcpRedirectorService` → STATE: RUNNING
-- [ ] GUI запущен от Администратора → Connected
-- [ ] Целевое приложение запущено → трафик виден в Stats
+```batch
+:: Остановка
+sc stop WinDivert
+sc delete WinDivert
 
-## Приложение Б: Полезные команды PowerShell
+:: Копирование нового драйвера
+copy /Y WinDivert64.sys C:\Windows\System32\drivers\
 
-```powershell
-# Статус сервиса и драйвера
-Get-Service TcpRedirectorService, WinDivert | Format-Table Name, Status
-
-# Последние 20 строк лога
-Get-Content "C:\ProgramData\TcpRedirector\logs\tcp_redirector.log" -Tail 20
-
-# Размер логов
-Get-ChildItem "C:\ProgramData\TcpRedirector\logs" -Recurse |
-    Measure-Object -Property Length -Sum |
-    Select-Object Count, @{N="TotalMB";E={[math]::Round($_.Sum/1MB, 2)}}
-
-# Архивы старше 30 дней
-Get-ChildItem "C:\ProgramData\TcpRedirector\logs\archive\*.zip" |
-    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } |
-    Select-Object Name, LastWriteTime
-```
+:: Установка
+sc create WinDivert type= kernel binPath= "C:\Windows\System32\drivers\WinDivert64.sys"
+sc start WinDivert
