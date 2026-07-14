@@ -120,6 +120,12 @@ public class ServiceStatus
 {
     public bool Running { get; set; }
     public bool Initialized { get; set; }
+    // v1.1.0: extended status fields
+    public bool DriverLoaded { get; set; }
+    public bool CaptureEnabled { get; set; }
+    public int ActiveConnections { get; set; }
+    public int RelayConnections { get; set; }
+    public string Version { get; set; } = "";
 }
 
 public enum ServiceState

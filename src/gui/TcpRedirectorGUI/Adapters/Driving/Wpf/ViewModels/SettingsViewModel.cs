@@ -71,14 +71,12 @@ public partial class SettingsViewModel : ObservableObject
         {
             0 => "TRACE+", 1 => "DEBUG+", 2 => "INFO+", 3 => "WARN+", 4 => "ERROR+", _ => "INFO+"
         };
-        _config.WriteInt("log", "level", value);
         try { if (_svc is { IsConnected: true }) _ = _svc.SetLogLevelAsync(value); } catch { }
     }
 
     [RelayCommand]
     private async Task SaveLogLevelAsync()
     {
-        _config.WriteInt("log", "level", LogLevelFilter);
         try { if (_svc is { IsConnected: true }) await _svc.SetLogLevelAsync(LogLevelFilter); } catch { }
         LogMsg = "\u2713 Saved";
         _ = ClearLogMsgAfterDelay();
@@ -150,47 +148,48 @@ public partial class SettingsViewModel : ObservableObject
     {
         try
         {
-            var exePath = Rules.FirstOrDefault(r => r.Type == RuleType.ProcessPath)?.Pattern;
-            if (string.IsNullOrEmpty(exePath))
-                exePath = _config.ReadString("app", "exePath");
-
             var currentPwd = Password;
 
-            // 1. Write to disk
-            var ok = _config.WriteFull(
-                new ProxyConfig
-                {
-                    Host = Host, Port = Port,
-                    AuthRequired = AuthRequired, Login = Login,
-                    KerberosEnabled = KerberosEnabled
-                },
-                exePath ?? "",
-                [.. Rules]);
-
-            if (!ok)
-            {
-                Msg = "\u2717 Error: failed to write config.json";
-                _ = ClearMsgAfterDelay();
-                return;
-            }
-
-            // 2. IPC sync (best-effort)
+            // v1.1.0: all config changes go through IPC
             if (_svc is { IsConnected: true })
             {
                 try
                 {
+                    // Save rules
                     await _svc.SetRulesAsync([.. Rules]);
-                    await _svc.SetConfigAsync(new ProxyConfig
+
+                    // Save proxy + auth config (including password)
+                    var ok = await _svc.SetConfigAsync(new ProxyConfig
                     {
                         Host = Host, Port = Port,
                         AuthRequired = AuthRequired, Login = Login,
                         Password = currentPwd, KerberosEnabled = KerberosEnabled
                     });
+                    if (!ok)
+                    {
+                        Msg = "\u2717 Error: service rejected config";
+                        _ = ClearMsgAfterDelay();
+                        return;
+                    }
+
+                    // Save log level
+                    await _svc.SetLogLevelAsync(LogLevelFilter);
                 }
-                catch { /* IPC failure is non-fatal */ }
+                catch
+                {
+                    Msg = "\u2717 Error: IPC failed — service not available";
+                    _ = ClearMsgAfterDelay();
+                    return;
+                }
+            }
+            else
+            {
+                Msg = "\u2717 Error: service not connected";
+                _ = ClearMsgAfterDelay();
+                return;
             }
 
-            Msg = "\u2713 Saved";
+            Msg = "\u2713 All settings saved";
             Password = "";
             Saved?.Invoke();
             _ = ClearMsgAfterDelay();

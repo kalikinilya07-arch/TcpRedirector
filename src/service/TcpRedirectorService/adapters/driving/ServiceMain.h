@@ -19,6 +19,8 @@
 #include "../../adapters/driven/ProxyEngine.h"
 #include "../../infrastructure/utf8_convert.h"
 #include "IpcHandler.h"
+#include "../../infrastructure/auth/KerberosAgentProvider.h"
+#include "../../infrastructure/auth/BasicAuthenticationProvider.h"
 
 namespace tcp_redirector {
 namespace service {
@@ -60,11 +62,6 @@ public:
                 proxyCfg.port = cfg.proxy.port;
                 proxyCfg.auth_required = cfg.auth.enabled;
                 proxyCfg.kerberos_auth = cfg.auth.kerberos;
-                // Kerberos implies auth_required (mutually exclusive with Basic)
-                if (proxyCfg.kerberos_auth && !proxyCfg.auth_required) {
-                    proxyCfg.auth_required = true;
-                    m_logger->Info("service", "Kerberos enabled — forcing auth_required=true");
-                }
                 proxyCfg.login = infrastructure::Utf8ToWide(cfg.auth.username);
             }
             m_configManager->UpdateConfigNoSave(cfg);
@@ -102,6 +99,47 @@ public:
         m_relayServer->SetLogCallback([this](const std::string& msg) {
             m_logger->Debug("relay", msg);
         });
+
+        // Initialize authentication provider based on AuthenticationMode
+        // Only set up auth if enabled in config
+        {
+            auto cfg = m_configManager->GetConfig();
+
+            if (cfg.auth.enabled) {
+                auto authMode = cfg.auth.authMode;
+
+                if (authMode == infrastructure::AuthenticationMode::KerberosOnly ||
+                    authMode == infrastructure::AuthenticationMode::KerberosPreferred) {
+                    auto kerberosProvider = std::make_unique<infrastructure::KerberosAgentProvider>();
+                    m_authProvider = std::move(kerberosProvider);
+                    m_logger->Info("service", "Authentication: KerberosAgent (mode=" +
+                        std::to_string(static_cast<int>(authMode)) + ")");
+                }
+
+                if (authMode == infrastructure::AuthenticationMode::BasicOnly ||
+                    (authMode == infrastructure::AuthenticationMode::KerberosPreferred && !m_authProvider)) {
+                    // Decrypt password via DPAPI
+                    auto proxyCfg = m_configManager->GetProxyConfig();
+                    std::string password = infrastructure::WideToUtf8(proxyCfg.plain_password);
+                    auto basicProvider = std::make_unique<infrastructure::BasicAuthenticationProvider>(
+                        cfg.auth.username, password);
+                    if (!m_authProvider) {
+                        m_authProvider = std::move(basicProvider);
+                    } else {
+                        m_fallbackAuthProvider = std::move(basicProvider);
+                    }
+                    m_logger->Info("service", "Authentication: Basic (mode=" +
+                        std::to_string(static_cast<int>(authMode)) + ")");
+                }
+
+                if (m_authProvider) {
+                    static_cast<infrastructure::TcpRelayServer*>(m_relayServer.get())
+                        ->SetAuthenticationProvider(m_authProvider.get());
+                }
+            } else {
+                m_logger->Info("service", "Authentication: disabled (auth.enabled=false)");
+            }
+        }
 
         // Start relay server
         if (!m_relayServer->Start()) {
@@ -168,7 +206,6 @@ public:
             m_configManager.get(), m_logger.get(),
             &m_running, &m_initialized,
             [this]() -> std::pair<uint64_t, uint64_t> {
-                // Read byte counters from WinDivertCapture (tracks TCP-level bytes)
                 auto* capture = static_cast<infrastructure::WinDivertCapture*>(m_capture.get());
                 return {capture->GetTotalRxBytes(), capture->GetTotalTxBytes()};
             },
@@ -180,6 +217,42 @@ public:
                 return static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::steady_clock::now() - m_startTime).count());
+            },
+            [this](bool start) -> bool {
+                if (!m_capture) return false;
+                if (start) {
+                    if (!m_capture->IsOpen()) {
+                        return m_capture->Open();
+                    }
+                    return true; // already open
+                } else {
+                    if (m_capture->IsOpen()) {
+                        m_capture->Close();
+                    }
+                    return true; // already closed
+                }
+            },
+            [this]() -> bool {
+                if (!m_configManager) return false;
+                if (!m_configManager->Load()) {
+                    m_logger->Warn("service", "Config reload failed");
+                    return false;
+                }
+                // Re-apply rules to engine
+                m_ruleEngine->SetRules(m_configManager->GetRules());
+                // Update proxy config on capture and relay
+                auto proxyCfg = m_configManager->GetProxyConfig();
+                auto* capture = static_cast<infrastructure::WinDivertCapture*>(m_capture.get());
+                if (capture) {
+                    capture->SetProxyConfig(
+                        infrastructure::WideToUtf8(proxyCfg.host),
+                        proxyCfg.port);
+                }
+                if (m_relayServer) {
+                    m_relayServer->SetProxyConfig(proxyCfg, 1);
+                }
+                m_logger->Info("service", "Configuration reloaded");
+                return true;
             });
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {
@@ -286,6 +359,30 @@ private:
             [this](const std::string& method,
                    const std::string& params,
                    std::string& response) {
+                // v1.1.0: новые IPC-команды
+                if (method == "ping") {
+                    response = R"({"jsonrpc":"2.0","result":{"pong":true},"id":null})";
+                    return;
+                }
+                if (method == "get_version") {
+                    response = R"({"jsonrpc":"2.0","result":{"version":"1.1.0"},"id":null})";
+                    return;
+                }
+                if (method == "get_status") {
+                    nlohmann::json j;
+                    j["jsonrpc"] = "2.0";
+                    j["result"]["service_state"] = m_running ? "running" : "stopped";
+                    j["result"]["driver_loaded"] = m_capture && m_capture->IsOpen();
+                    j["result"]["capture_enabled"] = m_capture && m_capture->IsOpen();
+                    j["result"]["active_connections"] = m_capture
+                        ? static_cast<infrastructure::WinDivertCapture*>(m_capture.get())->GetActiveConnections()
+                        : 0;
+                    j["result"]["relay_connections"] = 0; // TODO: from m_connTable
+                    j["result"]["version"] = "1.1.0";
+                    j["id"] = nullptr;
+                    response = j.dump();
+                    return;
+                }
                 m_ipcHandler->Handle(method, params, response);
             });
     }
@@ -305,6 +402,10 @@ private:
     // Uptime tracking
     std::chrono::steady_clock::time_point m_startTime;
     std::unique_ptr<domain::ports::IRelayServer> m_relayServer;
+
+    // Authentication provider (KerberosAgent or Basic)
+    std::unique_ptr<domain::ports::IAuthenticationProvider> m_authProvider;
+    std::unique_ptr<domain::ports::IAuthenticationProvider> m_fallbackAuthProvider;
 
     SERVICE_STATUS m_status = {0};
     SERVICE_STATUS_HANDLE m_statusHandle;

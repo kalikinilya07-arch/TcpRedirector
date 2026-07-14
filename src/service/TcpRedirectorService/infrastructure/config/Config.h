@@ -34,11 +34,19 @@ struct ProxySettings {
 /**
  * @brief Настройки авторизации на прокси-сервере.
  */
+/// Режим аутентификации на прокси.
+enum class AuthenticationMode {
+    KerberosOnly,       // только Kerberos, ошибка = разрыв соединения
+    KerberosPreferred,  // Kerberos, fallback на Basic
+    BasicOnly           // только Basic
+};
+
 struct AuthSettings {
     bool        enabled = false;       //!< Требуется ли авторизация
     std::string username;              //!< Логин для Basic Auth
     std::string encryptedPassword;     //!< Пароль, зашифрованный через DPAPI (Base64)
     bool        kerberos = false;      //!< Использовать Negotiate/Kerberos вместо Basic
+    AuthenticationMode authMode = AuthenticationMode::KerberosPreferred;
 };
 
 /**

@@ -143,19 +143,20 @@ public:
 
 private:
     // ---- SECURITY ----------------------------------------------------------
-    // Create a SECURITY_ATTRIBUTES that only allows Administrators and
-    // LOCAL_SYSTEM to access the named pipe.
-    // SDDL: D:(A;;GA;;;BA)(A;;GA;;;SY)
-    //   BA = Built-in Administrators, SY = Local System, GA = GENERIC_ALL
+    // Create a SECURITY_ATTRIBUTES that allows Everyone (Read/Write)
+    // to access the named pipe for non-admin GUI support.
+    // SDDL: D:(A;;GRGW;;;WD)
+    //   WD = Everyone (S-1-1-0), GR = GENERIC_READ, GW = GENERIC_WRITE
+    // Pipe is local-only (not accessible from network).
     // The returned SdPtr owns the memory (LocalFree on destruction).
-    static std::pair<SECURITY_ATTRIBUTES, SdPtr> MakeAdminOnlySA() noexcept {
+    static std::pair<SECURITY_ATTRIBUTES, SdPtr> MakeEveryoneSA() noexcept {
         SECURITY_ATTRIBUTES sa = {};
         sa.nLength = sizeof(sa);
         sa.bInheritHandle = FALSE;
 
         PSECURITY_DESCRIPTOR raw = nullptr;
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                L"D:(A;;GA;;;BA)(A;;GA;;;SY)",
+                L"D:(A;;GRGW;;;WD)",
                 SDDL_REVISION_1,
                 &raw,
                 nullptr)) {
@@ -172,16 +173,17 @@ private:
         bool isFirstInstance = true;
 
         while (m_running.load(std::memory_order_relaxed)) {
-            auto [secAttr, sdOwner] = MakeAdminOnlySA();
-            DWORD pipeFlags = PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT;
+            auto [secAttr, sdOwner] = MakeEveryoneSA();
+            DWORD openMode = PIPE_ACCESS_DUPLEX;
             if (isFirstInstance) {
-                pipeFlags |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+                openMode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
             }
+            DWORD pipeMode = PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT;
 
             HANDLE newPipe = CreateNamedPipeW(
                 L"\\\\.\\pipe\\TcpRedirectorService",
-                PIPE_ACCESS_DUPLEX,
-                pipeFlags,
+                openMode,
+                pipeMode,
                 PIPE_UNLIMITED_INSTANCES,
                 65536, 65536,
                 5000,

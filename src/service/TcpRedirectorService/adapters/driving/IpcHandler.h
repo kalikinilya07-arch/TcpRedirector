@@ -26,6 +26,12 @@ using GetActiveCountCallback = std::function<uint32_t()>;
 // Callback to get service uptime in seconds
 using GetUptimeCallback = std::function<uint64_t()>;
 
+// Callback to start/stop capture (returns true on success)
+using CaptureControlCallback = std::function<bool(bool start)>;
+
+// Callback to reload configuration from disk
+using ReloadConfigCallback = std::function<bool()>;
+
 class IpcHandler {
 public:
     IpcHandler(
@@ -37,7 +43,9 @@ public:
         const std::atomic<bool>* initialized,
         GetRelayBytesCallback getRelayBytes = nullptr,
         GetActiveCountCallback getActiveCount = nullptr,
-        GetUptimeCallback getUptime = nullptr)
+        GetUptimeCallback getUptime = nullptr,
+        CaptureControlCallback captureControl = nullptr,
+        ReloadConfigCallback reloadConfig = nullptr)
         : m_ruleEngine(ruleEngine)
         , m_connectionTracker(connectionTracker)
         , m_configManager(configManager)
@@ -46,7 +54,9 @@ public:
         , m_initialized(initialized)
         , m_getRelayBytes(std::move(getRelayBytes))
         , m_getActiveCount(std::move(getActiveCount))
-        , m_getUptime(std::move(getUptime)) {
+        , m_getUptime(std::move(getUptime))
+        , m_captureControl(std::move(captureControl))
+        , m_reloadConfig(std::move(reloadConfig)) {
     }
 
     // M13: Maximum IPC message size to prevent OOM from giant JSON payloads
@@ -91,6 +101,15 @@ public:
             else if (method == "set_log_level") {
                 SetLogLevel(params, result);
             }
+            else if (method == "capture_start") {
+                CaptureStart(result);
+            }
+            else if (method == "capture_stop") {
+                CaptureStop(result);
+            }
+            else if (method == "reload_config") {
+                ReloadConfig(result);
+            }
             else {
                 result["status"] = "error";
                 result["error"] = "unknown_method";
@@ -132,6 +151,7 @@ private:
             config.plain_password = infrastructure::Utf8ToWide(pwd);
         }
         m_configManager->SetProxyConfig(config);
+        m_configManager->Save();  // persist to C:\ProgramData\TcpRedirector\config.json
         result["status"] = "success";
     }
 
@@ -175,6 +195,7 @@ private:
         }
         m_ruleEngine->SetRules(rules);
         m_configManager->SetRules(rules);
+        m_configManager->Save();  // persist to C:\ProgramData\TcpRedirector\config.json
         result["status"] = "success";
     }
 
@@ -251,7 +272,44 @@ private:
         auto j = nlohmann::json::parse(params);
         auto level = static_cast<domain::LogLevel>(j["level"].get<int>());
         m_logger->SetLevel(level);
+        m_configManager->SetLogLevel(level);
+        m_configManager->Save();  // persist to config.json
         result["status"] = "success";
+    }
+
+    void CaptureStart(nlohmann::json& result) {
+        if (m_captureControl) {
+            bool ok = m_captureControl(true);
+            result["status"] = ok ? "success" : "error";
+            result["data"]["capture_active"] = ok;
+            if (!ok) result["error"] = "capture_start_failed";
+        } else {
+            result["status"] = "error";
+            result["error"] = "capture_control_not_available";
+        }
+    }
+
+    void CaptureStop(nlohmann::json& result) {
+        if (m_captureControl) {
+            bool ok = m_captureControl(false);
+            result["status"] = ok ? "success" : "error";
+            result["data"]["capture_active"] = !ok;
+            if (!ok) result["error"] = "capture_stop_failed";
+        } else {
+            result["status"] = "error";
+            result["error"] = "capture_control_not_available";
+        }
+    }
+
+    void ReloadConfig(nlohmann::json& result) {
+        if (m_reloadConfig) {
+            bool ok = m_reloadConfig();
+            result["status"] = ok ? "success" : "error";
+            if (!ok) result["error"] = "reload_failed";
+        } else {
+            result["status"] = "error";
+            result["error"] = "reload_not_available";
+        }
     }
 
     domain::services::RuleEngine* m_ruleEngine;
@@ -263,6 +321,8 @@ private:
     GetRelayBytesCallback m_getRelayBytes;
     GetActiveCountCallback m_getActiveCount;
     GetUptimeCallback m_getUptime;
+    CaptureControlCallback m_captureControl;
+    ReloadConfigCallback m_reloadConfig;
 };
 
 } // namespace adapters

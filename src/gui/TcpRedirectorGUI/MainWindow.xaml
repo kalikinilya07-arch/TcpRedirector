@@ -31,30 +31,65 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- Start -->
-                <Button Grid.Column="0" Content="Start"
-                        Command="{Binding StartServiceCommand}"
+                <!-- v1.1.0: Connect button (GUI is IPC client only) -->
+                <Button Grid.Column="0" Content="Connect"
+                        Command="{Binding ConnectToServiceCommand}"
                         Style="{StaticResource PrimaryButton}"
                         Padding="16,6" Margin="0,0,6,0"/>
 
-                <!-- Stop -->
-                <Button Grid.Column="1" Content="Stop"
-                        Command="{Binding StopServiceCommand}"
-                        Style="{StaticResource DangerButton}"
-                        Padding="16,6" Margin="0,0,6,0"/>
+                <!-- Capture control buttons (visible only when connected) -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
+                            Visibility="{Binding IsServiceAvailable, Converter={StaticResource BoolToVis}}">
+                    <Button Content="▶ Start"
+                            Command="{Binding StartCaptureCommand}"
+                            Padding="10,6" Margin="0,0,2,0" FontSize="11">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                <Setter Property="IsEnabled" Value="True"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCaptureRunning}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                    <Button Content="⏹ Stop"
+                            Command="{Binding StopCaptureCommand}"
+                            Padding="10,6" Margin="0,0,2,0" FontSize="11">
+                        <Button.Style>
+                            <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                <Setter Property="IsEnabled" Value="True"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCaptureRunning}" Value="False">
+                                        <Setter Property="IsEnabled" Value="False"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Button.Style>
+                    </Button>
+                    <Button Content="↻ Reload"
+                            Command="{Binding ReloadConfigCommand}"
+                            Padding="10,6" Margin="0,0,6,0" FontSize="11"/>
+                    <TextBlock Text="{Binding CaptureMsg, Mode=OneWay}"
+                               Foreground="#4EC9B0" FontSize="11"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
 
                 <!-- Status indicator -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="10" Height="10" Margin="0,0,6,0">
                         <Ellipse.Fill>
                             <SolidColorBrush Color="{Binding IsConnected, Converter={StaticResource BoolToColor}}"/>
                         </Ellipse.Fill>
                     </Ellipse>
-                    <TextBlock Text="{Binding SvcStatus, Mode=OneWay}"
+                    <TextBlock Text="{Binding ServiceStatusText, Mode=OneWay}"
                                Foreground="#CCCCCC" FontSize="12"
                                VerticalAlignment="Center"/>
                     <TextBlock Text="{Binding SvcMsg, Mode=OneWay}"
@@ -63,7 +98,7 @@
                 </StackPanel>
 
                 <!-- Connection info -->
-                <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock FontSize="12" Foreground="#858585">
                         <Run Text="Traffic:"/>
                         <Run Text="{Binding TotalTraffic, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
@@ -79,14 +114,31 @@
         <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
             <Grid Width="1060" Height="620">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="0.38*"/>
+                    <RowDefinition Height="0.62*"/>
                 </Grid.RowDefinitions>
 
-                <!-- SETTINGS (top 2/3) -->
+                <!-- SETTINGS (compact) -->
                 <StackPanel Grid.Row="0">
 
-                    <!-- Proxy Settings -->
+                    <!-- Unified Save bar (compact) -->
+                    <Border Background="#2D2D2D" BorderBrush="#3C3C3C"
+                            BorderThickness="1" Padding="6,4" Margin="0,0,0,4"
+                            CornerRadius="3">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="💾 Save All Settings"
+                                    Command="{Binding Settings.SaveAsyncCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Padding="12,4" FontSize="12" FontWeight="Bold"
+                                    IsEnabled="{Binding IsServiceAvailable}"/>
+                            <TextBlock Text="{Binding Settings.Msg, Mode=OneWay}"
+                                       Foreground="#4EC9B0" FontWeight="Bold"
+                                       FontSize="12" VerticalAlignment="Center"
+                                       Margin="12,0,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Proxy Settings (compact) -->
                     <TextBlock Text="PROXY SETTINGS" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
@@ -95,34 +147,33 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="250"/>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="120"/>
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:"
-                                       VerticalAlignment="Center" Margin="0,2"/>
+                                       VerticalAlignment="Center" Margin="0,1" FontSize="11"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
                                      Text="{Binding Settings.Host, Mode=TwoWay}"
-                                     Margin="0,2"/>
+                                     Margin="0,1" FontSize="11"/>
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Port:"
-                                       VerticalAlignment="Center" Margin="8,2,0,2"/>
+                                       VerticalAlignment="Center" Margin="6,1,0,1" FontSize="11"/>
                             <TextBox Grid.Row="0" Grid.Column="3"
                                      Text="{Binding Settings.Port, Mode=TwoWay}"
-                                     Margin="8,2,0,2"/>
+                                     Margin="6,1,0,1" FontSize="11"/>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
                                       Content="Authentication required"
                                       IsChecked="{Binding Settings.AuthRequired, Mode=TwoWay}"
-                                      Margin="0,2"/>
+                                      Margin="0,1" FontSize="11"/>
                         </Grid>
                     </Border>
 
-                    <!-- Authentication -->
-                    <TextBlock Text="AUTHENTICATION (Login / Kerberos SSPI)"
-                               Style="{StaticResource SectionHeader}"
+                    <!-- Authentication (compact) -->
+                    <TextBlock Text="AUTHENTICATION" Style="{StaticResource SectionHeader}"
                                Visibility="{Binding Settings.AuthRequired, Converter={StaticResource BoolToVis}}"/>
                     <Border Style="{StaticResource SectionBorder}"
                             Visibility="{Binding Settings.AuthRequired, Converter={StaticResource BoolToVis}}">
@@ -130,34 +181,33 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="250"/>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="220"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="120"/>
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Login:"
-                                       VerticalAlignment="Center" Margin="0,2"/>
+                                       VerticalAlignment="Center" Margin="0,1" FontSize="11"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
                                      Text="{Binding Settings.Login, Mode=TwoWay}"
-                                     Margin="0,2"/>
+                                     Margin="0,1" FontSize="11"/>
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Password:"
-                                       VerticalAlignment="Center" Margin="8,2,0,2"/>
+                                       VerticalAlignment="Center" Margin="6,1,0,1" FontSize="11"/>
                             <PasswordBox Grid.Row="0" Grid.Column="3"
-                                         x:Name="PwdBox" Margin="8,2,0,2"/>
+                                         x:Name="PwdBox" Margin="6,1,0,1" FontSize="11"/>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
                                       Content="Use Kerberos protocol"
                                       IsChecked="{Binding Settings.KerberosEnabled, Mode=TwoWay}"
-                                      Margin="0,2"/>
+                                      Margin="0,1" FontSize="11"/>
                         </Grid>
                     </Border>
 
-                    <!-- Rules -->
+                    <!-- Rules (compact) -->
                     <TextBlock Text="RULES" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
@@ -167,17 +217,10 @@
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
-                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,2">
                                 <Button Content="+ Add Rule"
                                         Command="{Binding Settings.AddRuleCommand}"
-                                        Padding="12,6" Margin="0,0,8,0"/>
-                                <Button Content="Save"
-                                        Command="{Binding Settings.SaveAsyncCommand}"
-                                        Style="{StaticResource PrimaryButton}"
-                                        Padding="12,6"/>
-                                <TextBlock Text="{Binding Settings.Msg, Mode=OneWay}"
-                                           Foreground="#4EC9B0" FontWeight="Bold"
-                                           VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                        Padding="8,3" Margin="0,0,6,0" FontSize="11"/>
                             </StackPanel>
 
                             <DataGrid Grid.Row="1"
@@ -185,54 +228,51 @@
                                       SelectedItem="{Binding Settings.SelectedRule}"
                                       AutoGenerateColumns="False"
                                       CanUserAddRows="False"
-                                      FontSize="12"
-                                      MinHeight="60" MaxHeight="400">
+                                      FontSize="11"
+                                      MinHeight="40" MaxHeight="140"
+                                      RowHeight="20">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*" IsReadOnly="True"/>
-                                    <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="150" IsReadOnly="True"/>
-                                    <DataGridTemplateColumn Header="" Width="60">
+                                    <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="130" IsReadOnly="True"/>
+                                    <DataGridTemplateColumn Header="" Width="50">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
                                                 <Button Content="✕"
                                                         Command="{Binding DataContext.Settings.DeleteRuleCommand, RelativeSource={RelativeSource AncestorType={x:Type DataGrid}}}"
                                                         CommandParameter="{Binding}"
                                                         Background="#5A1D1D" Foreground="#F44747"
-                                                        BorderThickness="0" FontSize="11"/>
+                                                        BorderThickness="0" FontSize="10" Padding="4,2"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
                                 </DataGrid.Columns>
                             </DataGrid>
 
-                            <TextBlock Grid.Row="2" Foreground="#858585" Margin="0,4,0,0" FontSize="12">
+                            <TextBlock Grid.Row="2" Foreground="#858585" Margin="0,2,0,0" FontSize="10">
                                 Total: <Run Text="{Binding Settings.Rules.Count, Mode=OneWay}" FontWeight="Bold"/> rules
                             </TextBlock>
                         </Grid>
                     </Border>
 
-                    <!-- Log Level -->
+                    <!-- Log Level (compact) -->
                     <TextBlock Text="LOG LEVEL" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="Level:" Foreground="#858585"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       Margin="0,0,6,0"/>
+                                       FontSize="11" VerticalAlignment="Center"
+                                       Margin="0,0,4,0"/>
                             <ComboBox SelectedIndex="{Binding Settings.LogLevelFilter, Mode=TwoWay}"
-                                      Width="90" FontSize="12">
-                                <ComboBoxItem Content="All (TRACE+)"/>
+                                      Width="80" FontSize="11">
+                                <ComboBoxItem Content="TRACE+"/>
                                 <ComboBoxItem Content="DEBUG+"/>
                                 <ComboBoxItem Content="INFO+"/>
                                 <ComboBoxItem Content="WARN+"/>
                                 <ComboBoxItem Content="ERROR+"/>
                             </ComboBox>
-                            <Button Content="Save"
-                                    Command="{Binding Settings.SaveLogLevelCommand}"
-                                    Padding="12,4" Margin="8,0,0,0"
-                                    FontSize="12"/>
                             <TextBlock Text="{Binding Settings.LogMsg, Mode=OneWay}"
-                                       Foreground="#4EC9B0" FontWeight="Bold"
-                                       FontSize="12" VerticalAlignment="Center"
-                                       Margin="8,0,0,0"/>
+                                       Foreground="#858585"
+                                       FontSize="10" VerticalAlignment="Center"
+                                       Margin="6,0,0,0"/>
                         </StackPanel>
                     </Border>
 

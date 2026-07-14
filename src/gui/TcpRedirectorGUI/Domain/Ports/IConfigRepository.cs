@@ -3,8 +3,8 @@ using TcpRedirectorGUI.Domain.Entities;
 namespace TcpRedirectorGUI.Domain.Ports;
 
 /// <summary>
-/// Interface for reading/writing the TcpRedirector configuration file.
-/// This is the PRIMARY config source; IPC is secondary for live sync.
+/// Read-only config access for GUI bootstrap.
+/// v1.1.0: all writes go through IPC (ITcpRedirectorService.SetConfigAsync).
 /// </summary>
 public interface IConfigRepository
 {
@@ -13,6 +13,4 @@ public interface IConfigRepository
     int ReadPort(string key, int defaultValue = 3128);
     int ReadInt(string section, string key, int defaultValue = 0);
     List<Rule> ReadRules();
-    bool WriteFull(ProxyConfig config, string exePath, List<Rule> rules);
-    void WriteInt(string section, string key, int value);
 }

@@ -14,7 +14,6 @@ namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 public partial class ShellViewModel : ObservableObject, IDisposable
 {
     private readonly ITcpRedirectorService _svc;
-    private readonly IServiceController _scm;
     private readonly IConfigRepository _config;
     private CancellationTokenSource? _timerCts;
     private bool _disposed;
@@ -22,13 +21,11 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     public ShellViewModel(
         ITcpRedirectorService svc,
-        IServiceController scm,
         IConfigRepository config,
         SettingsViewModel settings,
         StatsViewModel stats)
     {
         _svc = svc;
-        _scm = scm;
         _config = config;
         Settings = settings;
         Stats = stats;
@@ -48,13 +45,27 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     private bool _isConnected;
 
     [ObservableProperty]
+    private bool _isServiceAvailable;
+
+    [ObservableProperty]
     private string _statusText = "Loading...";
 
     [ObservableProperty]
-    private string _svcStatus = "Stopped";
+    private string _svcStatus = "Disconnected";
 
     [ObservableProperty]
     private string _svcMsg = "";
+
+    [ObservableProperty]
+    private string _serviceStatusText = "";
+
+    // ---- Capture control ----
+
+    [ObservableProperty]
+    private bool _isCaptureRunning;
+
+    [ObservableProperty]
+    private string _captureMsg = "";
 
     // ---- Stats ----
 
@@ -68,99 +79,58 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     // ---- Service lifecycle ----
 
+    /// v1.1.0: GUI is a pure IPC client. Service is managed by Windows SCM.
     [RelayCommand]
-    private async Task StartService()
+    private async Task ConnectToServiceAsync()
     {
         try
         {
-            SvcStatus = "Starting";
+            SvcStatus = "Connecting";
             SvcMsg = "";
-            GuiDiagLog("StartService: user clicked Start");
+            GuiDiagLog("ConnectToService: attempting connection...");
 
             StopTimer();
 
-            // Check if process is already running
-            bool alreadyRunning = false;
-            try
-            {
-                var procs = Process.GetProcessesByName("TcpRedirectorService");
-                alreadyRunning = procs.Length > 0;
-                GuiDiagLog($"StartService: processes found: {procs.Length}");
-            }
-            catch (Exception ex)
-            {
-                GuiDiagLog($"StartService: process check error: {ex.Message}");
-            }
-
-            if (!alreadyRunning)
-            {
-                SvcMsg = "Launching backend...";
-                var ok = await _scm.StartServiceAsync();
-                GuiDiagLog($"StartService: StartServiceAsync returned {ok}");
-
-                if (!ok)
-                {
-                    SvcStatus = "Failed";
-                    var diag = _scm.LastStartupError;
-                    if (!string.IsNullOrEmpty(diag))
-                    {
-                        SvcMsg = diag;
-                        GuiDiagLog($"StartService: backend error: {diag}");
-                    }
-                    else
-                    {
-                        SvcMsg = "✗ Start failed — backend not found or exited";
-                        GuiDiagLog("StartService: start failed, no diagnostics");
-                    }
-                    return;
-                }
-            }
-            else
-            {
-                GuiDiagLog("StartService: process already running, trying connect...");
-            }
-
-            // Try to connect to the pipe (with retries)
-            SvcMsg = "Connecting to backend...";
             for (int i = 0; i < 10; i++)
             {
                 try
                 {
                     await _svc.ConnectAsync();
-                    GuiDiagLog($"StartService: ConnectAsync attempt {i + 1}, IsConnected={_svc.IsConnected}");
+                    GuiDiagLog($"ConnectToService: attempt {i + 1}, IsConnected={_svc.IsConnected}");
                     if (_svc.IsConnected) break;
                 }
                 catch (Exception ex)
                 {
-                    GuiDiagLog($"StartService: ConnectAsync attempt {i + 1}: {ex.GetType().Name}: {ex.Message}");
+                    GuiDiagLog($"ConnectToService: attempt {i + 1}: {ex.GetType().Name}: {ex.Message}");
                 }
                 await Task.Delay(500);
             }
 
             if (!_svc.IsConnected)
             {
-                GuiDiagLog("StartService: not connected after retries");
-                SvcStatus = "Failed";
-                SvcMsg = "✗ Connect failed — pipe not available";
-                try
-                {
-                    var procs = Process.GetProcessesByName("TcpRedirectorService");
-                    if (procs.Length == 0) SvcMsg += " (backend exited)";
-                }
-                catch { }
+                GuiDiagLog("ConnectToService: not connected after retries");
+                SvcStatus = "Unavailable";
+                IsServiceAvailable = false;
+                ServiceStatusText = "🔴 Service unavailable";
+                SvcMsg = "Служба TcpRedirector недоступна. Обратитесь к системному администратору.";
                 return;
             }
 
             StartTimer();
             Settings.LoadFromConfig();
+            IsCaptureRunning = true;  // service starts capture automatically
             SvcStatus = "Running";
-            SvcMsg = "✓ Started";
-            GuiDiagLog("StartService: SUCCESS");
+            IsServiceAvailable = true;
+            ServiceStatusText = "🟢 Service running";
+            SvcMsg = "✓ Connected";
+            GuiDiagLog("ConnectToService: SUCCESS");
         }
         catch (Exception ex)
         {
-            GuiDiagLog($"StartService: exception: {ex.GetType().Name}: {ex.Message}");
+            GuiDiagLog($"ConnectToService: exception: {ex.GetType().Name}: {ex.Message}");
             SvcStatus = "Error";
+            IsServiceAvailable = false;
+            ServiceStatusText = "🔴 Service unavailable";
             SvcMsg = $"✗ {ex.Message}";
         }
         finally
@@ -169,40 +139,90 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ---- Capture control ----
+
+    /// <summary>Start WinDivert packet capture (service is already running).</summary>
     [RelayCommand]
-    private async Task StopService()
+    private async Task StartCaptureAsync()
     {
         try
         {
-            SvcStatus = "Stopping";
-            SvcMsg = "";
-
-            StopTimer();
-            _svc.Disconnect();
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            try
+            CaptureMsg = "Starting...";
+            var ok = await _svc.StartCaptureAsync();
+            if (ok)
             {
-                var ok = await Task.Run(() => _scm.StopServiceAsync(), cts.Token);
-                SvcStatus = ok ? "Stopped" : "Failed";
-                SvcMsg = ok ? "✓ Stopped" : "✗ Stop failed";
+                IsCaptureRunning = true;
+                CaptureMsg = "✓ Capture running";
+                GuiDiagLog("StartCapture: OK");
             }
-            catch (OperationCanceledException)
+            else
             {
-                KillServiceProcess();
-                SvcStatus = "Stopped";
-                SvcMsg = "✓ Stopped (forced)";
+                CaptureMsg = "✗ Failed to start";
+                GuiDiagLog("StartCapture: FAILED");
             }
         }
-        catch
+        catch (Exception ex)
         {
-            SvcStatus = "Error";
+            CaptureMsg = $"✗ {ex.Message}";
+            GuiDiagLog($"StartCapture: exception: {ex.Message}");
         }
-        finally
+        finally { _ = ClearCaptureMsgAfterDelay(); }
+    }
+
+    /// <summary>Stop WinDivert packet capture (service keeps running).</summary>
+    [RelayCommand]
+    private async Task StopCaptureAsync()
+    {
+        try
         {
-            Settings.LoadFromConfig();
-            _ = ClearMsgAfterDelay();
+            CaptureMsg = "Stopping...";
+            var ok = await _svc.StopCaptureAsync();
+            if (ok)
+            {
+                IsCaptureRunning = false;
+                CaptureMsg = "✓ Capture stopped";
+                GuiDiagLog("StopCapture: OK");
+            }
+            else
+            {
+                CaptureMsg = "✗ Failed to stop";
+                GuiDiagLog("StopCapture: FAILED");
+            }
         }
+        catch (Exception ex)
+        {
+            CaptureMsg = $"✗ {ex.Message}";
+            GuiDiagLog($"StopCapture: exception: {ex.Message}");
+        }
+        finally { _ = ClearCaptureMsgAfterDelay(); }
+    }
+
+    /// <summary>Reload config.json + reapply rules/proxy without service restart.</summary>
+    [RelayCommand]
+    private async Task ReloadConfigAsync()
+    {
+        try
+        {
+            CaptureMsg = "Reloading...";
+            var ok = await _svc.ReloadConfigAsync();
+            if (ok)
+            {
+                CaptureMsg = "✓ Config reloaded";
+                Settings.LoadFromConfig();
+                GuiDiagLog("ReloadConfig: OK");
+            }
+            else
+            {
+                CaptureMsg = "✗ Reload failed";
+                GuiDiagLog("ReloadConfig: FAILED");
+            }
+        }
+        catch (Exception ex)
+        {
+            CaptureMsg = $"✗ {ex.Message}";
+            GuiDiagLog($"ReloadConfig: exception: {ex.Message}");
+        }
+        finally { _ = ClearCaptureMsgAfterDelay(); }
     }
 
     // ---- Polling timer ----
@@ -266,17 +286,15 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     private void OnConnectionStateChanged(bool connected)
     {
         IsConnected = connected;
+        IsServiceAvailable = connected;
+        ServiceStatusText = connected ? "🟢 Service running" : "🔴 Service unavailable";
         StatusText = connected ? "Connected" : "Disconnected";
-        GuiDiagLog($"ConnectionStateChanged: connected={connected}");
-    }
-
-    private static void KillServiceProcess()
-    {
-        try
+        if (!connected)
         {
-            Process.Start("taskkill", "/f /im TcpRedirectorService.exe");
+            StopTimer();
+            SvcStatus = "Unavailable";
         }
-        catch { }
+        GuiDiagLog($"ConnectionStateChanged: connected={connected}");
     }
 
     private async Task ClearMsgAfterDelay()
@@ -284,6 +302,13 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         await Task.Delay(5000);
         if (SvcMsg.Contains('✓'))
             SvcMsg = "";
+    }
+
+    private async Task ClearCaptureMsgAfterDelay()
+    {
+        await Task.Delay(4000);
+        if (CaptureMsg.Contains('✓'))
+            CaptureMsg = "";
     }
 
     private static string FormatBytes(ulong b) => b switch

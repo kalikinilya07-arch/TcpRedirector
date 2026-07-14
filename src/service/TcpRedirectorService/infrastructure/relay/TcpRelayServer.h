@@ -23,7 +23,8 @@
 #include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/ports/IConnectionMonitor.h"
 #include "../../domain/entities/ProxyConfig.h"
-#include "../../infrastructure/auth/auth_sspi.h"
+#include "../../domain/ports/IAuthenticationProvider.h"
+#include "../../infrastructure/auth/auth_sspi.h"  // Parse407Challenge
 #include "../utf8_convert.h"
 
 namespace tcp_redirector {
@@ -72,6 +73,7 @@ public:
     void SetLogCallback(RelayLogCallback cb) { m_logCb = std::move(cb); }
     void SetConnCallback(RelayConnCallback cb) { m_connCb = std::move(cb); }
     void SetConnectionMonitor(domain::ports::IConnectionMonitor* monitor) { m_connectionMonitor = monitor; }
+    void SetAuthenticationProvider(domain::ports::IAuthenticationProvider* provider) { m_authProvider = provider; }
 
     bool Start() {
         if (m_running) return true;
@@ -321,11 +323,10 @@ private:
         in.s_addr = dest_ip;
         inet_ntop(AF_INET, &in, ip_str, sizeof(ip_str));
 
-        // ---- SSPI/Kerberos: инициализация (только при первом CONNECT) ----
-        infrastructure::SspiContext sspiCtx;
-        std::string sspiToken;
-        bool sspiInitDone = false;
-        bool sspiAvailable = true;   // локальный флаг, НЕ классовый m_kerberosAuth
+        // ---- Authentication via IAuthenticationProvider ----
+        // Context lives exactly one HTTP CONNECT. Created here, destroyed after 200 or error.
+        uint64_t authContextId = 0;
+        bool authContextActive = false;
         int authRetries = 0;
 
     retry_connect:
@@ -334,32 +335,25 @@ private:
             std::to_string(dest_port) + " HTTP/1.1\r\nHost: " +
             std::string(ip_str) + ":" + std::to_string(dest_port) + "\r\n";
 
-        if (m_proxyAuthRequired && !m_kerberosAuth) {
-            // Basic Auth (оригинальное поведение — без изменений)
-            // H1: use configured password instead of hardcoded ":proxy_pass"
-            std::string basic = m_proxyUser + ":" + m_proxyPassword;
-            connect_req += "Proxy-Authorization: Basic " + Base64Encode(basic) + "\r\n";
-        } else if (m_kerberosAuth && sspiAvailable) {
-            // Negotiate/Kerberos через SSPI
-            if (!sspiInitDone) {
-                Log(domain::LogLevel::Debug, "Acquiring credentials for " + m_proxyHost + "...");
-                auto r = infrastructure::SspiNegotiate(sspiCtx, "", sspiToken,
-                    infrastructure::MakeSpn(m_proxyHost));
-                if (r == infrastructure::SspiResult::NoCredentials) {
-                    Log(domain::LogLevel::Warn, "Kerberos/NTLM недоступен (SEC_E_NO_CREDENTIALS)");
-                    sspiAvailable = false; // локальный флаг, НЕ классовый
-                } else if (r == infrastructure::SspiResult::Error) {
-                    Log(domain::LogLevel::Warn, "Ошибка инициализации SSPI");
-                    sspiAvailable = false;
+        if (m_proxyAuthRequired && m_authProvider) {
+            if (!authContextActive) {
+                // Create new context for this CONNECT
+                std::string spn = "HTTP/" + m_proxyHost;
+                auto ctxResult = m_authProvider->CreateContext(spn);
+                if (ctxResult.success) {
+                    authContextId = ctxResult.context_id;
+                    authContextActive = true;
+                    if (m_authProvider->GetType() == domain::ports::AuthProviderType::Basic) {
+                        connect_req += "Proxy-Authorization: Basic " + ctxResult.token + "\r\n";
+                    } else {
+                        connect_req += "Proxy-Authorization: Negotiate " + ctxResult.token + "\r\n";
+                    }
                 } else {
-                    Log(domain::LogLevel::Debug, "Token получен: " +
-                        (sspiToken.empty() ? std::string("empty") :
-                         std::to_string(sspiToken.size()) + " bytes"));
+                    Log(domain::LogLevel::Warn, "Auth provider failed: " + ctxResult.error_message);
                 }
-                sspiInitDone = true;
-            }
-            if (!sspiToken.empty()) {
-                connect_req += "Proxy-Authorization: Negotiate " + sspiToken + "\r\n";
+            } else {
+                // Context already active — should not happen on first pass
+                Log(domain::LogLevel::Warn, "Auth context already active on retry_connect");
             }
         }
 
@@ -368,6 +362,7 @@ private:
         if (send(proxy_sock, connect_req.c_str(), (int)connect_req.length(), 0) == SOCKET_ERROR) {
             Log(domain::LogLevel::Error, "send CONNECT failed");
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+            if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -378,6 +373,7 @@ private:
         if (bytes <= 0) {
             Log(domain::LogLevel::Error, "no CONNECT response");
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+            if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -385,11 +381,9 @@ private:
         resp_buf[bytes] = '\0';
 
         // M2: parse HTTP status line properly — look for "HTTP/1.x 200" at the start
-        // instead of substring match anywhere in response.
         bool connect_ok = false;
         {
             std::string resp_str(resp_buf, bytes);
-            // Status line is "HTTP/1.x NNN ..." at the very beginning
             if (resp_str.size() >= 12 &&
                 resp_str.compare(0, 7, "HTTP/1.") == 0 &&
                 resp_str[8] == ' ' &&
@@ -398,58 +392,65 @@ private:
             }
         }
         if (connect_ok) {
-            // CONNECT успешен — замеряем latency
             auto t_now = std::chrono::steady_clock::now();
             double latency_ms = std::chrono::duration<double, std::milli>(t_now - t_connect_start).count();
             if (m_connectionMonitor) m_connectionMonitor->RecordLatency(latency_ms);
             Log(domain::LogLevel::Debug, "CONNECT response: 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
 
-            // H3: reset SO_RCVTIMEO/SO_SNDTIMEO to 0 after successful CONNECT
-            // so that idle tunnels (SSH, DB pools, websockets) are not torn down
-            // after 30 seconds of inactivity.
+            // Context destroyed after successful CONNECT
+            if (authContextActive && m_authProvider) {
+                m_authProvider->CloseContext(authContextId);
+                authContextActive = false;
+            }
+
+            // H3: reset timeouts, enable keepalive
             int zero_timeout = 0;
             setsockopt(proxy_sock, SOL_SOCKET, SO_RCVTIMEO,
                        (const char*)&zero_timeout, sizeof(zero_timeout));
             setsockopt(proxy_sock, SOL_SOCKET, SO_SNDTIMEO,
                        (const char*)&zero_timeout, sizeof(zero_timeout));
-            // Also enable TCP keepalive for dead-peer detection
             int keepalive = 1;
             setsockopt(proxy_sock, SOL_SOCKET, SO_KEEPALIVE,
                        (const char*)&keepalive, sizeof(keepalive));
             setsockopt(client_sock, SOL_SOCKET, SO_KEEPALIVE,
                        (const char*)&keepalive, sizeof(keepalive));
         }
-        else if (m_kerberosAuth && sspiAvailable && strstr(resp_buf, "407") != nullptr) {
-            // ---- 407 Proxy Auth Required — SSPI-цикл ----
+        else if (authContextActive && m_authProvider &&
+                 m_authProvider->GetType() == domain::ports::AuthProviderType::KerberosAgent &&
+                 strstr(resp_buf, "407") != nullptr) {
+            // ---- 407 Proxy Auth Required — continue context ----
             std::string challenge = infrastructure::Parse407Challenge(resp_buf);
             if (challenge.empty()) {
                 Log(domain::LogLevel::Warn, "CONNECT failed: 407 без Negotiate challenge");
                 if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
-            Log(domain::LogLevel::Debug, "Got 407 challenge (" + std::to_string(challenge.size()) + " bytes), continuing...");
-            auto r = infrastructure::SspiNegotiate(sspiCtx, challenge, sspiToken,
-                infrastructure::MakeSpn(m_proxyHost));
-            if (r == infrastructure::SspiResult::Error) {
-                Log(domain::LogLevel::Error, "SSPI error after 407 challenge: " + std::string(resp_buf, 100));
+            Log(domain::LogLevel::Debug, "Got 407 challenge, continuing context...");
+            auto contResult = m_authProvider->ContinueContext(authContextId, challenge);
+            if (!contResult.success) {
+                Log(domain::LogLevel::Error, "ContinueContext failed: " + contResult.error_message);
                 if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
-            if (sspiToken.empty()) {
-                Log(domain::LogLevel::Warn, "CONNECT failed: SSPI не дал токен после 407");
+            if (contResult.token.empty()) {
+                Log(domain::LogLevel::Warn, "CONNECT failed: empty token after continue");
                 if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
             }
             authRetries++;
             if (authRetries > 5) {
-                Log(domain::LogLevel::Warn, "CONNECT failed: SSPI retry limit exceeded");
+                Log(domain::LogLevel::Warn, "CONNECT failed: retry limit exceeded");
                 if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
                 return;
@@ -622,6 +623,7 @@ private:
     RelayLogCallback m_logCb;
     RelayConnCallback m_connCb;
     domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
+    domain::ports::IAuthenticationProvider* m_authProvider = nullptr;
 
     // H4: number of active bridge pairs (incremented before StartBridge,
     // decremented after both directions finish).  Stop() polls this counter

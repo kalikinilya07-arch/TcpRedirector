@@ -135,7 +135,8 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             auth_required = config.AuthRequired,
             kerberos = config.KerberosEnabled,
             login = config.Login ?? "",
-            set_password = !string.IsNullOrEmpty(config.Password)
+            set_password = !string.IsNullOrEmpty(config.Password),
+            password = config.Password ?? ""
         });
         return r?.GetProperty("status").GetString() == "success";
     }
@@ -250,6 +251,52 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             };
         }
         return null;
+    }
+
+    public async Task<bool> PingAsync()
+    {
+        var r = await Call("ping");
+        return r?.TryGetProperty("pong", out _) == true;
+    }
+
+    public async Task<ServiceStatus?> GetStatusAsync()
+    {
+        var r = await Call("get_status");
+        if (r?.TryGetProperty("data", out var d) != true) return null;
+        return new ServiceStatus
+        {
+            Running = d.GetProperty("service_state").GetString() == "running",
+            DriverLoaded = d.GetProperty("driver_loaded").GetBoolean(),
+            CaptureEnabled = d.GetProperty("capture_enabled").GetBoolean(),
+            ActiveConnections = (int)d.GetProperty("active_connections").GetInt32(),
+            RelayConnections = (int)d.GetProperty("relay_connections").GetInt32(),
+            Version = d.GetProperty("version").GetString() ?? ""
+        };
+    }
+
+    public async Task<string?> GetVersionAsync()
+    {
+        var r = await Call("get_version");
+        if (r?.TryGetProperty("data", out var d) != true) return null;
+        return d.GetProperty("version").GetString();
+    }
+
+    public async Task<bool> StartCaptureAsync()
+    {
+        var r = await Call("capture_start");
+        return r?.TryGetProperty("status", out var s) == true && s.GetString() == "success";
+    }
+
+    public async Task<bool> StopCaptureAsync()
+    {
+        var r = await Call("capture_stop");
+        return r?.TryGetProperty("status", out var s) == true && s.GetString() == "success";
+    }
+
+    public async Task<bool> ReloadConfigAsync()
+    {
+        var r = await Call("reload_config");
+        return r?.TryGetProperty("status", out var s) == true && s.GetString() == "success";
     }
 
     public async Task<bool> SetLogLevelAsync(int level)
