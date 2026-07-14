@@ -5,7 +5,9 @@
 // - Асинхронная очередь (queue + mutex + cv + WriterThread)
 // - Ring buffer на 2000 записей для IPC get_logs
 // - Batch pop — WriterThread забирает все сообщения разом (swap)
-// - Ротация файлов при превышении maxSizeMB
+// - Ротация файлов при превышении maxSizeMB (дефолт 50 МБ)
+// - Retention архивов: удаление архивов старше 24 ч и/или при
+//   суммарном объёме архивов > 500 МБ (выполняется в WriterThread)
 // - Цветной вывод в консоль
 // - Listener-механизм для подписки GUI
 // - Потокобезопасен
@@ -24,6 +26,7 @@
 #include <filesystem>
 #include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <windows.h>
 #include "../../domain/ports/IConnectionMonitor.h"
 
@@ -38,9 +41,13 @@ public:
     // Инициализация
     bool Initialize(const std::filesystem::path& log_dir,
                     domain::LogLevel level = domain::LogLevel::Info,
-                    size_t max_file_size_mb = 10,
+                    size_t max_file_size_mb = 50,
                     size_t max_files = 5);
     void Shutdown();
+
+    // Переустановить порог ротации основного лога (МБ) уже после Initialize.
+    // Потокобезопасно; применяется к следующей проверке размера файла.
+    void SetMaxFileSizeMB(size_t max_file_size_mb);
 
     // --- ILogSink interface ---
     void Log(domain::LogLevel level, const std::string& logger,
@@ -83,6 +90,11 @@ private:
     void WriterThread();
     bool OpenLogFile();
     void RotateLogFile();
+    // Retention-очистка архивов в m_logDir. Вызывается из WriterThread
+    // (не в горячем пути). Удаляет архивы старше RETENTION_MAX_AGE и, если
+    // суммарный объём архивов превышает RETENTION_MAX_TOTAL_BYTES, — самые
+    // старые архивы, пока объём не станет допустимым. Активный лог не трогается.
+    void CleanupArchives();
     std::string FormatLogMessage(const domain::LogEntry& entry) const;
     void WriteColorConsole(const domain::LogEntry& entry) const;
     void AddToRingBuffer(const domain::LogEntry& entry);
@@ -98,6 +110,11 @@ private:
     std::thread m_writerThread;
     std::atomic<bool> m_running{false};
 
+    // Счётчик записей после последней retention-очистки (для периодического
+    // запуска CleanupArchives в WriterThread без блокировки горячего пути).
+    uint64_t m_entriesSinceCleanup = 0;
+    static constexpr uint64_t CLEANUP_EVERY_N_ENTRIES = 5000;
+
     // Level
     std::atomic<domain::LogLevel> m_currentLevel{domain::LogLevel::Info};
 
@@ -105,9 +122,22 @@ private:
     std::FILE* m_file = nullptr;
     std::filesystem::path m_logDir;
     std::filesystem::path m_logPath;
-    size_t m_maxFileSize = 10 * 1024 * 1024;
+    std::atomic<size_t> m_maxFileSize{50ULL * 1024ULL * 1024ULL};
     size_t m_maxFiles = 5;
     std::mutex m_fileMutex;
+
+    // --- Retention (Задача 3) ---
+    // Базовое имя активного лога (без пути) — исключается из retention.
+    static constexpr const wchar_t* LOG_BASENAME = L"tcp_redirector.log";
+    // Префикс/суффикс архивных файлов: tcp_redirector.<stamp>.log
+    static constexpr const wchar_t* ARCHIVE_PREFIX = L"tcp_redirector.";
+    static constexpr const wchar_t* ARCHIVE_SUFFIX = L".log";
+    // Максимальный возраст архива — 24 часа (в 100-нс интервалах FILETIME).
+    static constexpr uint64_t RETENTION_MAX_AGE_100NS =
+        24ULL * 60ULL * 60ULL * 10'000'000ULL;
+    // Максимальный суммарный объём архивов — 500 МБ.
+    static constexpr uint64_t RETENTION_MAX_TOTAL_BYTES =
+        500ULL * 1024ULL * 1024ULL;
 
     // Ring buffer for IPC get_logs
     static constexpr size_t RING_BUFFER_SIZE = 2000;

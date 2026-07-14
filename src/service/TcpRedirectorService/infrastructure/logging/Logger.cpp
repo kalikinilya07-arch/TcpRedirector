@@ -1,6 +1,8 @@
 #include "Logger.h"
 #include <iostream>
 #include <cstring>
+#include <algorithm>
+#include <vector>
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -22,7 +24,8 @@ bool Logger::Initialize(const std::filesystem::path& log_dir,
     try {
         m_logDir = log_dir;
         m_currentLevel.store(level, std::memory_order_relaxed);
-        m_maxFileSize = max_file_size_mb * 1024ULL * 1024ULL;
+        m_maxFileSize.store(max_file_size_mb * 1024ULL * 1024ULL,
+                            std::memory_order_relaxed);
         m_maxFiles = max_files;
 
         // Пытаемся создать директорию и открыть лог-файл.
@@ -59,6 +62,11 @@ void Logger::Shutdown() {
             m_file = nullptr;
         }
     }
+}
+
+void Logger::SetMaxFileSizeMB(size_t max_file_size_mb) {
+    m_maxFileSize.store(max_file_size_mb * 1024ULL * 1024ULL,
+                        std::memory_order_relaxed);
 }
 
 // ---- ILogSink: Log ----
@@ -198,6 +206,7 @@ void Logger::WriterThread() {
             }
         }
 
+        bool rotatedThisBatch = false;
         for (const auto& entry : batch) {
             // 1. Цветной вывод в консоль
             WriteColorConsole(entry);
@@ -212,8 +221,10 @@ void Logger::WriterThread() {
                     std::fflush(m_file);
 
                     long pos = std::ftell(m_file);
-                    if (pos > 0 && static_cast<size_t>(pos) >= m_maxFileSize) {
+                    if (pos > 0 && static_cast<size_t>(pos) >=
+                            m_maxFileSize.load(std::memory_order_relaxed)) {
                         RotateLogFile();
+                        rotatedThisBatch = true;
                     }
                 }
             }
@@ -232,6 +243,16 @@ void Logger::WriterThread() {
             // 5. Ring buffer
             AddToRingBuffer(entry);
         }
+
+        // Retention-очистка архивов (Задача 3) — вне горячего пути:
+        // выполняется после ротации в текущем батче и/или периодически
+        // (раз в CLEANUP_EVERY_N_ENTRIES записей).
+        m_entriesSinceCleanup += batch.size();
+        if (rotatedThisBatch ||
+                m_entriesSinceCleanup >= CLEANUP_EVERY_N_ENTRIES) {
+            CleanupArchives();
+            m_entriesSinceCleanup = 0;
+        }
     }
 
     // Flush остатки перед shutdown
@@ -248,32 +269,144 @@ bool Logger::OpenLogFile() {
 }
 
 void Logger::RotateLogFile() {
+    // Задача 3: активный лог ротируется в архив с временной меткой
+    // tcp_redirector.YYYYMMDD_HHMMSS.log. Метка позволяет определять
+    // возраст архива по имени, а retention-очистка (CleanupArchives)
+    // удаляет старые/избыточные архивы. Схема с numbered-backup
+    // (tcp_redirector.1.log …) больше не используется.
     if (m_file) {
         std::fclose(m_file);
         m_file = nullptr;
     }
 
-    auto lastPath = m_logDir / (L"tcp_redirector." +
-        std::to_wstring(m_maxFiles - 1) + L".log");
     std::error_code ec;
-    std::filesystem::remove(lastPath, ec);
 
-    for (size_t i = m_maxFiles - 1; i > 0; --i) {
-        auto oldPath = m_logDir / (L"tcp_redirector." +
-            std::to_wstring(i - 1) + L".log");
-        auto newPath = m_logDir / (L"tcp_redirector." +
-            std::to_wstring(i) + L".log");
-        if (std::filesystem::exists(oldPath, ec)) {
-            std::filesystem::rename(oldPath, newPath, ec);
-        }
+    // Формируем имя архива по локальному времени. При коллизии имени
+    // (несколько ротаций в одну секунду) добавляем миллисекунды.
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t stamp[32] = {0};
+    swprintf(stamp, 32, L"%04u%02u%02u_%02u%02u%02u",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond);
+
+    std::wstring archiveName = std::wstring(ARCHIVE_PREFIX) + stamp + ARCHIVE_SUFFIX;
+    std::filesystem::path archivePath = m_logDir / archiveName;
+    if (std::filesystem::exists(archivePath, ec)) {
+        wchar_t stampMs[40] = {0};
+        swprintf(stampMs, 40, L"%04u%02u%02u_%02u%02u%02u_%03u",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        archiveName = std::wstring(ARCHIVE_PREFIX) + stampMs + ARCHIVE_SUFFIX;
+        archivePath = m_logDir / archiveName;
     }
 
-    auto backupPath = m_logDir / L"tcp_redirector.1.log";
     if (std::filesystem::exists(m_logPath, ec)) {
-        std::filesystem::rename(m_logPath, backupPath, ec);
+        std::filesystem::rename(m_logPath, archivePath, ec);
     }
 
     OpenLogFile();
+
+    // Немедленная очистка архивов после ротации (WriterThread также
+    // вызовет CleanupArchives по флагу rotatedThisBatch, но выполнить
+    // здесь безопасно и идемпотентно).
+    CleanupArchives();
+}
+
+// ---- Retention: очистка архивов ----
+
+void Logger::CleanupArchives() {
+    // Собираем список архивных файлов (все, кроме активного лога) вида
+    // tcp_redirector.*.log в m_logDir. Для каждого запоминаем путь,
+    // размер и время последней модификации (FILETIME, 64-бит).
+    struct ArchiveInfo {
+        std::wstring path;
+        uint64_t     lastWrite100ns; // FILETIME как uint64 (100-нс интервалы)
+        uint64_t     size;
+    };
+
+    std::vector<ArchiveInfo> archives;
+
+    std::wstring pattern = m_logDir.wstring();
+    if (!pattern.empty() && pattern.back() != L'\\' && pattern.back() != L'/') {
+        pattern += L'\\';
+    }
+    pattern += std::wstring(ARCHIVE_PREFIX) + L"*" + ARCHIVE_SUFFIX;
+
+    WIN32_FIND_DATAW fd;
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return; // нет архивов — ничего чистить
+    }
+
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+
+        // Исключаем активный лог tcp_redirector.log из retention.
+        if (_wcsicmp(fd.cFileName, LOG_BASENAME) == 0) continue;
+
+        ULARGE_INTEGER li;
+        li.LowPart  = fd.ftLastWriteTime.dwLowDateTime;
+        li.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+
+        ULARGE_INTEGER sz;
+        sz.LowPart  = fd.nFileSizeLow;
+        sz.HighPart = fd.nFileSizeHigh;
+
+        ArchiveInfo info;
+        info.path = m_logDir.wstring();
+        if (!info.path.empty() && info.path.back() != L'\\' &&
+                info.path.back() != L'/') {
+            info.path += L'\\';
+        }
+        info.path += fd.cFileName;
+        info.lastWrite100ns = li.QuadPart;
+        info.size = sz.QuadPart;
+        archives.push_back(std::move(info));
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+
+    if (archives.empty()) return;
+
+    // Текущее системное время в том же формате (UTC, 100-нс интервалы).
+    FILETIME ftNow;
+    GetSystemTimeAsFileTime(&ftNow);
+    ULARGE_INTEGER nowLi;
+    nowLi.LowPart  = ftNow.dwLowDateTime;
+    nowLi.HighPart = ftNow.dwHighDateTime;
+    uint64_t now100ns = nowLi.QuadPart;
+
+    std::error_code ec;
+
+    // 1) Удаляем архивы старше 24 часов (по времени последней модификации).
+    for (auto it = archives.begin(); it != archives.end();) {
+        uint64_t age = (now100ns > it->lastWrite100ns)
+            ? (now100ns - it->lastWrite100ns) : 0;
+        if (age > RETENTION_MAX_AGE_100NS) {
+            std::filesystem::remove(std::filesystem::path(it->path), ec);
+            it = archives.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // 2) Если суммарный объём оставшихся архивов > 500 МБ — удаляем
+    //    самые старые, пока объём не станет ≤ лимита.
+    uint64_t total = 0;
+    for (const auto& a : archives) total += a.size;
+
+    if (total > RETENTION_MAX_TOTAL_BYTES) {
+        // Сортируем по возрастанию времени модификации (старейшие первыми).
+        std::sort(archives.begin(), archives.end(),
+                  [](const ArchiveInfo& a, const ArchiveInfo& b) {
+                      return a.lastWrite100ns < b.lastWrite100ns;
+                  });
+        for (auto& a : archives) {
+            if (total <= RETENTION_MAX_TOTAL_BYTES) break;
+            std::filesystem::remove(std::filesystem::path(a.path), ec);
+            total = (total > a.size) ? (total - a.size) : 0;
+        }
+    }
 }
 
 // ---- Formatting ----

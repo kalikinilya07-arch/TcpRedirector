@@ -61,6 +61,19 @@
 
 #include "ITunEngine.h"
 #include "WintunSession.h"
+#include "../../process/ProcessResolver.h"
+
+// Форвард-декларации, чтобы не тянуть тяжёлые заголовки RuleEngine/ILogSink
+// в публичный .h движка.  LogLevel — enum class с фиксированным
+// базовым типом, поэтому его можно форвард-объявить (реальное определение
+// приходит через IConnectionMonitor.h/ProxyConfig.h в .cpp).
+namespace tcp_redirector {
+namespace domain {
+enum class LogLevel;
+namespace services { class RuleEngine; }
+namespace ports { class ILogSink; }
+}
+}
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -78,6 +91,27 @@ struct FlowMeta {
     uint16_t    original_dst_port; //!< host byte order.
     std::string source_ip;         //!< dotted-IPv4 источника (TUN-side ephemeral).
     uint16_t    source_port;       //!< host byte order.
+};
+
+/**
+ * @brief Конфигурация фильтрации по процессу внутри embedded-движка.
+ *
+ * Задача 2: раньше embedded-движок гнал ВЕСЬ IPv4-TCP через relay (прокси)
+ * без разбора процесса-источника (Option 2b).  Теперь, при enabled=true,
+ * движок в момент accept'а резолвит процесс-источник по source-порту и
+ * применяет те же правила RuleEngine (apps[] v2 + legacy), что и WinDivert:
+ *   • PROXY  → форвард на 127.0.0.1:relay_port (как раньше);
+ *   • DIRECT → прямой outbound-сокет на реальный original-dst (минуя прокси);
+ *   • BLOCK  → tcp_abort (соединение отклоняется).
+ *
+ * Все поля опциональны, кроме rule_engine (без него фильтрация no-op).
+ */
+struct EmbeddedProcessFilter {
+    bool                          enabled = false;        //!< Включить фильтрацию.
+    domain::services::RuleEngine* rule_engine = nullptr;  //!< Правила (не owned).
+    std::wstring                  target_process_path;    //!< Legacy fallback-путь.
+    bool                          proxy_configured = true;//!< Есть ли валидный прокси.
+    domain::ports::ILogSink*      log = nullptr;          //!< Опциональный лог (тег "wintun").
 };
 
 /**
@@ -102,6 +136,16 @@ public:
     Tun2SocksEngineEmbedded(std::shared_ptr<WintunSession> session,
                             uint16_t relay_port,
                             std::function<void(const FlowMeta&)> on_flow = {});
+
+    /**
+     * @brief Задать конфигурацию фильтрации по процессу (Задача 2).
+     *
+     * Должно вызываться ДО Start().  Если filter.enabled=false или
+     * rule_engine=nullptr — движок работает по-старому (всё через relay).
+     */
+    void SetProcessFilter(const EmbeddedProcessFilter& filter) {
+        m_filter = filter;
+    }
 
     ~Tun2SocksEngineEmbedded() override;
 
@@ -137,10 +181,35 @@ private:
     // Утилиты
     void CloseFlow(Flow* flow, bool from_engine_thread);
 
+    // --- Задача 2: фильтрация по процессу ---
+
+    /// Решение для одного flow'а (аналог WinDivertCapture::CheckProcessRule).
+    enum class FlowDecision { Proxy, Direct, Block };
+
+    /**
+     * @brief Определить действие для принятого flow'а по процессу-источнику.
+     *
+     * Резолвит PID по source-порту, получает путь процесса, спрашивает
+     * RuleEngine (MatchForFlow → legacy Match → target-path/дерево процессов).
+     * Вызывается ВНЕ core-lock (резолв PID может быть тяжёлым).
+     *
+     * @param meta FlowMeta принятого соединения (source/dst).
+     * @return Proxy / Direct / Block.  Если фильтрация выключена — всегда Proxy.
+     */
+    FlowDecision DecideFlow(const FlowMeta& meta);
+
+    /// Тонкая обёртка логирования (nullptr-safe, тег "wintun").
+    void FilterLog(domain::LogLevel level, const std::string& msg) const;
+
     // --- члены ---
     std::shared_ptr<WintunSession> m_session;
     uint16_t                       m_relay_port;
     std::function<void(const FlowMeta&)> m_on_flow;
+
+    // Задача 2: конфигурация фильтрации + резолвер процесса.
+    EmbeddedProcessFilter          m_filter;
+    process::ProcessResolver       m_resolver;
+    std::atomic<uint32_t>          m_target_pid{0};
 
     HANDLE                         m_stop_event = nullptr;
     std::thread                    m_engine_thread;

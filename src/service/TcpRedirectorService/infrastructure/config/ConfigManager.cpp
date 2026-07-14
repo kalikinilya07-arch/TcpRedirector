@@ -349,7 +349,7 @@ bool ConfigManager::LoadImpl() {
             auto& l = j["log"];
             m_config.log.level = l.value("level", 2);
             m_config.log.fileEnabled = l.value("fileEnabled", true);
-            m_config.log.maxSizeMB = l.value("maxSizeMB", 10);
+            m_config.log.maxSizeMB = l.value("maxSizeMB", 50);
         }
         if (j.contains("stats") && j["stats"].is_object()) {
             auto& s = j["stats"];
@@ -791,6 +791,10 @@ WintunSettings ConfigManager::ParseWintunSettings(const nlohmann::json& jw) cons
         w.external_engine.restart_backoff_ms  = je.value("restart_backoff_ms",  w.external_engine.restart_backoff_ms);
     }
 
+    // Задача 2: process_filter_enabled — по умолчанию true (фильтрация по
+    // процессу в embedded-движке включена, поведение консистентно с WinDivert).
+    w.process_filter_enabled = jw.value("process_filter_enabled", w.process_filter_enabled);
+
     return w;
 }
 
@@ -919,6 +923,9 @@ nlohmann::json ConfigManager::WintunSettingsToJson(const WintunSettings& w) cons
     je["restart_on_crash"]   = w.external_engine.restart_on_crash;
     je["restart_backoff_ms"] = w.external_engine.restart_backoff_ms;
     j["external_engine"]     = je;
+
+    // Задача 2: фильтрация по процессу внутри Wintun-движка.
+    j["process_filter_enabled"] = w.process_filter_enabled;
 
     return j;
 }

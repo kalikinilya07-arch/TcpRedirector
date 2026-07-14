@@ -37,6 +37,9 @@ Thumbs.db
 build/
 releases/
 deploy/
+deploy_latest/
+deploy_v3/
+output/
 [Bb]in/
 [Oo]bj/
 [Oo]ut/

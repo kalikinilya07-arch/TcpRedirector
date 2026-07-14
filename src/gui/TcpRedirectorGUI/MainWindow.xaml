@@ -245,6 +245,10 @@
                                                   Margin="0,2"/>
                                     </Grid>
 
+                                    <CheckBox Content="Фильтрация по процессу (Wintun)"
+                                              IsChecked="{Binding Settings.WintunProcessFilterEnabled, Mode=TwoWay}"
+                                              Margin="0,6,0,0"/>
+
                                     <!-- External engine sub-panel — visible only when engine==External -->
                                     <StackPanel Margin="0,6,0,0"
                                                 Visibility="{Binding Settings.IsExternalEngine, Converter={StaticResource BoolToVis}}">

@@ -126,6 +126,19 @@ public partial class SettingsViewModel : ObservableObject
 
     public bool IsExternalEngine => Wintun.Engine == WintunEngineKind.External;
 
+    public bool WintunProcessFilterEnabled
+    {
+        get => Wintun.ProcessFilterEnabled;
+        set
+        {
+            if (Wintun.ProcessFilterEnabled != value)
+            {
+                Wintun.ProcessFilterEnabled = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
     public string ExternalExecutable
     {
         get => Wintun.ExternalEngine.Executable;
@@ -224,6 +237,7 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(WintunMtu));
         OnPropertyChanged(nameof(WintunEngine));
         OnPropertyChanged(nameof(IsExternalEngine));
+        OnPropertyChanged(nameof(WintunProcessFilterEnabled));
         OnPropertyChanged(nameof(ExternalExecutable));
         OnPropertyChanged(nameof(ExternalSocks5Listen));
         OnPropertyChanged(nameof(ExternalRestartOnCrash));

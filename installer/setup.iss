@@ -15,7 +15,13 @@
 ; =============================================================================
 
 #define MyAppName "TcpRedirector"
-#define MyAppVersion "1.1.0"
+; MyAppVersion may be overridden from the command line, e.g.
+;   ISCC.exe /DMyAppVersion=latest setup.iss
+; (used by easy_mode_deploy.bat). Without an override the historical default
+; 1.1.0 is used, so the manual compile flow is unchanged.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.1.0"
+#endif
 #define MyAppPublisher "TcpRedirector"
 #define MyAppExeName "TcpRedirectorGUI.exe"
 

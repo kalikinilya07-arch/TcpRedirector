@@ -61,7 +61,7 @@ struct AuthSettings {
 struct LogSettings {
     int  level = 2;               //!< Уровень логирования: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG
     bool fileEnabled = true;      //!< Писать ли лог в файл
-    int  maxSizeMB = 10;          //!< Максимальный размер файла до ротации (МБ)
+    int  maxSizeMB = 50;          //!< Максимальный размер файла до ротации (МБ)
 };
 
 /**
@@ -193,6 +193,14 @@ struct WintunSettings {
     WintunEngineKind engine = WintunEngineKind::Embedded;
     //!< Настройки внешнего движка (используются только при engine=External).
     ExternalEngineSettings external_engine{};
+
+    //!< Задача 2: включить фильтрацию по процессу внутри Wintun-движка.
+    //!< При true (по умолчанию) embedded-движок применяет те же apps[]-правила,
+    //!< что и WinDivert: резолвит процесс-источник по source-порту и решает
+    //!< PROXY / DIRECT / BLOCK.  При false — сохраняется прежнее поведение
+    //!< Option 2b (весь IPv4-TCP гонится через прокси без фильтрации).
+    //!< В external-движке поле не влияет (см. ограничение external-режима).
+    bool process_filter_enabled = true;
 };
 
 /**

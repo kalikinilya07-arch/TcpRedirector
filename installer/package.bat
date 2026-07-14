@@ -10,7 +10,12 @@ setlocal enabledelayedexpansion
 :: does not fail packaging; the installer just ships fewer files.
 :: -----------------------------------------------------------------------------
 
-set DEPLOY=..\deploy_v3
+:: WP-easy: DEPLOY / PKG_VERSION may be pre-set by a caller (e.g.
+:: easy_mode_deploy.bat) via the environment. `if not defined` keeps the
+:: historical manual behaviour intact (defaults unchanged) while letting the
+:: easy-mode wrapper redirect the source tree and version label.
+if not defined DEPLOY set DEPLOY=..\deploy_v3
+if not defined PKG_VERSION set PKG_VERSION=1.1.0
 set OBFUSCATED=obfuscated
 set OUTPUT=..\output
 
@@ -252,16 +257,16 @@ echo pause
 ) > "%OBFUSCATED%\uninstall.bat"
 
 :: Create ZIP fallback (mirrors the Inno Setup output)
-powershell -Command "Compress-Archive -Path '%OBFUSCATED%\*' -DestinationPath '%OUTPUT%\TcpRedirector_1.1.0.zip' -Force" 2>&1
+powershell -Command "Compress-Archive -Path '%OBFUSCATED%\*' -DestinationPath '%OUTPUT%\TcpRedirector_%PKG_VERSION%.zip' -Force" 2>&1
 
 echo.
 echo ========================================
 echo  DONE!
-echo  Package: ..\output\TcpRedirector_1.1.0.zip
+echo  Package: ..\output\TcpRedirector_%PKG_VERSION%.zip
 echo ========================================
 echo.
 echo To install:
-echo   1. Extract TcpRedirector_1.1.0.zip
+echo   1. Extract TcpRedirector_%PKG_VERSION%.zip
 echo   2. Right-click install.bat ^> Run as Administrator
 echo   3. Launch from Start Menu
 echo.

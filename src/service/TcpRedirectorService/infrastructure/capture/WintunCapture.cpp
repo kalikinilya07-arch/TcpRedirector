@@ -258,8 +258,31 @@ bool WintunCapture::Open() {
     std::unique_ptr<capture::wintun::ITunEngine> engine;
     switch (m_settings.engine) {
         case WintunEngineKind::Embedded: {
-            engine = std::make_unique<capture::wintun::Tun2SocksEngineEmbedded>(
+            auto embedded = std::make_unique<capture::wintun::Tun2SocksEngineEmbedded>(
                 m_session, m_relayPort, /*on_flow=*/nullptr);
+
+            // Задача 2: фильтрация по процессу внутри embedded-движка.
+            // Прокидываем RuleEngine + флаг + target-path.  При
+            // process_filter_enabled=true движок применяет apps[]-правила
+            // (PROXY/DIRECT/BLOCK), как WinDivert; иначе — старое поведение
+            // Option 2b (весь TCP через прокси).
+            capture::wintun::EmbeddedProcessFilter pf;
+            pf.enabled             = m_settings.process_filter_enabled;
+            pf.rule_engine         = m_ruleEngine;
+            pf.target_process_path = m_targetProcessPath;
+            pf.proxy_configured    = (!m_proxyHost.empty() && m_proxyPort != 0);
+            pf.log                 = m_log;
+            embedded->SetProcessFilter(pf);
+
+            if (pf.enabled && pf.rule_engine) {
+                LogInfo("Process filter ENABLED for embedded engine "
+                        "(apps[] rules applied inside tunnel)");
+            } else {
+                LogInfo("Process filter DISABLED for embedded engine "
+                        "(all IPv4-TCP proxied — Option 2b)");
+            }
+
+            engine = std::move(embedded);
             break;
         }
         case WintunEngineKind::External: {
@@ -268,6 +291,26 @@ bool WintunCapture::Open() {
             //   • ExternalEngineSettings (executable, extra_args, socks5_listen,
             //     restart_on_crash, restart_backoff_ms).
             // ServiceMain уже забиндил SOCKS5-listener на socks5_listen (WP12a).
+            //
+            // Задача 2 — ОГРАНИЧЕНИЕ external-режима:
+            //   Фильтрация по конкретному процессу на уровне отдельного
+            //   соединения здесь технически невозможна тем же способом, что в
+            //   embedded/WinDivert.  Трафик терминирует дочерний tun2socks.exe
+            //   и форвардит его на loopback-SOCKS5.  На приёме SOCKS5 источник
+            //   любого соединения — это САМ tun2socks.exe (его PID), а не
+            //   оригинальное приложение; tun2socks к тому же НЕ сохраняет
+            //   source-порт исходного приложения.  Поэтому резолв процесса по
+            //   source-порту вернёт tun2socks, а не целевое приложение.
+            //   Fallback: весь трафик туннеля проксируется (как и раньше).
+            //   Если нужна фильтрация по процессу — используйте engine=embedded
+            //   или capture_mode=windivert.
+            if (m_settings.process_filter_enabled) {
+                LogWarn("Process filter is requested (process_filter_enabled=true) "
+                        "but engine=external does NOT support per-process filtering "
+                        "(PID at SOCKS5 boundary is tun2socks.exe itself). "
+                        "All tunneled TCP will be proxied. "
+                        "Use engine=embedded or capture_mode=windivert for per-process rules.");
+            }
             engine = std::make_unique<capture::wintun::Tun2SocksEngineExternal>(
                 Utf8ToWide(m_settings.adapter_name),
                 m_settings.external_engine,

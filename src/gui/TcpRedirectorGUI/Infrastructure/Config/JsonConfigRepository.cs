@@ -162,6 +162,11 @@ public sealed class JsonConfigRepository : IConfigRepository
 
             w.Engine = WintunEngineFromString(jw["engine"]?.GetValue<string>());
 
+            // process_filter_enabled (embedded-engine per-process filtering).
+            // Missing → default true, matching the C++ service default.
+            if (jw["process_filter_enabled"] is JsonValue pfVal && pfVal.TryGetValue<bool>(out var pf))
+                w.ProcessFilterEnabled = pf;
+
             var je = jw["external_engine"]?.AsObject();
             if (je is not null)
             {
@@ -283,7 +288,7 @@ public sealed class JsonConfigRepository : IConfigRepository
                 {
                     ["level"] = logLevel,
                     ["fileEnabled"] = true,
-                    ["maxSizeMB"] = 10
+                    ["maxSizeMB"] = 50
                 },
                 ["stats"] = new JsonObject
                 {
@@ -374,7 +379,7 @@ public sealed class JsonConfigRepository : IConfigRepository
                 {
                     ["level"] = logLevel,
                     ["fileEnabled"] = true,
-                    ["maxSizeMB"] = 10
+                    ["maxSizeMB"] = 50
                 },
                 ["stats"] = new JsonObject
                 {
@@ -478,7 +483,7 @@ public sealed class JsonConfigRepository : IConfigRepository
             {
                 ["level"] = 2,
                 ["fileEnabled"] = true,
-                ["maxSizeMB"] = 10
+                ["maxSizeMB"] = 50
             },
             ["stats"] = new JsonObject
             {
@@ -542,8 +547,9 @@ public sealed class JsonConfigRepository : IConfigRepository
             ["adapter_guid"]     = w.AdapterGuid,
             ["tunnel_ipv4_cidr"] = w.TunnelIpv4Cidr,
             ["tunnel_ipv6_cidr"] = w.TunnelIpv6Cidr,
-            ["mtu"]              = w.Mtu,
-            ["engine"]           = WintunEngineToString(w.Engine),
+            ["mtu"]                    = w.Mtu,
+            ["engine"]                 = WintunEngineToString(w.Engine),
+            ["process_filter_enabled"] = w.ProcessFilterEnabled,
             ["external_engine"]  = new JsonObject
             {
                 ["executable"]          = w.ExternalEngine.Executable,

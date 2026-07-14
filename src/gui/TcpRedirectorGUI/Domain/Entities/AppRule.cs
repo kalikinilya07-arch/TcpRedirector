@@ -77,6 +77,14 @@ public sealed class WintunSettings
     public string TunnelIpv6Cidr { get; set; } = "";
     public int Mtu { get; set; } = 1500;
     public WintunEngineKind Engine { get; set; } = WintunEngineKind.Embedded;
+
+    /// <summary>
+    /// Enables per-process filtering in the Wintun embedded engine. Mirrors
+    /// C++ <c>wintun.process_filter_enabled</c> (default <c>true</c>). Must be
+    /// round-tripped so it is not lost when the GUI rewrites the config.
+    /// </summary>
+    public bool ProcessFilterEnabled { get; set; } = true;
+
     public ExternalEngineSettings ExternalEngine { get; set; } = new();
 }
 

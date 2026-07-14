@@ -22,7 +22,7 @@
     "log": {
         "level": 2,
         "fileEnabled": true,
-        "maxSizeMB": 10
+        "maxSizeMB": 50
     },
 
     "stats": {
@@ -36,6 +36,7 @@
         "tunnel_ipv6_cidr": "",
         "mtu": 1500,
         "engine": "embedded",
+        "process_filter_enabled": true,
         "external_engine": {
             "executable": ".bin/tun2socks/tun2socks.exe",
             "extra_args": [],

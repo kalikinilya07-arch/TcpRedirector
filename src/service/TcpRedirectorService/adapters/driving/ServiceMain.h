@@ -65,9 +65,18 @@ public:
             logDir = std::filesystem::current_path() / L"logs";
         }
 
-        // Initialize logging (не фатально если папка логов недоступна)
+        // Initialize logging (не фатально если папка логов недоступна).
+        // Задача 3 (логирование): порог ротации основного лога — 50 МБ
+        // (совпадает с дефолтом LogSettings::maxSizeMB и сид-конфигом).
+        // Конфиг ещё не загружен на этом этапе (логгер нужен для сообщений
+        // миграции), поэтому берём дефолт из LogSettings; после Load() ниже
+        // порог переустанавливается фактическим значением из config.json.
         m_logger = std::make_unique<infrastructure::Logger>();
-        m_logger->Initialize(logDir, domain::LogLevel::Info);
+        {
+            infrastructure::LogSettings defLog{};
+            m_logger->Initialize(logDir, domain::LogLevel::Info,
+                                 static_cast<size_t>(defLog.maxSizeMB));
+        }
 
         m_logger->Info("service", "Initializing TcpRedirector Service...");
 
@@ -88,6 +97,18 @@ public:
         m_configManager = std::make_unique<infrastructure::ConfigManager>();
         if (!m_configManager->Load()) {
             m_logger->Warn("service", "No config found, using defaults");
+        }
+
+        // Задача 3: применяем фактический порог ротации основного лога из
+        // config.json (log.maxSizeMB, дефолт 50). Логгер уже поднят выше с
+        // дефолтом; здесь переустанавливаем на значение из конфига.
+        {
+            const int cfgMaxMB = m_configManager->GetConfig().log.maxSizeMB;
+            if (cfgMaxMB > 0) {
+                m_logger->SetMaxFileSizeMB(static_cast<size_t>(cfgMaxMB));
+                m_logger->Info("service",
+                    "Log rotation threshold: " + std::to_string(cfgMaxMB) + " MB");
+            }
         }
 
         // Proxy config from ConfigManager — uses GetProxyConfig() to get decrypted password

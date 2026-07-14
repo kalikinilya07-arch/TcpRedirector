@@ -125,6 +125,7 @@
     <ClInclude Include="infrastructure\capture\wintun\Tun2SocksEngineExternal.h" />
     <ClInclude Include="infrastructure\capture\wintun\RouteInstaller.h" />
     <ClInclude Include="infrastructure\process\ChildProcessSupervisor.h" />
+    <ClInclude Include="infrastructure\process\ProcessResolver.h" />
     <ClInclude Include="infrastructure\capture\wintun\lwip\lwipopts.h" />
     <ClInclude Include="infrastructure\capture\wintun\lwip\lwip_hooks.h" />
     <ClInclude Include="infrastructure\capture\wintun\lwip\arch\cc.h" />

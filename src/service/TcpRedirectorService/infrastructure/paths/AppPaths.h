@@ -85,10 +85,14 @@ inline std::wstring GetConfigPathW() {
 
 /**
  * @brief Директория логов рядом с EXE сервиса (с завершающим '\').
- * @return <exeDir>\logs\
+ *
+ * Задача 3 (логирование): каталог логов переименован в `.logs` (с точкой
+ * в начале), чтобы визуально отделить служебные логи от рабочих файлов.
+ *
+ * @return <exeDir>\.logs\
  */
 inline std::wstring GetLogDirectoryW() {
-    return GetExecutableDirectoryW() + L"logs\\";
+    return GetExecutableDirectoryW() + L".logs\\";
 }
 
 /**

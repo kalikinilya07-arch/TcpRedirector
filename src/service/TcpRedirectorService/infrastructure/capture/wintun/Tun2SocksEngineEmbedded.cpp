@@ -29,6 +29,10 @@
 
 #include "Tun2SocksEngineEmbedded.h"
 
+#include "../../../domain/services/RuleEngine.h"
+#include "../../../domain/ports/IConnectionMonitor.h"  // ILogSink / LogLevel
+#include "../../utf8_convert.h"
+
 #include <algorithm>
 #include <cstring>
 #include <sstream>
@@ -221,16 +225,38 @@ struct EngineTramp {
         meta.source_ip         = Ip4ToString(&newpcb->remote_ip);
         meta.source_port       = newpcb->remote_port;
 
+        // === Задача 2: фильтрация по процессу ===
+        // Определяем действие ДО открытия сокета.  DecideFlow резолвит
+        // процесс-источник по source-порту и спрашивает RuleEngine.
+        using FlowDecision = Tun2SocksEngineEmbedded::FlowDecision;
+        const FlowDecision decision = engine->DecideFlow(meta);
+        if (decision == FlowDecision::Block) {
+            // BLOCK — отклоняем соединение.
+            tcp_abort(newpcb);
+            return ERR_ABRT;
+        }
+
+        // Целевой endpoint зависит от решения:
+        //   PROXY  → 127.0.0.1:relay_port (как в Option 2b);
+        //   DIRECT → реальный original-dst (трафик минует прокси).
+        sockaddr_in target{};
+        target.sin_family = AF_INET;
+        if (decision == FlowDecision::Direct) {
+            target.sin_port = htons(meta.original_dst_port);
+            // newpcb->local_ip хранит original-dst в network byte order.
+            target.sin_addr.s_addr =
+                ip4_addr_get_u32(ip_2_ip4(&newpcb->local_ip));
+        } else {
+            target.sin_port = htons(engine->m_relay_port);
+            inet_pton(AF_INET, "127.0.0.1", &target.sin_addr);
+        }
+
         SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (s == INVALID_SOCKET) {
             tcp_abort(newpcb);
             return ERR_ABRT;
         }
-        sockaddr_in relay{};
-        relay.sin_family = AF_INET;
-        relay.sin_port   = htons(engine->m_relay_port);
-        inet_pton(AF_INET, "127.0.0.1", &relay.sin_addr);
-        if (::connect(s, reinterpret_cast<sockaddr*>(&relay), sizeof(relay)) != 0) {
+        if (::connect(s, reinterpret_cast<sockaddr*>(&target), sizeof(target)) != 0) {
             ::closesocket(s);
             tcp_abort(newpcb);
             return ERR_ABRT;
@@ -413,6 +439,101 @@ void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread) {
             flow->pcb = nullptr;
         }
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Задача 2: фильтрация по процессу                                             */
+/* ------------------------------------------------------------------------- */
+
+void Tun2SocksEngineEmbedded::FilterLog(domain::LogLevel level,
+                                        const std::string& msg) const {
+    if (!m_filter.log) return;
+    m_filter.log->Log(level, "wintun", msg);
+}
+
+Tun2SocksEngineEmbedded::FlowDecision
+Tun2SocksEngineEmbedded::DecideFlow(const FlowMeta& meta) {
+    // Фильтрация выключена или нет движка правил → поведение Option 2b:
+    // весь трафик идёт через прокси (relay).
+    if (!m_filter.enabled || m_filter.rule_engine == nullptr) {
+        return FlowDecision::Proxy;
+    }
+
+    // 1. PID по source-порту (source_port — host byte order).
+    //    §6.9 плана: при промахе один ретрай через 20 мс — TCP-таблица ОС
+    //    может отставать от только что установленного соединения.
+    uint32_t pid = m_resolver.ResolvePidBySourcePort(meta.source_port);
+    if (pid == 0) {
+        Sleep(20);
+        pid = m_resolver.ResolvePidBySourcePort(meta.source_port);
+    }
+    if (pid == 0) {
+        // PID так и не найден.  В отличие от WinDivert (где решение можно
+        // пересмотреть на следующем пакете), здесь решение принимается один
+        // раз на SYN.  Дефолт — DIRECT: не гоним неизвестный трафик в прокси.
+        return FlowDecision::Direct;
+    }
+
+    // 2. Собственный процесс — DIRECT (защита от петли).
+    if (pid == GetCurrentProcessId()) {
+        return FlowDecision::Direct;
+    }
+
+    // 3. Путь процесса.
+    const std::wstring procPath = process::ProcessResolver::GetProcessPath(pid);
+    if (procPath.empty()) {
+        return FlowDecision::Direct;
+    }
+    const std::wstring procName = process::ProcessResolver::ShortName(procPath);
+
+    // 4. Port-aware матчинг (v2 apps[]).
+    const std::string procNameUtf8 = WideToUtf8(procName);
+    const std::string procPathUtf8 = WideToUtf8(procPath);
+    auto appMatch = m_filter.rule_engine->MatchForFlow(
+        procNameUtf8, procPathUtf8, meta.original_dst_port);
+    if (appMatch.matched) {
+        if (!m_filter.proxy_configured) return FlowDecision::Direct;
+        FilterLog(domain::LogLevel::Trace, "[wintun][PROXY] " + procNameUtf8
+                  + " -> " + meta.original_dst_ip + ":"
+                  + std::to_string(meta.original_dst_port));
+        return FlowDecision::Proxy;
+    }
+
+    // 5. Legacy-матчинг по имени/пути процесса.
+    auto action = m_filter.rule_engine->Match(procName, procPath);
+    if (action == domain::RuleAction::Block) {
+        FilterLog(domain::LogLevel::Debug, "[wintun][BLOCK] " + procNameUtf8);
+        return FlowDecision::Block;
+    }
+    if (action == domain::RuleAction::Proxy) {
+        if (!m_filter.proxy_configured) return FlowDecision::Direct;
+        return FlowDecision::Proxy;
+    }
+
+    // 6. Fallback: target-process по пути + дерево процессов (helper/child).
+    if (!m_filter.target_process_path.empty()) {
+        // Прямое совпадение пути.
+        if (_wcsicmp(procPath.c_str(), m_filter.target_process_path.c_str()) == 0) {
+            m_target_pid.store(pid, std::memory_order_relaxed);
+            return m_filter.proxy_configured ? FlowDecision::Proxy
+                                             : FlowDecision::Direct;
+        }
+        // Резолвим target PID, если ещё не знаем.
+        uint32_t tpid = m_target_pid.load(std::memory_order_relaxed);
+        if (tpid == 0) {
+            tpid = process::ProcessResolver::FindPidByImageName(
+                m_filter.target_process_path);
+            if (tpid != 0) m_target_pid.store(tpid, std::memory_order_relaxed);
+        }
+        // Дерево процессов вверх — ловим helper/child.
+        if (tpid != 0 && process::ProcessResolver::IsDescendantOf(pid, tpid)) {
+            return m_filter.proxy_configured ? FlowDecision::Proxy
+                                             : FlowDecision::Direct;
+        }
+    }
+
+    // 7. Ничего не сматчилось — DIRECT (прямой outbound, минуя прокси).
+    return FlowDecision::Direct;
 }
 
 /* ------------------------------------------------------------------------- */

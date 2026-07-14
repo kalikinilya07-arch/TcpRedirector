@@ -1,5 +1,6 @@
 #include "WinDivertCapture.h"
 #include "../utf8_convert.h"
+#include "../paths/AppPaths.h"
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
@@ -202,17 +203,40 @@ bool WinDivertCapture::Open() {
     // Ensure the WinDivert kernel driver is running before calling WinDivertOpen
     EnsureDriverRunning();
 
-    // Auto-init log file
+    // Auto-init log file.
+    // Задача 3 (логирование): отладочный лог WinDivert теперь ложится в
+    // общий каталог логов <exeDir>\.logs\ (paths::GetLogDirectoryW()), а
+    // не в жёстко зашитый %ProgramData%\TcpRedirector\logs. Файл лежит в
+    // той же .logs\ и подпадает под общую retention-очистку логгера.
+    // Логика самого отладочного лога сохранена — меняется только каталог.
     if (!g_wdLogFile) {
-        wchar_t logPath[MAX_PATH] = {0};
-        GetEnvironmentVariableW(L"ProgramData", logPath, MAX_PATH);
-        wcscat_s(logPath, L"\\TcpRedirector\\logs\\windivert_debug.log");
-        for (wchar_t* p = logPath; *p; p++) {
-            if (*p == L'\\') { *p = 0; CreateDirectoryW(logPath, nullptr); *p = L'\\'; }
+        std::wstring logDir;
+        try {
+            logDir = paths::GetLogDirectoryW(); // с завершающим '\'
+        } catch (...) {
+            // Fallback на прежнее поведение, если не удалось резолвить exeDir.
+            wchar_t pd[MAX_PATH] = {0};
+            GetEnvironmentVariableW(L"ProgramData", pd, MAX_PATH);
+            logDir = std::wstring(pd) + L"\\TcpRedirector\\.logs\\";
         }
-        g_wdLogFile = _wfopen(logPath, L"a");
+
+        // Гарантируем существование каталога (рекурсивно по компонентам).
+        {
+            std::wstring dir = logDir;
+            for (size_t i = 0; i < dir.size(); ++i) {
+                if (dir[i] == L'\\' || dir[i] == L'/') {
+                    wchar_t saved = dir[i];
+                    dir[i] = 0;
+                    if (dir[0] != 0) CreateDirectoryW(dir.c_str(), nullptr);
+                    dir[i] = saved;
+                }
+            }
+        }
+
+        std::wstring logPath = logDir + L"windivert_debug.log";
+        g_wdLogFile = _wfopen(logPath.c_str(), L"a");
         if (g_wdLogFile) {
-            WD_DEBUG("[LOG] Debug log opened: %ls\n", logPath);
+            WD_DEBUG("[LOG] Debug log opened: %ls\n", logPath.c_str());
         }
     }
 
