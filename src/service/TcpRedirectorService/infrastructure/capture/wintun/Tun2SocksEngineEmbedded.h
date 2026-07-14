@@ -71,7 +71,7 @@ namespace tcp_redirector {
 namespace domain {
 enum class LogLevel;
 namespace services { class RuleEngine; }
-namespace ports { class ILogSink; class IConnectionMonitor; }
+namespace ports { class ILogSink; class IConnectionMonitor; class IConnectionTable; }
 }
 }
 
@@ -159,6 +159,22 @@ public:
         m_conn_monitor = mon;
     }
 
+    /**
+     * @brief Задать таблицу соединений для восстановления original-dst в relay.
+     *
+     * КРИТИЧНО для форвардинга через прокси.  Relay восстанавливает оригинальный
+     * адрес назначения ТОЛЬКО через ConnectionTable::Get(client_port).  В отличие
+     * от WinDivert (который сохраняет source-порт приложения), embedded-движок
+     * открывает НОВЫЙ loopback-сокет к relay со своим эфемерным портом, поэтому
+     * обязан сам зарегистрировать (loopback_port -> original-dst) ДО connect().
+     * Без этого relay пишет "No connection record for port X" и закрывает
+     * соединение — трафик виден в туннеле, но НЕ форвардится к прокси.
+     * Не owned.  Должно вызываться ДО Start().
+     */
+    void SetConnectionTable(domain::ports::IConnectionTable* table) {
+        m_conn_table = table;
+    }
+
     ~Tun2SocksEngineEmbedded() override;
 
     Tun2SocksEngineEmbedded(const Tun2SocksEngineEmbedded&) = delete;
@@ -230,6 +246,12 @@ private:
     // Задача 4: монитор соединений для GUI-трассировки (не owned).
     domain::ports::IConnectionMonitor* m_conn_monitor = nullptr;
     std::atomic<uint64_t>          m_next_conn_id{1};
+
+    // Таблица соединений (не owned): embedded-движок регистрирует в ней
+    // (loopback-src-port -> original-dst) для каждого PROXY-flow, чтобы relay
+    // мог восстановить адрес назначения при accept'е loopback-сокета движка
+    // (см. SetConnectionTable).  nullptr → форвардинг к прокси невозможен.
+    domain::ports::IConnectionTable* m_conn_table = nullptr;
 
     HANDLE                         m_stop_event = nullptr;
     std::thread                    m_engine_thread;

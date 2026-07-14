@@ -134,3 +134,44 @@ Config стенда: добавлен `wintun.route_ladder_prefix = 5`.
 ВАЖНО: при одновременно активном стороннем WireGuard с равной/большей глубиной
 лестницы победа не гарантирована (см. ограничение в дизайне) — на время теста его
 лучше выключить.
+
+## ВТОРОЙ КОРНЕВОЙ БАГ (найден после route-ladder): «видит трафик, но не форвардит»
+
+После фикса маршрутов пакеты доходят до TUN (RX>0), НО embedded по-прежнему не
+проксировал трафик. Причина — на уровне relay, а не маршрутов:
+
+- Relay (`TcpRelayServer::HandleNewConnection`) восстанавливает original-dst
+  ТОЛЬКО через `ConnectionTable::Get(client_port)`.
+- WinDivert кладёт мэппинг в capture-колбэке; external/SOCKS5 — в
+  `EnrollSocks5Connection`. А **embedded-движок открывал loopback-сокет к relay
+  со своим эфемерным портом и НЕ добавлял запись в `ConnectionTable`** (движок
+  даже не получал ссылку на неё; создавался с `on_flow=nullptr`).
+- Итог: relay на каждое embedded-соединение писал `No connection record for
+  port X` и закрывал сокет → трафик виден в туннеле, но к прокси не уходит.
+  Это ровно симптом «видит, но не перенаправляет».
+
+### Исправление (реализовано)
+- `Tun2SocksEngineEmbedded::SetConnectionTable(...)` + член `m_conn_table`;
+  `WintunCapture` передаёт `m_connTable` движку (`WintunCapture.cpp`).
+- В `OnAccept` для PROXY: ДО `connect()` к relay биндим loopback-сокет к
+  `127.0.0.1:0`, читаем эфемерный порт (`getsockname`) и делаем
+  `ConnectionTable::Add(port, 127.0.0.1, original-dst, proxy_config_id=1)`.
+  Регистрация ДО `connect()` устраняет гонку accept-before-Add. В `CloseFlow` —
+  `Remove(port)`.
+
+### Побочный фикс: DIRECT в embedded теперь fail-fast
+- Раньше DIRECT делал блокирующий `connect()` к реальному dst НА engine-треде;
+  сокет по split-tunnel уходил обратно в тот же TUN, читать некому → фриз стека.
+- Теперь DIRECT-flow отклоняется (`tcp_abort`). Прямой проход не-целевого
+  трафика в embedded требует обхода туннеля по физ. интерфейсу (async-outbound +
+  interface-bind) — отложено.
+- Рекомендация эксплуатации: «проксировать всё» → `process_filter_enabled=false`;
+  селективно + прямой проход остального → `capture_mode=windivert`.
+
+### Проверка
+- Сборка Release/x64 — 0 ошибок (пред-существующие C4005 — не в счёт);
+  `RuleEngineTest` 16/16, `ConnectionTableTest` 8/8 PASS.
+- Рантайм на стенде: RX>0 у адаптера, в логе НЕТ `No connection record` для
+  проксируемых соединений, relay пишет `CONNECT … 200 OK`, на прокси виден
+  `CONNECT`. Для чистоты теста удобнее `process_filter_enabled=false` ИЛИ
+  корректный `apps[]` (правильный pattern + порт).

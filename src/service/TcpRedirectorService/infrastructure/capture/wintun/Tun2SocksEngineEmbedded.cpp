@@ -31,6 +31,7 @@
 
 #include "../../../domain/services/RuleEngine.h"
 #include "../../../domain/ports/IConnectionMonitor.h"  // ILogSink / LogLevel / IConnectionMonitor
+#include "../../../domain/ports/IConnectionTable.h"     // Add/Remove — relay dst recovery
 #include "../../../domain/entities/ProxyConfig.h"       // ConnectionRecord / ConnectionState
 #include "../../utf8_convert.h"
 
@@ -86,6 +87,11 @@ struct Tun2SocksEngineEmbedded::Flow {
 
     // Задача 4: id записи в ConnectionTracker (0 — не зарегистрирована).
     uint64_t                    conn_id = 0;
+
+    // Эфемерный порт loopback-сокета к relay (host byte order).  Под этим
+    // ключом в ConnectionTable лежит (relay_src_port -> original-dst); relay
+    // читает его при accept'е.  0 — запись не создавалась (нет таблицы/ошибка).
+    uint16_t                    relay_src_port = 0;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -241,28 +247,82 @@ struct EngineTramp {
             tcp_abort(newpcb);
             return ERR_ABRT;
         }
+        if (decision == FlowDecision::Direct) {
+            // DIRECT (не-совпавший трафик) в embedded НЕ пропускается напрямую.
+            //
+            // Почему нельзя: OnAccept выполняется НА engine-треде под
+            // m_core_lock, а blocking connect() к реальному dst уходит по
+            // split-tunnel маршрутам ОБРАТНО в этот же TUN (тот же engine-тред) —
+            // SYN некому прочитать, connect висит до таймаута и замораживает
+            // весь стек (в неблокирующем варианте — шторм повторных accept'ов).
+            // Сквозной direct-проход возможен только в обход туннеля по
+            // физическому интерфейсу (нужен async-outbound + interface-bind —
+            // вне рамок v1, см. ИЗВЕСТНЫЕ_ПРОБЛЕМЫ.md).
+            //
+            // Поэтому fail-fast: соединение отклоняется (сервис стабилен, без
+            // фризов).  Практический вывод:
+            //   • «проксировать ВЕСЬ трафик» → wintun.process_filter_enabled=false
+            //     (DIRECT тогда не возникает — весь TCP идёт в PROXY);
+            //   • селективное проксирование С прямым проходом остального →
+            //     capture_mode=windivert.
+            engine->FilterLog(domain::LogLevel::Trace,
+                "[wintun][DIRECT-drop] non-matched flow dropped (embedded has no "
+                "direct pass-through) -> " + meta.original_dst_ip + ":"
+                + std::to_string(meta.original_dst_port));
+            tcp_abort(newpcb);
+            return ERR_ABRT;
+        }
 
-        // Целевой endpoint зависит от решения:
-        //   PROXY  → 127.0.0.1:relay_port (как в Option 2b);
-        //   DIRECT → реальный original-dst (трафик минует прокси).
+        // Сюда доходит только PROXY → форвард на локальный relay 127.0.0.1:relay_port.
         sockaddr_in target{};
         target.sin_family = AF_INET;
-        if (decision == FlowDecision::Direct) {
-            target.sin_port = htons(meta.original_dst_port);
-            // newpcb->local_ip хранит original-dst в network byte order.
-            target.sin_addr.s_addr =
-                ip4_addr_get_u32(ip_2_ip4(&newpcb->local_ip));
-        } else {
-            target.sin_port = htons(engine->m_relay_port);
-            inet_pton(AF_INET, "127.0.0.1", &target.sin_addr);
-        }
+        target.sin_port = htons(engine->m_relay_port);
+        inet_pton(AF_INET, "127.0.0.1", &target.sin_addr);
 
         SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (s == INVALID_SOCKET) {
             tcp_abort(newpcb);
             return ERR_ABRT;
         }
+
+        // === КРИТИЧНО (форвардинг через прокси): регистрация original-dst ===
+        // Relay восстанавливает адрес назначения ТОЛЬКО через
+        // ConnectionTable::Get(client_port), где client_port — эфемерный порт
+        // ЭТОГО loopback-сокета (в отличие от WinDivert, сохраняющего порт
+        // приложения).  Поэтому ДО connect() биндим сокет к 127.0.0.1:0, узнаём
+        // назначенный порт и кладём (port -> original-dst) в таблицу.  Запись
+        // ДО connect() исключает гонку «relay принял соединение раньше, чем мы
+        // успели добавить запись».  Без неё relay пишет "No connection record
+        // for port X" и закрывает соединение — трафик виден, но не форвардится.
+        uint16_t relay_src_port = 0;
+        if (engine->m_conn_table != nullptr) {
+            const uint32_t orig_dst_be =
+                ip4_addr_get_u32(ip_2_ip4(&newpcb->local_ip)); // network byte order
+            sockaddr_in la{};
+            la.sin_family = AF_INET;
+            la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            la.sin_port = 0; // OS назначит эфемерный порт
+            if (::bind(s, reinterpret_cast<sockaddr*>(&la), sizeof(la)) == 0) {
+                sockaddr_in bound{};
+                int blen = sizeof(bound);
+                if (::getsockname(s, reinterpret_cast<sockaddr*>(&bound), &blen) == 0) {
+                    relay_src_port = ntohs(bound.sin_port);
+                    // proxy_config_id=1 — как в ServiceMain/TcpRelayServer
+                    // (SetProxyConfig(cfg, 1)); в single-proxy дизайне на выбор
+                    // прокси не влияет, держим консистентным с остальными путями.
+                    engine->m_conn_table->Add(relay_src_port,
+                                              htonl(INADDR_LOOPBACK),
+                                              orig_dst_be,
+                                              meta.original_dst_port,
+                                              /*proxy_config_id=*/1u);
+                }
+            }
+        }
+
         if (::connect(s, reinterpret_cast<sockaddr*>(&target), sizeof(target)) != 0) {
+            if (relay_src_port != 0 && engine->m_conn_table != nullptr) {
+                engine->m_conn_table->Remove(relay_src_port);
+            }
             ::closesocket(s);
             tcp_abort(newpcb);
             return ERR_ABRT;
@@ -276,6 +336,7 @@ struct EngineTramp {
         flow->sock  = s;
         flow->owner = engine;
         flow->meta  = meta;
+        flow->relay_src_port = relay_src_port;
 
         // Задача 4: регистрируем соединение в трекере для GUI-трассировки.
         if (engine->m_conn_monitor) {
@@ -434,6 +495,14 @@ void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread) {
     if (m_conn_monitor && flow->conn_id != 0) {
         m_conn_monitor->RemoveConnection(flow->conn_id);
         flow->conn_id = 0;
+    }
+
+    // Снимаем запись original-dst из ConnectionTable (создавалась для PROXY в
+    // OnAccept).  К этому моменту relay давно прочитал её при accept'е, поэтому
+    // удаление безопасно и предотвращает неограниченный рост таблицы.
+    if (m_conn_table && flow->relay_src_port != 0) {
+        m_conn_table->Remove(flow->relay_src_port);
+        flow->relay_src_port = 0;
     }
 
     // Закрываем сокет — сокет-ридер вывалится.

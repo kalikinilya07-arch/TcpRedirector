@@ -423,9 +423,21 @@ bool WintunCapture::Open() {
             // в GUI показывал соединения и в Wintun embedded режиме.
             embedded->SetConnectionMonitor(m_connectionMonitor);
 
+            // КРИТИЧНО (форвардинг через прокси): передаём движку ConnectionTable.
+            // Embedded-движок открывает loopback-сокет к relay со своим эфемерным
+            // портом и регистрирует в таблице (этот_порт -> original-dst).  Без
+            // этого relay не может восстановить адрес назначения и закрывает
+            // каждый flow — трафик виден в туннеле, но не форвардится к прокси.
+            embedded->SetConnectionTable(m_connTable);
+
             if (pf.enabled && pf.rule_engine) {
                 LogInfo("Process filter ENABLED for embedded engine "
-                        "(apps[] rules applied inside tunnel)");
+                        "(apps[] rules applied inside tunnel). NOTE: non-matched "
+                        "(DIRECT) traffic is DROPPED in embedded mode — direct "
+                        "pass-through is not supported here (would freeze the "
+                        "engine thread). Use process_filter_enabled=false to proxy "
+                        "ALL traffic, or capture_mode=windivert for selective "
+                        "proxying with direct pass-through.");
             } else {
                 LogInfo("Process filter DISABLED for embedded engine "
                         "(all IPv4-TCP proxied — Option 2b)");

@@ -38,7 +38,8 @@
         <Grid.RowDefinitions>
             <!-- Service bar -->
             <RowDefinition Height="40"/>
-            <!-- Content: single Viewbox — no scrollbars, everything scales together -->
+            <!-- Content: vertically scrollable region — a scrollbar appears when
+                 the settings (especially in Wintun mode) exceed the window height -->
             <RowDefinition Height="*"/>
             <!-- Status bar -->
             <RowDefinition Height="28"/>
@@ -96,14 +97,21 @@
         </Border>
 
         <!-- ============================================
-             CONTENT: single Viewbox wrapping both
-             settings + statistics, no scrollbars
+             CONTENT: vertically scrollable region wrapping
+             settings + statistics.  The ScrollViewer keeps every
+             control reachable when the settings grow (e.g. when
+             Wintun mode is selected) beyond the window height.
+             Horizontal scrolling is disabled so content reflows to
+             the viewport width; MaxWidth caps it on very wide screens.
              ============================================ -->
-        <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
-            <Grid Width="1060" Height="820">
+        <ScrollViewer Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Padding="0,0,2,0">
+            <Grid MaxWidth="1400" Margin="10,0,10,10">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- SETTINGS (top 2/3) -->
@@ -511,8 +519,10 @@
 
                 </StackPanel>
 
-                <!-- STATISTICS (bottom 1/3) -->
-                <Grid Grid.Row="1" Background="#1E1E1E">
+                <!-- STATISTICS (bottom section).  Fixed height so the traffic
+                     graph (a Height="*" row inside) still gets a concrete size
+                     within the ScrollViewer's unbounded vertical space. -->
+                <Grid Grid.Row="1" Background="#1E1E1E" Height="300">
                     <Grid Margin="8">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -584,7 +594,7 @@
                     </Grid>
                 </Grid>
             </Grid>
-        </Viewbox>
+        </ScrollViewer>
 
         <!-- ============================================
              STATUS BAR
