@@ -29,6 +29,9 @@ public sealed class JsonConfigRepository : IConfigRepository
 
     private readonly string _configPath;
 
+    /// <inheritdoc/>
+    public string ConfigPath => _configPath;
+
     public JsonConfigRepository()
     {
         // One-shot migration from %ProgramData%. Never throws.
@@ -345,52 +348,55 @@ public sealed class JsonConfigRepository : IConfigRepository
     {
         try
         {
-            // Preserve existing log level / password / stats / app.exePath from disk.
-            var logLevel = ReadInt("log", "level", 2);
-            var encPwd = ReadString("auth", "encryptedPassword");
-            var existingExePath = ReadString("app", "exePath");
-            // Fallback: derive exePath from an AppRule if the legacy field was empty
-            // (v1 readers still consult "app.exePath").
+            // B6 (QA audit): MERGE onto the existing config object instead of
+            // rebuilding it from scratch. Rebuilding dropped every field the GUI
+            // does not model — stats.updateIntervalMs (clobbered to 2000 even
+            // though it is read with a 1000 default elsewhere), stats.graphWindowSec,
+            // log.fileEnabled, log.maxSizeMB, proxy.enabled, and any unknown key a
+            // future service adds. Merging preserves them; the GUI only sets the
+            // fields it actually owns. auth.encryptedPassword is preserved
+            // automatically because we start from the on-disk object.
+            JsonObject j;
+            try { j = Load(); }
+            catch { j = BuildDefaultSkeleton(); } // corrupt/unreadable file -> fresh skeleton
+
+            j["config_version"] = 2;
+            j["capture_mode"]   = CaptureModeToString(captureMode);
+            j["wintun"]         = WintunToJson(wintun);   // fully GUI-owned section
+
+            // app.exePath — keep existing; derive from apps[] only if empty.
+            var existingExePath = j["app"]?["exePath"]?.GetValue<string>() ?? "";
             var exePath = string.IsNullOrEmpty(existingExePath)
                 ? apps.FirstOrDefault(a => !string.IsNullOrEmpty(a.ExePath))?.ExePath
                   ?? apps.FirstOrDefault(a => !string.IsNullOrEmpty(a.Pattern))?.Pattern
                   ?? ""
                 : existingExePath;
+            GetOrCreateObject(j, "app")["exePath"] = exePath;
 
-            var j = new JsonObject
-            {
-                ["config_version"] = 2,
-                ["capture_mode"]   = CaptureModeToString(captureMode),
-                ["wintun"]         = WintunToJson(wintun),
-                ["app"]            = new JsonObject { ["exePath"] = exePath },
-                ["proxy"] = new JsonObject
-                {
-                    ["host"] = config.Host,
-                    ["port"] = config.Port,
-                    ["enabled"] = true
-                },
-                ["auth"] = new JsonObject
-                {
-                    ["enabled"] = config.AuthRequired,
-                    ["username"] = config.Login,
-                    ["kerberos"] = config.KerberosEnabled
-                },
-                ["log"] = new JsonObject
-                {
-                    ["level"] = logLevel,
-                    ["fileEnabled"] = true,
-                    ["maxSizeMB"] = 50
-                },
-                ["stats"] = new JsonObject
-                {
-                    ["updateIntervalMs"] = 2000
-                },
-                ["apps"]  = AppsToJson(apps),
-                ["rules"] = BuildLegacyRulesMirror(apps)
-            };
+            var proxy = GetOrCreateObject(j, "proxy");
+            proxy["host"] = config.Host;
+            proxy["port"] = config.Port;
+            if (proxy["enabled"] is null) proxy["enabled"] = true; // preserve if already set
 
-            if (!string.IsNullOrEmpty(encPwd))
-                j["auth"]!["encryptedPassword"] = encPwd;
+            var auth = GetOrCreateObject(j, "auth");
+            auth["enabled"]  = config.AuthRequired;
+            auth["username"] = config.Login;
+            auth["kerberos"] = config.KerberosEnabled;
+            // auth.encryptedPassword left untouched (preserved from disk).
+
+            // log.* — GUI owns "level" (written elsewhere on the service scale via
+            // WriteInt); only seed the others if absent so we never reset them.
+            var log = GetOrCreateObject(j, "log");
+            if (log["level"] is null)       log["level"] = 2;
+            if (log["fileEnabled"] is null) log["fileEnabled"] = true;
+            if (log["maxSizeMB"] is null)   log["maxSizeMB"] = 50;
+
+            // stats.* — never clobber; only seed a default interval if missing.
+            var stats = GetOrCreateObject(j, "stats");
+            if (stats["updateIntervalMs"] is null) stats["updateIntervalMs"] = 2000;
+
+            j["apps"]  = AppsToJson(apps);
+            j["rules"] = BuildLegacyRulesMirror(apps);
 
             Save(j);
             return true;
@@ -399,6 +405,17 @@ public sealed class JsonConfigRepository : IConfigRepository
         {
             return false;
         }
+    }
+
+    /// <summary>Returns the child object at <paramref name="key"/>, creating an
+    /// empty one (and attaching it) if it is absent or not an object. Used by the
+    /// merge-based writers so unknown sibling keys are preserved (B6).</summary>
+    private static JsonObject GetOrCreateObject(JsonObject parent, string key)
+    {
+        if (parent[key] is JsonObject existing) return existing;
+        var created = new JsonObject();
+        parent[key] = created;
+        return created;
     }
 
     public void WriteInt(string section, string key, int value)

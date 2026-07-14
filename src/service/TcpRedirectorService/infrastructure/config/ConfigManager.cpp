@@ -150,6 +150,7 @@ bool ConfigManager::SetProxyConfig(const domain::ProxyConfig& config) {
     m_config.proxy.port = config.port;
     m_config.proxy.enabled = true;
     m_config.auth.enabled = config.auth_required;
+    m_config.auth.kerberos = config.kerberos_auth;
     m_config.auth.username = WideToUtf8(config.login);
     if (config.has_password && !m_config.auth.encryptedPassword.empty()) {
         // пароль уже зашифрован — оставляем

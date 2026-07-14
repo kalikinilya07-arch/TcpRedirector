@@ -22,6 +22,7 @@ public partial class App : Application
         // ViewModels
         services.AddSingleton<SettingsViewModel>();
         services.AddSingleton<StatsViewModel>();
+        services.AddSingleton<TraceViewModel>();
         services.AddSingleton<ShellViewModel>();
         services.AddSingleton<MainWindow>();
 

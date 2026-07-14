@@ -28,13 +28,15 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         IServiceController scm,
         IConfigRepository config,
         SettingsViewModel settings,
-        StatsViewModel stats)
+        StatsViewModel stats,
+        TraceViewModel trace)
     {
         _svc = svc;
         _scm = scm;
         _config = config;
         Settings = settings;
         Stats = stats;
+        Trace = trace;
 
         // Read poll interval from config (default 1000ms)
         _pollIntervalMs = Math.Max(200, config.ReadInt("stats", "updateIntervalMs", 1000));
@@ -70,6 +72,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     public SettingsViewModel Settings { get; }
     public StatsViewModel Stats { get; }
+    public TraceViewModel Trace { get; }
 
     // ── Service lifecycle ────────────────────────────
 
@@ -93,10 +96,12 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
             await _svc.ConnectAsync();
             StartTimer();
-            // Reload config from disk — service loaded it at startup
-            Settings.LoadFromConfig();
+            // Reload config from disk — service loaded it at startup. Skip when
+            // the user has unsaved edits so a reload doesn't discard them.
+            if (!Settings.ReloadFromConfigIfClean())
+                SvcMsg = "\u2713 Started (есть несохранённые изменения)";
             SvcStatus = "Running";
-            SvcMsg = "\u2713 Started";
+            if (string.IsNullOrEmpty(SvcMsg)) SvcMsg = "\u2713 Started";
         }
         catch (Exception ex)
         {
@@ -142,8 +147,9 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            // Reload config from disk — may have been modified externally
-            Settings.LoadFromConfig();
+            // Reload config from disk — may have been modified externally. Skip
+            // when the user has unsaved edits so we don't discard them.
+            Settings.ReloadFromConfigIfClean();
             _ = ClearMsgAfterDelay();
         }
     }
@@ -273,25 +279,10 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     private static string? FindBackendExe()
     {
-        var guiDir = AppDomain.CurrentDomain.BaseDirectory;
-        // Build directory takes priority
-        var buildDir = Path.GetFullPath(Path.Combine(guiDir, "..", "..", "build"));
-        var candidates = new[]
-        {
-            Path.Combine(buildDir, "TcpRedirectorService.exe"),      // build\ first
-            Path.Combine(guiDir, "TcpRedirectorService.exe"),         // deploy\gui\
-            Path.Combine(guiDir, "..", "TcpRedirectorService.exe"),   // deploy\
-            Path.Combine(guiDir, "..", "..", "TcpRedirectorService.exe"), // project root
-        };
-
-        foreach (var c in candidates)
-        {
-            var full = Path.GetFullPath(c);
-            if (File.Exists(full))
-                return full;
-        }
-
-        return null;
+        // Delegate to the single shared resolver so the launched service and the
+        // config-file anchor (AppPaths.GetConfigPath) always agree on which
+        // TcpRedirectorService.exe / directory is authoritative.
+        return TcpRedirectorGUI.Infrastructure.Config.AppPaths.GetServiceExePath();
     }
 
     // ── Polling timer ────────────────────────────────
@@ -299,6 +290,9 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     private void StartTimer()
     {
         StopTimer();
+        // Fresh session — clear derived baselines so the graph doesn't spike.
+        Stats.ResetBaselines();
+        Trace.Clear();
         _timerCts = new CancellationTokenSource();
         _ = PollLoopAsync(_timerCts.Token);
     }
@@ -317,7 +311,11 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             try
             {
                 await Task.Delay(_pollIntervalMs, ct);
-                if (!_svc.IsConnected) continue;
+                if (!_svc.IsConnected)
+                {
+                    Trace.Clear();
+                    continue;
+                }
 
                 var stats = await _svc.GetStatsAsync();
                 if (stats is not null)
@@ -331,6 +329,10 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                     if (!string.IsNullOrEmpty(raw))
                         SvcMsg = $"IPC raw: {raw}";
                 }
+
+                // Packet/connection trace.
+                var connections = await _svc.GetConnectionsAsync();
+                Trace.PushConnections(connections);
 
                 var status = await _svc.GetServiceStatusAsync();
                 if (status is not null)
@@ -354,6 +356,11 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     {
         IsConnected = connected;
         StatusText = connected ? "Connected" : "Disconnected";
+        if (!connected)
+        {
+            Trace.Clear();
+            Stats.ResetBaselines();
+        }
     }
 
     private static void KillServiceProcess()

@@ -5,6 +5,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
+#include <ws2tcpip.h>           // getaddrinfo, inet_pton
 #include <windows.h>
 #include <objbase.h>            // CLSIDFromString
 
@@ -28,6 +29,63 @@
 
 namespace tcp_redirector {
 namespace infrastructure {
+
+namespace {
+
+// Хост считается loopback (bypass не нужен — ОС держит отдельный on-link
+// маршрут 127.0.0.0/8), если это "localhost" или литерал 127.x.
+bool IsLoopbackHost(const std::string& host) {
+    if (host.empty()) return false;
+    std::string lower;
+    lower.reserve(host.size());
+    for (char c : host) lower.push_back(static_cast<char>(::tolower(static_cast<unsigned char>(c))));
+    if (lower == "localhost") return true;
+    IN_ADDR lit{};
+    if (inet_pton(AF_INET, host.c_str(), &lit) == 1) {
+        return (lit.S_un.S_addr & 0xFF) == 127; // первый октет (network byte order)
+    }
+    return false; // имя хоста → считаем удалённым
+}
+
+// Резолвит хост прокси (IP-литерал или имя) во ВСЕ IPv4-адреса (network byte
+// order).  Пустой вектор — резолв не удался.  Вызывается ДО установки
+// /1-маршрутов, поэтому DNS (если нужен) идёт по физическому пути.
+// Возвращаются все A-записи, чтобы поставить bypass на каждую (relay резолвит
+// имя независимо и может выбрать любую из них).
+std::vector<uint32_t> ResolveProxyIpv4All(const std::string& host) {
+    std::vector<uint32_t> out;
+    if (host.empty()) return out;
+
+    // Сначала — литеральный IPv4 (без DNS).
+    IN_ADDR lit{};
+    if (inet_pton(AF_INET, host.c_str(), &lit) == 1) {
+        out.push_back(lit.S_un.S_addr);
+        return out;
+    }
+
+    // Иначе — DNS.  Winsock уже инициализирован сервисом (relay/engine).
+    ADDRINFOA hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    ADDRINFOA* res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || res == nullptr) {
+        return out;
+    }
+    for (ADDRINFOA* p = res; p != nullptr; p = p->ai_next) {
+        if (p->ai_family == AF_INET && p->ai_addr != nullptr) {
+            auto* sin = reinterpret_cast<sockaddr_in*>(p->ai_addr);
+            const uint32_t ipBe = sin->sin_addr.S_un.S_addr;
+            // Дедупликация.
+            bool dup = false;
+            for (uint32_t e : out) { if (e == ipBe) { dup = true; break; } }
+            if (!dup) out.push_back(ipBe);
+        }
+    }
+    freeaddrinfo(res);
+    return out;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Хелперы логирования — тонкие обёртки с nullptr-guard'ом.
@@ -217,6 +275,63 @@ bool WintunCapture::Open() {
         return false;
     }
 
+    // Шаг 6.5: host-bypass /32 к вышестоящему прокси (C3-фикс).  Ставим ДО
+    // /1-маршрутов, чтобы GetBestRoute2 увидел физический путь, а не туннель.
+    // Без этого исходящее соединение relay→proxy само попадает под 0.0.0.0/1
+    // и заворачивается обратно в TUN (петля / удалённый прокси недостижим).
+    //
+    // ВАЖНО (deploy-safety): для УДАЛЁННОГО прокси невозможность поставить
+    // bypass = гарантированный чёрный дыр всего проксируемого трафика.  Поэтому
+    // при remote-прокси, если bypass не удалось поставить (резолв/установка),
+    // ОТКАЗЫВАЕМ в старте вместо тихого «Running»-состояния без сети.  Для
+    // loopback-прокси bypass не нужен — продолжаем.
+    if (!m_proxyHost.empty() && m_proxyPort != 0) {
+        const bool needsBypass = !IsLoopbackHost(m_proxyHost);
+        const std::vector<uint32_t> proxyIps = ResolveProxyIpv4All(m_proxyHost);
+
+        if (proxyIps.empty()) {
+            if (needsBypass) {
+                LogError("Cannot resolve proxy host '" + m_proxyHost
+                         + "' to IPv4 for split-tunnel bypass; refusing to start "
+                           "(remote proxy would be black-holed by the tunnel). "
+                           "Fix proxy.host or use a loopback proxy.");
+                m_adapter.reset();
+                m_api.reset();
+                return false;
+            }
+            LogDebug("Proxy host '" + m_proxyHost
+                     + "' has no IPv4 to bypass (loopback/local) — continuing");
+        } else {
+            size_t installed = 0;
+            for (uint32_t ipBe : proxyIps) {
+                std::string bpErr;
+                if (capture::wintun::RouteInstaller::InstallHostBypass(ipBe, &bpErr)) {
+                    m_bypassIps.push_back(ipBe);
+                    ++installed;
+                } else {
+                    LogWarn("Proxy bypass /32 route NOT installed for one address of "
+                            + m_proxyHost + ": " + bpErr);
+                }
+            }
+            if (needsBypass && installed == 0) {
+                LogError("Failed to install ANY proxy bypass route for remote proxy '"
+                         + m_proxyHost + "'; refusing to start (traffic would be "
+                           "black-holed by the tunnel).");
+                // Снимаем всё, что могли частично поставить (на всякий случай).
+                for (uint32_t ipBe : m_bypassIps) {
+                    std::string e;
+                    (void)capture::wintun::RouteInstaller::UninstallHostBypass(ipBe, &e);
+                }
+                m_bypassIps.clear();
+                m_adapter.reset();
+                m_api.reset();
+                return false;
+            }
+            LogDebug("Proxy bypass /32 route(s) installed for " + m_proxyHost
+                     + " (" + std::to_string(installed) + " address(es))");
+        }
+    }
+
     // Шаг 7: split-tunnel маршруты через RAII-scope.  Если ниже упадём —
     // деструктор RouteScope снимет маршруты, чтобы не оставить orphan.
     capture::wintun::RouteScope routeScope(m_adapter->Luid());
@@ -273,6 +388,10 @@ bool WintunCapture::Open() {
             pf.proxy_configured    = (!m_proxyHost.empty() && m_proxyPort != 0);
             pf.log                 = m_log;
             embedded->SetProcessFilter(pf);
+
+            // Задача 4: даём движку монитор соединений, чтобы блок трассировки
+            // в GUI показывал соединения и в Wintun embedded режиме.
+            embedded->SetConnectionMonitor(m_connectionMonitor);
 
             if (pf.enabled && pf.rule_engine) {
                 LogInfo("Process filter ENABLED for embedded engine "
@@ -402,6 +521,19 @@ void WintunCapture::TearDown() {
             LogDebug("Split-tunnel routes uninstalled");
         }
         m_routesInstalled = false;
+    }
+
+    // 3b. Снятие host-bypass /32 к прокси (все A-записи).
+    if (!m_bypassIps.empty()) {
+        for (uint32_t ipBe : m_bypassIps) {
+            std::string err;
+            if (!capture::wintun::RouteInstaller::UninstallHostBypass(ipBe, &err)) {
+                LogWarn("RouteInstaller::UninstallHostBypass: " + err);
+            }
+        }
+        LogDebug("Proxy bypass /32 route(s) uninstalled ("
+                 + std::to_string(m_bypassIps.size()) + ")");
+        m_bypassIps.clear();
     }
 
     // 4. Закрытие/удаление адаптера.

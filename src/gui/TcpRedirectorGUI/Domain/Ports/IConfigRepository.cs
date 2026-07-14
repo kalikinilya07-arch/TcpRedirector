@@ -8,6 +8,13 @@ namespace TcpRedirectorGUI.Domain.Ports;
 /// </summary>
 public interface IConfigRepository
 {
+    /// <summary>
+    /// Absolute path of the <c>config.json</c> this repository reads/writes.
+    /// Exposed so the GUI can show the user exactly where settings were saved
+    /// and perform an explicit read-back verification against the same file.
+    /// </summary>
+    string ConfigPath { get; }
+
     // ── Generic getters (unchanged from WP2) ─────────
     string ReadString(string section, string key, string defaultValue = "");
     bool ReadBool(string section, string key, bool defaultValue = false);

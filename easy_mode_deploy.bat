@@ -153,36 +153,41 @@ if exist "%ROOT%\build\WinDivert.dll" (
     echo     [SKIP] WinDivert not found - delivery will be windivert-less
 )
 
-:: --- Wintun (OPTIONAL): build\ first, then repo .bin\ fallback ---
-if exist "%ROOT%\build\wintun.dll" (
-    copy /Y "%ROOT%\build\wintun.dll" "%STAGE%\" >nul 2>&1
-    set "ENG_WINTUN=yes"
-    echo     [OK] wintun.dll ^(from build\^)
-) else if exist "%ROOT%\.bin\wintun\x64\wintun.dll" (
-    copy /Y "%ROOT%\.bin\wintun\x64\wintun.dll" "%STAGE%\" >nul 2>&1
-    set "ENG_WINTUN=yes"
-    echo     [OK] wintun.dll ^(from .bin\wintun\x64^)
-) else if exist "%ROOT%\.bin\wintun.dll" (
-    copy /Y "%ROOT%\.bin\wintun.dll" "%STAGE%\" >nul 2>&1
-    set "ENG_WINTUN=yes"
-    echo     [OK] wintun.dll ^(from .bin^)
+:: --- .bin\ engine tree (OPTIONAL): mirror the ENTIRE repo .bin\ tree so the
+::     runtime layout the service expects is preserved verbatim:
+::         .bin\wintun\<arch>\wintun.dll   (WintunApi::DefaultDllPath)
+::         .bin\tun2socks\tun2socks.exe    (external engine resolver)
+::     Any DLL under .bin\ is shipped automatically. Freshly built engine
+::     binaries in build\ are overlaid on top so a new build always wins. ---
+if exist "%ROOT%\.bin" (
+    xcopy /Y /E /I "%ROOT%\.bin\*" "%STAGE%\.bin\" >nul 2>&1
+    echo     [OK] .bin\ tree mirrored ^(from repo .bin\^)
 ) else (
-    echo     [SKIP] wintun.dll not found - delivery will be wintun-less
+    echo     [SKIP] repo .bin\ not found - no external engine tree to mirror
 )
 
-:: --- tun2socks.exe (OPTIONAL): build\.bin\ first, then repo .bin\ fallback ---
+:: Overlay freshly built engine binaries on top of the mirrored tree.
+if exist "%ROOT%\build\wintun.dll" (
+    if not exist "%STAGE%\.bin\wintun\x64" mkdir "%STAGE%\.bin\wintun\x64" >nul 2>&1
+    copy /Y "%ROOT%\build\wintun.dll" "%STAGE%\.bin\wintun\x64\" >nul 2>&1
+    echo     [OK] wintun.dll overlaid ^(from build\ -> .bin\wintun\x64^)
+)
 if exist "%ROOT%\build\.bin\tun2socks\tun2socks.exe" (
     if not exist "%STAGE%\.bin\tun2socks" mkdir "%STAGE%\.bin\tun2socks" >nul 2>&1
     copy /Y "%ROOT%\build\.bin\tun2socks\tun2socks.exe" "%STAGE%\.bin\tun2socks\" >nul 2>&1
-    set "ENG_TUN2SOCKS=yes"
-    echo     [OK] tun2socks.exe ^(from build\.bin^)
-) else if exist "%ROOT%\.bin\tun2socks\tun2socks.exe" (
-    if not exist "%STAGE%\.bin\tun2socks" mkdir "%STAGE%\.bin\tun2socks" >nul 2>&1
-    copy /Y "%ROOT%\.bin\tun2socks\tun2socks.exe" "%STAGE%\.bin\tun2socks\" >nul 2>&1
-    set "ENG_TUN2SOCKS=yes"
-    echo     [OK] tun2socks.exe ^(from repo .bin^)
+    echo     [OK] tun2socks.exe overlaid ^(from build\.bin^)
+)
+
+:: Derive the engine-summary flags from the final staged layout.
+if exist "%STAGE%\.bin\wintun\x64\wintun.dll" (
+    set "ENG_WINTUN=yes"
 ) else (
-    echo     [SKIP] tun2socks.exe not found - external engine unavailable
+    echo     [SKIP] .bin\wintun\x64\wintun.dll absent - delivery will be wintun-less
+)
+if exist "%STAGE%\.bin\tun2socks\tun2socks.exe" (
+    set "ENG_TUN2SOCKS=yes"
+) else (
+    echo     [SKIP] .bin\tun2socks\tun2socks.exe absent - external engine unavailable
 )
 
 :: --- config.default.json seed (OPTIONAL) ---

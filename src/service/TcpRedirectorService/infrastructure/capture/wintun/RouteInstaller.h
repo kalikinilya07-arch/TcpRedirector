@@ -95,6 +95,33 @@ public:
      * IPC-статусной диагностики.
      */
     static bool IsInstalled(NET_LUID luid);
+
+    /**
+     * @brief Установить host-bypass маршрут /32 к заданному IPv4 через
+     *        СУЩЕСТВУЮЩИЙ (физический) путь, минуя Wintun-туннель.
+     *
+     * ЗАЧЕМ: split-tunnel маршруты 0.0.0.0/1 + 128.0.0.0/1 захватывают ВЕСЬ
+     * IPv4-трафик, включая исходящее соединение relay'я к вышестоящему
+     * прокси.  Без исключения это соединение снова заворачивается в туннель →
+     * петля, и удалённый прокси недостижим.  /32-маршрут «более специфичен»,
+     * чем /1, поэтому всегда выигрывает выборку и уводит трафик к прокси на
+     * физический интерфейс.
+     *
+     * ВАЖНО: вызывать ДО InstallSplitTunnel — иначе GetBestRoute2 вернёт наш
+     * же туннельный /1 как «лучший» маршрут.
+     *
+     * @param dst_ipv4_be IPv4 назначения (network byte order) — IP прокси.
+     * @param outError     [out, опционально] диагностика.
+     * @return true при успехе (или если bypass не требуется — loopback).
+     */
+    static bool InstallHostBypass(uint32_t dst_ipv4_be, std::string* outError);
+
+    /**
+     * @brief Снять host-bypass маршрут /32, установленный InstallHostBypass.
+     * @param dst_ipv4_be IPv4 назначения (network byte order).
+     * @param outError     [out, опционально] диагностика.
+     */
+    static bool UninstallHostBypass(uint32_t dst_ipv4_be, std::string* outError);
 };
 
 /**

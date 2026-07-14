@@ -316,6 +316,22 @@ public:
 
         // Initialize IPC server with IpcHandler
         m_pipeServer = std::make_unique<infrastructure::TcpIpcServer>();
+        // Route IPC-server diagnostics into the shared log (previously the sink
+        // was never set, so IPC errors were silently discarded).
+        m_pipeServer->SetLogSink(m_logger.get());
+        // B1 (QA audit): the IPC channel is authenticated with a per-run token
+        // written next to the EXE (same dir as config.json) with an
+        // Administrators/SYSTEM-only DACL. The elevated GUI reads it and echoes
+        // it in every request; unauthenticated local callers are rejected.
+        try {
+            std::filesystem::path tokenPath =
+                std::filesystem::path(infrastructure::paths::GetExecutableDirectoryW())
+                / L".ipc_token";
+            m_pipeServer->SetAuthTokenFilePath(tokenPath.wstring());
+        } catch (const std::exception& e) {
+            m_logger->Warn("service",
+                std::string("Could not resolve IPC token path: ") + e.what());
+        }
         m_ipcHandler = std::make_unique<adapters::IpcHandler>(
             m_ruleEngine.get(), m_connectionTracker.get(),
             m_configManager.get(), m_logger.get(),
@@ -376,7 +392,7 @@ public:
         // 2. Disconnect GUI clients.
         if (m_pipeServer) {
             m_pipeServer->Stop();
-            m_logger->Info("service", "PipeServer stopped");
+            m_logger->Info("service", "IPC server stopped");
         }
 
         // 3. Stop relay (no more connections will be proxied).

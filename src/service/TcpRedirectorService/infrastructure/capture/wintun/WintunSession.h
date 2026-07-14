@@ -101,6 +101,23 @@ public:
                     std::string* errorMsg);
 
     /**
+     * @brief НЕблокирующее чтение одного пакета (без ожидания на event'е).
+     *
+     * В отличие от ReceiveInto(), при пустом ring-буфере метод немедленно
+     * возвращает 0 (а НЕ ждёт readEvent).  Нужен для engine-цикла, который
+     * должен дренировать всё доступное, а затем сам решать, когда ждать
+     * (иначе блокирующее ожидание внутри дренажа «съедает» вызовы
+     * sys_check_timeouts() и таймеры lwIP не срабатывают).
+     *
+     * @param out_buffer Целевой буфер (перезаписывается при ret>0).
+     * @param errorMsg   [out, опционально] заполняется только при ret<0.
+     * @return >0 — прочитано байт; 0 — ring пуст (ERROR_NO_MORE_ITEMS);
+     *         <0 — фатальная ошибка сессии.
+     */
+    int TryReceiveInto(std::vector<uint8_t>& out_buffer,
+                       std::string* errorMsg);
+
+    /**
      * @brief Неблокирующая отправка одного IP-пакета.
      *
      * @return true при успехе; false — GLE даст ERROR_BUFFER_OVERFLOW

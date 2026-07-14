@@ -71,7 +71,7 @@ namespace tcp_redirector {
 namespace domain {
 enum class LogLevel;
 namespace services { class RuleEngine; }
-namespace ports { class ILogSink; }
+namespace ports { class ILogSink; class IConnectionMonitor; }
 }
 }
 
@@ -147,6 +147,18 @@ public:
         m_filter = filter;
     }
 
+    /**
+     * @brief Задать монитор соединений для GUI-трассировки (Задача 4).
+     *
+     * Если задан, движок регистрирует каждый установленный flow в
+     * ConnectionTracker (AddConnection на accept, RemoveConnection на close),
+     * чтобы блок трассировки в GUI показывал соединения и в Wintun embedded
+     * режиме (а не только в WinDivert).  Должно вызываться ДО Start().
+     */
+    void SetConnectionMonitor(domain::ports::IConnectionMonitor* mon) {
+        m_conn_monitor = mon;
+    }
+
     ~Tun2SocksEngineEmbedded() override;
 
     Tun2SocksEngineEmbedded(const Tun2SocksEngineEmbedded&) = delete;
@@ -194,9 +206,13 @@ private:
      * Вызывается ВНЕ core-lock (резолв PID может быть тяжёлым).
      *
      * @param meta FlowMeta принятого соединения (source/dst).
+     * @param out_pid       [out] PID процесса-источника (0, если не определён).
+     * @param out_proc_name [out] короткое имя процесса ("" если неизвестно).
      * @return Proxy / Direct / Block.  Если фильтрация выключена — всегда Proxy.
      */
-    FlowDecision DecideFlow(const FlowMeta& meta);
+    FlowDecision DecideFlow(const FlowMeta& meta,
+                            uint32_t& out_pid,
+                            std::wstring& out_proc_name);
 
     /// Тонкая обёртка логирования (nullptr-safe, тег "wintun").
     void FilterLog(domain::LogLevel level, const std::string& msg) const;
@@ -210,6 +226,10 @@ private:
     EmbeddedProcessFilter          m_filter;
     process::ProcessResolver       m_resolver;
     std::atomic<uint32_t>          m_target_pid{0};
+
+    // Задача 4: монитор соединений для GUI-трассировки (не owned).
+    domain::ports::IConnectionMonitor* m_conn_monitor = nullptr;
+    std::atomic<uint64_t>          m_next_conn_id{1};
 
     HANDLE                         m_stop_event = nullptr;
     std::thread                    m_engine_thread;

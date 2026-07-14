@@ -100,7 +100,7 @@
              settings + statistics, no scrollbars
              ============================================ -->
         <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
-            <Grid Width="1060" Height="620">
+            <Grid Width="1060" Height="820">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
@@ -127,13 +127,22 @@
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:"
                                        VerticalAlignment="Center" Margin="0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
-                                     Text="{Binding Settings.Host, Mode=TwoWay}"
+                                     Style="{StaticResource ValidatedTextBox}"
+                                     Text="{Binding Settings.Host, Mode=TwoWay,
+                                                    UpdateSourceTrigger=PropertyChanged,
+                                                    ValidatesOnNotifyDataErrors=True,
+                                                    NotifyOnValidationError=True}"
                                      Margin="0,2"/>
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Port:"
                                        VerticalAlignment="Center" Margin="8,2,0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="3"
-                                     Text="{Binding Settings.Port, Mode=TwoWay}"
+                                     Style="{StaticResource ValidatedTextBox}"
+                                     Text="{Binding Settings.Port, Mode=TwoWay,
+                                                    UpdateSourceTrigger=PropertyChanged,
+                                                    ValidatesOnExceptions=True,
+                                                    ValidatesOnNotifyDataErrors=True,
+                                                    NotifyOnValidationError=True}"
                                      Margin="8,2,0,2"/>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
@@ -165,7 +174,11 @@
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="Login:"
                                        VerticalAlignment="Center" Margin="0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
-                                     Text="{Binding Settings.Login, Mode=TwoWay}"
+                                     Style="{StaticResource ValidatedTextBox}"
+                                     Text="{Binding Settings.Login, Mode=TwoWay,
+                                                    UpdateSourceTrigger=PropertyChanged,
+                                                    ValidatesOnNotifyDataErrors=True,
+                                                    NotifyOnValidationError=True}"
                                      Margin="0,2"/>
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Password:"
@@ -219,21 +232,34 @@
                                                    Text="Имя адаптера:"
                                                    VerticalAlignment="Center" Margin="0,2"/>
                                         <TextBox Grid.Row="0" Grid.Column="1"
-                                                 Text="{Binding Settings.WintunAdapterName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource ValidatedTextBox}"
+                                                 Text="{Binding Settings.WintunAdapterName, Mode=TwoWay,
+                                                                UpdateSourceTrigger=PropertyChanged,
+                                                                ValidatesOnNotifyDataErrors=True,
+                                                                NotifyOnValidationError=True}"
                                                  Margin="0,2"/>
 
                                         <TextBlock Grid.Row="0" Grid.Column="2"
                                                    Text="MTU:"
                                                    VerticalAlignment="Center" Margin="8,2,0,2"/>
                                         <TextBox Grid.Row="0" Grid.Column="3"
-                                                 Text="{Binding Settings.WintunMtu, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource ValidatedTextBox}"
+                                                 Text="{Binding Settings.WintunMtu, Mode=TwoWay,
+                                                                UpdateSourceTrigger=PropertyChanged,
+                                                                ValidatesOnExceptions=True,
+                                                                ValidatesOnNotifyDataErrors=True,
+                                                                NotifyOnValidationError=True}"
                                                  Margin="8,2,0,2"/>
 
                                         <TextBlock Grid.Row="1" Grid.Column="0"
                                                    Text="IPv4 CIDR туннеля:"
                                                    VerticalAlignment="Center" Margin="0,2"/>
                                         <TextBox Grid.Row="1" Grid.Column="1"
-                                                 Text="{Binding Settings.WintunTunnelIpv4Cidr, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                 Style="{StaticResource ValidatedTextBox}"
+                                                 Text="{Binding Settings.WintunTunnelIpv4Cidr, Mode=TwoWay,
+                                                                UpdateSourceTrigger=PropertyChanged,
+                                                                ValidatesOnNotifyDataErrors=True,
+                                                                NotifyOnValidationError=True}"
                                                  Margin="0,2"/>
 
                                         <TextBlock Grid.Row="2" Grid.Column="0"
@@ -270,14 +296,22 @@
                                                        Text="Путь к EXE:"
                                                        VerticalAlignment="Center" Margin="0,2"/>
                                             <TextBox Grid.Row="0" Grid.Column="1"
-                                                     Text="{Binding Settings.ExternalExecutable, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Style="{StaticResource ValidatedTextBox}"
+                                                     Text="{Binding Settings.ExternalExecutable, Mode=TwoWay,
+                                                                    UpdateSourceTrigger=PropertyChanged,
+                                                                    ValidatesOnNotifyDataErrors=True,
+                                                                    NotifyOnValidationError=True}"
                                                      Margin="0,2"/>
 
                                             <TextBlock Grid.Row="1" Grid.Column="0"
                                                        Text="SOCKS5 listen:"
                                                        VerticalAlignment="Center" Margin="0,2"/>
                                             <TextBox Grid.Row="1" Grid.Column="1"
-                                                     Text="{Binding Settings.ExternalSocks5Listen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Style="{StaticResource ValidatedTextBox}"
+                                                     Text="{Binding Settings.ExternalSocks5Listen, Mode=TwoWay,
+                                                                    UpdateSourceTrigger=PropertyChanged,
+                                                                    ValidatesOnNotifyDataErrors=True,
+                                                                    NotifyOnValidationError=True}"
                                                      Margin="0,2"/>
 
                                             <CheckBox Grid.Row="2" Grid.Column="1"
@@ -305,10 +339,14 @@
                                 <Button Content="+ Добавить приложение"
                                         Command="{Binding Settings.AddRuleCommand}"
                                         Padding="12,6" Margin="0,0,8,0"/>
-                                <Button Content="Сохранить"
-                                        Command="{Binding Settings.SaveAsyncCommand}"
+                                <Button Content="Сохранить всё (Save all)"
+                                        Command="{Binding Settings.SaveAllCommand}"
                                         Style="{StaticResource PrimaryButton}"
                                         Padding="12,6"/>
+                                <TextBlock Text="● есть несохранённые изменения"
+                                           Foreground="#DCDCAA" FontWeight="Bold"
+                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                           Visibility="{Binding Settings.IsDirty, Converter={StaticResource BoolToVis}}"/>
                                 <TextBlock Text="{Binding Settings.Msg, Mode=OneWay}"
                                            Foreground="#4EC9B0" FontWeight="Bold"
                                            VerticalAlignment="Center" Margin="12,0,0,0"/>
@@ -365,6 +403,56 @@
                             <TextBlock Grid.Row="2" Foreground="#858585" Margin="0,4,0,0" FontSize="12">
                                 Всего: <Run Text="{Binding Settings.Apps.Count, Mode=OneWay}" FontWeight="Bold"/> прил.
                             </TextBlock>
+                        </Grid>
+                    </Border>
+
+                    <!-- Task 4: Packet / connection trace -->
+                    <TextBlock Text="ТРАССИРОВКА ПЕРЕНАПРАВЛЯЕМЫХ СОЕДИНЕНИЙ"
+                               Style="{StaticResource SectionHeader}"/>
+                    <Border Style="{StaticResource SectionBorder}">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <DataGrid Grid.Row="0"
+                                      ItemsSource="{Binding Trace.Connections}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      IsReadOnly="True"
+                                      FontSize="12"
+                                      MinHeight="60" MaxHeight="220">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Процесс"
+                                                        Binding="{Binding ProcessName}" Width="150"/>
+                                    <DataGridTextColumn Header="PID"
+                                                        Binding="{Binding Pid}" Width="60"/>
+                                    <DataGridTextColumn Header="Назначение"
+                                                        Binding="{Binding DisplayDestination}" Width="*"/>
+                                    <DataGridTextColumn Header="Порт"
+                                                        Binding="{Binding DestinationPort}" Width="60"/>
+                                    <DataGridTextColumn Header="Состояние"
+                                                        Binding="{Binding State}" Width="120"/>
+                                    <DataGridCheckBoxColumn Header="Через прокси"
+                                                            Binding="{Binding ProxyEnabled}" Width="90"/>
+                                    <DataGridTextColumn Header="RX"
+                                                        Binding="{Binding RxDisplay}" Width="80"/>
+                                    <DataGridTextColumn Header="TX"
+                                                        Binding="{Binding TxDisplay}" Width="80"/>
+                                    <DataGridTextColumn Header="Время"
+                                                        Binding="{Binding DurationDisplay}" Width="80"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock Grid.Row="1" Foreground="#858585" Margin="0,4,0,0" FontSize="12">
+                                Активных соединений: <Run Text="{Binding Trace.Count, Mode=OneWay}" FontWeight="Bold"/>
+                            </TextBlock>
+
+                            <TextBlock Grid.Row="2" Foreground="#DCDCAA" Margin="0,2,0,0" FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Text="Примечание: пер-соединённая трасса заполняется в режимах WinDivert и Wintun (embedded). В режиме Wintun (external) детализация по соединениям недоступна."/>
                         </Grid>
                     </Border>
 

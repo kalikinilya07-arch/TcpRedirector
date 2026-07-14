@@ -208,6 +208,34 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Validation error adorner: red border + ⚠ marker with the error as tooltip -->
+    <ControlTemplate x:Key="ValidationErrorTemplate">
+        <StackPanel Orientation="Horizontal">
+            <Border BorderBrush="{StaticResource AccentRedBrush}"
+                    BorderThickness="1.5" CornerRadius="3">
+                <AdornedElementPlaceholder x:Name="adorned" />
+            </Border>
+            <TextBlock Text="&#x26A0;" Foreground="{StaticResource AccentRedBrush}"
+                       FontWeight="Bold" Margin="4,0,0,0" VerticalAlignment="Center"
+                       ToolTip="{Binding ElementName=adorned, Path=AdornedElement.(Validation.Errors)[0].ErrorContent}" />
+        </StackPanel>
+    </ControlTemplate>
+
+    <!-- TextBox that highlights + shows a tooltip when it has a validation error.
+         Bindings must set ValidatesOnNotifyDataErrors=True (INotifyDataErrorInfo). -->
+    <Style x:Key="ValidatedTextBox" TargetType="TextBox"
+           BasedOn="{StaticResource {x:Type TextBox}}">
+        <Setter Property="Validation.ErrorTemplate" Value="{StaticResource ValidationErrorTemplate}" />
+        <Style.Triggers>
+            <Trigger Property="Validation.HasError" Value="True">
+                <Setter Property="BorderBrush" Value="{StaticResource AccentRedBrush}" />
+                <Setter Property="ToolTip"
+                        Value="{Binding RelativeSource={RelativeSource Self},
+                                        Path=(Validation.Errors)[0].ErrorContent}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
     <!-- ============================================
          CHECKBOX
          ============================================ -->

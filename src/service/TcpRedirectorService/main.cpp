@@ -78,6 +78,14 @@ int main(int argc, char* argv[]) {
                 if (scm) {
                     wchar_t path[MAX_PATH];
                     GetModuleFileNameW(NULL, path, MAX_PATH);
+                    // Quote the ImagePath. Without quotes an install path that
+                    // contains a space (e.g. "C:\Program Files\TcpRedirector\...")
+                    // produces an unquoted service path: SCM would try to launch
+                    // "C:\Program.exe" first (unquoted-service-path issue) and the
+                    // service could fail to start. Quoting makes it unambiguous.
+                    std::wstring quotedPath = L"\"";
+                    quotedPath += path;
+                    quotedPath += L"\"";
                     SC_HANDLE service = CreateServiceW(scm,
                         L"TcpRedirectorService",
                         L"TcpRedirector Service",
@@ -85,7 +93,7 @@ int main(int argc, char* argv[]) {
                         SERVICE_WIN32_OWN_PROCESS,
                         SERVICE_AUTO_START,
                         SERVICE_ERROR_NORMAL,
-                        path,
+                        quotedPath.c_str(),
                         NULL, NULL, NULL, NULL, NULL);
                     if (service) {
                         printf("Service installed successfully\n");

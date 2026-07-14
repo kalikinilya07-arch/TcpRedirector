@@ -18,7 +18,7 @@ set "APP_DIR=%ProgramFiles%\TcpRedirector"
 
 echo [1/4] Creating directories...
 mkdir "%APP_DIR%\gui" 2>nul
-mkdir "%APP_DIR%\.bin\tun2socks" 2>nul
+mkdir "%APP_DIR%\.bin" 2>nul
 mkdir "%APP_DIR%\logs" 2>nul
 
 echo [2/4] Copying files...
@@ -34,20 +34,21 @@ if exist "%~dp0WinDivert.dll" (
     echo     [SKIP] WinDivert not shipped
 )
 
-:: --- Optional Wintun ---
-if exist "%~dp0wintun.dll" (
-    copy /Y "%~dp0wintun.dll" "%APP_DIR%\" >nul
-    echo     [OK] wintun engine present
+:: --- Optional .bin\ engine tree (wintun\<arch>\wintun.dll, tun2socks\) ---
+if exist "%~dp0.bin" (
+    xcopy /Y /E /I "%~dp0.bin\*" "%APP_DIR%\.bin\" >nul 2>&1
+    if exist "%APP_DIR%\.bin\wintun\x64\wintun.dll" (
+        echo     [OK] wintun engine present
+    ) else (
+        echo     [SKIP] wintun.dll not shipped
+    )
+    if exist "%APP_DIR%\.bin\tun2socks\tun2socks.exe" (
+        echo     [OK] tun2socks.exe present
+    ) else (
+        echo     [SKIP] tun2socks.exe not shipped
+    )
 ) else (
-    echo     [SKIP] wintun.dll not shipped
-)
-
-:: --- Optional external tun2socks ---
-if exist "%~dp0.bin\tun2socks\tun2socks.exe" (
-    copy /Y "%~dp0.bin\tun2socks\tun2socks.exe" "%APP_DIR%\.bin\tun2socks\" >nul
-    echo     [OK] tun2socks.exe present
-) else (
-    echo     [SKIP] tun2socks.exe not shipped
+    echo     [SKIP] .bin\ engine tree not shipped
 )
 
 :: --- Seed config.json only if missing (v2: lives next to EXE) ---

@@ -74,6 +74,12 @@ if errorlevel 1 echo [FAIL] Tests compilation failed! & pause & exit /b 1
 
 RuleEngineTest.exe 2>&1
 if errorlevel 1 echo [FAIL] Tests failed! & pause & exit /b 1
+
+cl /EHsc /std:c++20 /Fe:ConnectionTableTest.exe ConnectionTableTest.cpp /I "%ROOT%\src\service\TcpRedirectorService" /nologo 2>&1
+if errorlevel 1 echo [FAIL] ConnectionTable tests compilation failed! & pause & exit /b 1
+
+ConnectionTableTest.exe 2>&1
+if errorlevel 1 echo [FAIL] ConnectionTable tests failed! & pause & exit /b 1
 echo [PASS]
 
 :: Step 2: GUI - self-contained publish

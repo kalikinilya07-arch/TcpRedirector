@@ -98,13 +98,25 @@ bool RouteInstaller::InstallSplitTunnel(NET_LUID luid,
                                        const std::wstring& next_hop_ipv4,
                                        uint32_t metric,
                                        std::string* outError) {
-    IN_ADDR nh{};
-    if (!ParseIpv4W(next_hop_ipv4, nh)) {
+    // Валидируем переданный next-hop только как sanity-check формата (обычно
+    // это host-часть tunnel_ipv4_cidr).  Само значение НЕ используется — маршрут
+    // ставится on-link (см. ниже), — поэтому результат парсинга отбрасываем.
+    IN_ADDR ignored{};
+    if (!ParseIpv4W(next_hop_ipv4, ignored)) {
         if (outError) {
             *outError = "RouteInstaller: invalid next-hop IPv4 (expected a.b.c.d)";
         }
         return false;
     }
+
+    // ИСПРАВЛЕНИЕ (перехват трафика в Wintun): используем ON-LINK next-hop
+    // (0.0.0.0), а НЕ собственный IP адаптера.  Wintun — это L3-адаптер без
+    // ARP/соседей; маршрут с next-hop = адрес самого интерфейса неоднозначен
+    // (стек может трактовать его как «доставить себе», и пакеты не попадают в
+    // TUN — трафик не перехватывается).  On-link ("послать в интерфейс как
+    // есть") — идиоматичный для WireGuard/Wintun способ.  Совпадает с тем, как
+    // UninstallSplitTunnel ищет маршруты (NextHop = 0.0.0.0).
+    IN_ADDR nh{}; nh.S_un.S_addr = 0;
 
     // Первый маршрут: 0.0.0.0/1
     MIB_IPFORWARD_ROW2 row_lo{};
@@ -164,6 +176,90 @@ bool RouteInstaller::UninstallSplitTunnel(NET_LUID luid,
         *outError = std::move(msg);
     }
     return false;
+}
+
+bool RouteInstaller::InstallHostBypass(uint32_t dst_ipv4_be, std::string* outError) {
+    // Loopback (127.0.0.0/8) не нуждается в bypass — ОС держит для него
+    // отдельный on-link маршрут на loopback-интерфейсе, который заведомо
+    // более специфичен, чем наши /1.
+    const uint8_t firstOctet = static_cast<uint8_t>(dst_ipv4_be & 0xFF);
+    if (firstOctet == 127) {
+        return true;
+    }
+
+    SOCKADDR_INET dst{};
+    dst.si_family = AF_INET;
+    dst.Ipv4.sin_family = AF_INET;
+    dst.Ipv4.sin_addr.S_un.S_addr = dst_ipv4_be;
+
+    // Ищем текущий лучший маршрут к прокси (ДО установки наших /1-маршрутов).
+    MIB_IPFORWARD_ROW2 best{};
+    SOCKADDR_INET bestSrc{};
+    DWORD rc = GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &bestSrc);
+    if (rc != NO_ERROR) {
+        if (outError) *outError = FormatWinErr("GetBestRoute2(proxy)", rc);
+        return false;
+    }
+
+    // Строим /32-маршрут к прокси через найденный интерфейс/next-hop.
+    MIB_IPFORWARD_ROW2 row{};
+    InitializeIpForwardEntry(&row);
+    row.InterfaceLuid = best.InterfaceLuid;
+    row.InterfaceIndex = best.InterfaceIndex;
+    row.DestinationPrefix.Prefix.si_family = AF_INET;
+    row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
+    row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr = dst_ipv4_be;
+    row.DestinationPrefix.PrefixLength = 32;
+    row.NextHop = best.NextHop;
+    row.Metric = 1;
+    row.Protocol = MIB_IPPROTO_NETMGMT;
+    row.Origin = NlroManual;
+    row.SitePrefixLength = 0;
+
+    rc = CreateIpForwardEntry2(&row);
+    if (rc != NO_ERROR && rc != ERROR_OBJECT_ALREADY_EXISTS) {
+        if (outError) *outError = FormatWinErr("CreateIpForwardEntry2(proxy/32 bypass)", rc);
+        return false;
+    }
+    return true;
+}
+
+bool RouteInstaller::UninstallHostBypass(uint32_t dst_ipv4_be, std::string* outError) {
+    const uint8_t firstOctet = static_cast<uint8_t>(dst_ipv4_be & 0xFF);
+    if (firstOctet == 127) {
+        return true; // ничего не ставили
+    }
+
+    SOCKADDR_INET dst{};
+    dst.si_family = AF_INET;
+    dst.Ipv4.sin_family = AF_INET;
+    dst.Ipv4.sin_addr.S_un.S_addr = dst_ipv4_be;
+
+    // Повторно резолвим интерфейс/next-hop для точного совпадения строки.
+    MIB_IPFORWARD_ROW2 best{};
+    SOCKADDR_INET bestSrc{};
+    DWORD rc = GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &bestSrc);
+    if (rc != NO_ERROR) {
+        // Не смогли найти — вероятно уже снят; не считаем фатальным.
+        return true;
+    }
+
+    MIB_IPFORWARD_ROW2 row{};
+    InitializeIpForwardEntry(&row);
+    row.InterfaceLuid = best.InterfaceLuid;
+    row.InterfaceIndex = best.InterfaceIndex;
+    row.DestinationPrefix.Prefix.si_family = AF_INET;
+    row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
+    row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr = dst_ipv4_be;
+    row.DestinationPrefix.PrefixLength = 32;
+    row.NextHop = best.NextHop;
+
+    DWORD drc = DeleteIpForwardEntry2(&row);
+    if (drc != NO_ERROR && drc != ERROR_NOT_FOUND) {
+        if (outError) *outError = FormatWinErr("DeleteIpForwardEntry2(proxy/32 bypass)", drc);
+        return false;
+    }
+    return true;
 }
 
 bool RouteInstaller::IsInstalled(NET_LUID luid) {

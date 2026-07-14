@@ -123,6 +123,18 @@ private:
             config.plain_password = infrastructure::Utf8ToWide(pwd);
         }
         m_configManager->SetProxyConfig(config);
+
+        // B4 (QA audit): the GUI cannot DPAPI-encrypt a secret for the service
+        // account, so it sends the plaintext password over the authenticated
+        // IPC channel (B1) and the service encrypts + persists it here. Reload
+        // first so the apps[]/wintun/proxy fields the GUI just wrote to
+        // config.json are preserved, then add the encrypted password. Without
+        // this, a proxy Basic-auth password could not be set from the GUI at all.
+        if (config.has_password && !config.plain_password.empty()) {
+            m_configManager->Load();
+            m_configManager->SetPassword(config.plain_password);
+            if (m_logger) m_logger->Info("ipc", "Proxy password updated and persisted (DPAPI)");
+        }
         result["status"] = "success";
     }
 

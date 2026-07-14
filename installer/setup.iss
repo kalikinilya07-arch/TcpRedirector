@@ -17,10 +17,11 @@
 #define MyAppName "TcpRedirector"
 ; MyAppVersion may be overridden from the command line, e.g.
 ;   ISCC.exe /DMyAppVersion=latest setup.iss
-; (used by easy_mode_deploy.bat). Without an override the historical default
-; 1.1.0 is used, so the manual compile flow is unchanged.
+; (used by easy_mode_deploy.bat). Without an override the default must match
+; the repo VERSION file (single source of truth), so the manual compile flow
+; produces artifacts whose version matches VERSION.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.0"
+  #define MyAppVersion "1.0.0"
 #endif
 #define MyAppPublisher "TcpRedirector"
 #define MyAppExeName "TcpRedirectorGUI.exe"
@@ -82,11 +83,14 @@ Source: "WinDivert64.sys"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedo
 
 ; ==============================================================
 ; Wintun component — optional (same pattern).
-; wintun.dll lives at {app}\wintun.dll (LoadLibraryW default search).
+; wintun.dll MUST live at {app}\.bin\wintun\<arch>\wintun.dll to match the
+; runtime resolver WintunApi::DefaultDllPath / WintunPreflight (GetBinDirectoryW
+; -> {exeDir}\.bin\, arch = x64 on the 64-bit build). The whole .bin\wintun tree
+; is shipped verbatim so every arch subfolder is preserved.
 ; tun2socks.exe lives under {app}\.bin\tun2socks\ to match the
 ; runtime resolver in ChildProcessSupervisor / preflight.
 ; ==============================================================
-Source: "wintun.dll";                 DestDir: "{app}";                    Flags: ignoreversion skipifsourcedoesntexist; Components: wintun
+Source: ".bin\wintun\*";                DestDir: "{app}\.bin\wintun";      Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist; Components: wintun
 Source: ".bin\tun2socks\tun2socks.exe"; DestDir: "{app}\.bin\tun2socks";   Flags: ignoreversion skipifsourcedoesntexist; Components: wintun
 
 ; ==============================================================

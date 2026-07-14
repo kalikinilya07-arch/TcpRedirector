@@ -30,7 +30,8 @@
 #include "Tun2SocksEngineEmbedded.h"
 
 #include "../../../domain/services/RuleEngine.h"
-#include "../../../domain/ports/IConnectionMonitor.h"  // ILogSink / LogLevel
+#include "../../../domain/ports/IConnectionMonitor.h"  // ILogSink / LogLevel / IConnectionMonitor
+#include "../../../domain/entities/ProxyConfig.h"       // ConnectionRecord / ConnectionState
 #include "../../utf8_convert.h"
 
 #include <algorithm>
@@ -82,6 +83,9 @@ struct Tun2SocksEngineEmbedded::Flow {
     // соответствующий tcp_sent пока не пришёл).  Используется для back-pressure
     // socket-reader'а: он не читает следующий чанк, пока в pcb есть место.
     std::atomic<uint32_t>       pcb_in_flight{0};
+
+    // Задача 4: id записи в ConnectionTracker (0 — не зарегистрирована).
+    uint64_t                    conn_id = 0;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -229,7 +233,9 @@ struct EngineTramp {
         // Определяем действие ДО открытия сокета.  DecideFlow резолвит
         // процесс-источник по source-порту и спрашивает RuleEngine.
         using FlowDecision = Tun2SocksEngineEmbedded::FlowDecision;
-        const FlowDecision decision = engine->DecideFlow(meta);
+        uint32_t     flowPid = 0;
+        std::wstring flowProc;
+        const FlowDecision decision = engine->DecideFlow(meta, flowPid, flowProc);
         if (decision == FlowDecision::Block) {
             // BLOCK — отклоняем соединение.
             tcp_abort(newpcb);
@@ -270,6 +276,21 @@ struct EngineTramp {
         flow->sock  = s;
         flow->owner = engine;
         flow->meta  = meta;
+
+        // Задача 4: регистрируем соединение в трекере для GUI-трассировки.
+        if (engine->m_conn_monitor) {
+            domain::ConnectionRecord rec;
+            rec.id = engine->m_next_conn_id.fetch_add(1, std::memory_order_relaxed);
+            rec.pid = flowPid;
+            rec.process_name = flowProc;
+            rec.destination_ip = meta.original_dst_ip;
+            rec.destination_port = meta.original_dst_port;
+            rec.state = domain::ConnectionState::TunnelEstablished;
+            rec.start_time = std::chrono::steady_clock::now();
+            rec.proxy_enabled = (decision == FlowDecision::Proxy);
+            flow->conn_id = rec.id;
+            engine->m_conn_monitor->AddConnection(rec);
+        }
 
         tcp_arg (newpcb, flow.get());
         tcp_recv(newpcb, &EngineTramp::OnRecv);
@@ -409,6 +430,12 @@ void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread) {
     if (!flow) return;
     if (flow->closing.exchange(true, std::memory_order_relaxed)) return;
 
+    // Задача 4: снимаем запись из трекера (GUI-трассировка).
+    if (m_conn_monitor && flow->conn_id != 0) {
+        m_conn_monitor->RemoveConnection(flow->conn_id);
+        flow->conn_id = 0;
+    }
+
     // Закрываем сокет — сокет-ридер вывалится.
     if (flow->sock != INVALID_SOCKET) {
         ::shutdown(flow->sock, SD_BOTH);
@@ -452,7 +479,12 @@ void Tun2SocksEngineEmbedded::FilterLog(domain::LogLevel level,
 }
 
 Tun2SocksEngineEmbedded::FlowDecision
-Tun2SocksEngineEmbedded::DecideFlow(const FlowMeta& meta) {
+Tun2SocksEngineEmbedded::DecideFlow(const FlowMeta& meta,
+                                    uint32_t& out_pid,
+                                    std::wstring& out_proc_name) {
+    out_pid = 0;
+    out_proc_name.clear();
+
     // Фильтрация выключена или нет движка правил → поведение Option 2b:
     // весь трафик идёт через прокси (relay).
     if (!m_filter.enabled || m_filter.rule_engine == nullptr) {
@@ -467,6 +499,7 @@ Tun2SocksEngineEmbedded::DecideFlow(const FlowMeta& meta) {
         Sleep(20);
         pid = m_resolver.ResolvePidBySourcePort(meta.source_port);
     }
+    out_pid = pid;
     if (pid == 0) {
         // PID так и не найден.  В отличие от WinDivert (где решение можно
         // пересмотреть на следующем пакете), здесь решение принимается один
@@ -485,6 +518,7 @@ Tun2SocksEngineEmbedded::DecideFlow(const FlowMeta& meta) {
         return FlowDecision::Direct;
     }
     const std::wstring procName = process::ProcessResolver::ShortName(procPath);
+    out_proc_name = procName;
 
     // 4. Port-aware матчинг (v2 apps[]).
     const std::string procNameUtf8 = WideToUtf8(procName);
@@ -554,10 +588,21 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
     while (m_running.load(std::memory_order_relaxed)) {
         // Дрейним всё, что есть в wintun'е, ДО следующего wait'а — иначе
         // event сбрасывается, а пакеты остаются.
+        //
+        // ВАЖНО (исправление «зависаний/таймаутов» под нагрузкой): здесь
+        // используется НЕблокирующий TryReceiveInto().  Раньше вызывался
+        // ReceiveInto(), который при пустом ring'е блокировался на event'е
+        // (INFINITE) и возвращал <=0 только на stop — из-за этого внутренний
+        // цикл фактически никогда не выходил в штатном трафике, и
+        // sys_check_timeouts()/внешний WaitForMultipleObjects были мёртвым
+        // кодом.  lwIP-таймеры (ретрансмиссии, delayed-ACK) не срабатывали →
+        // соединения зависали.  Теперь дренаж выходит по пустому ring'у (0),
+        // после чего гарантированно вызывается sys_check_timeouts() и
+        // выполняется ожидание с таймаутом.
         for (;;) {
             std::string ignored_err;
-            int n = m_session->ReceiveInto(rxbuf, m_stop_event, &ignored_err);
-            if (n <= 0) break; // 0 — stop; <0 — ошибка (лог отдадим WP10)
+            int n = m_session->TryReceiveInto(rxbuf, &ignored_err);
+            if (n <= 0) break; // 0 — ring пуст; <0 — ошибка сессии
             std::lock_guard<std::recursive_mutex> lk(m_core_lock);
             struct pbuf* p = pbuf_alloc(PBUF_RAW, static_cast<u16_t>(n), PBUF_POOL);
             if (!p) continue; // pool пуст — дропаем пакет (TCP пересчитается)
@@ -572,7 +617,8 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
             std::lock_guard<std::recursive_mutex> lk(m_core_lock);
             sys_check_timeouts();
         }
-        // Ждём событие.
+        // Ждём событие: пакет из туннеля, stop или периодический timer (250 мс)
+        // для регулярного sys_check_timeouts().
         DWORD r = ::WaitForMultipleObjects(3, waits, FALSE, 500);
         if (r == WAIT_OBJECT_0 + 1) break; // stop
         // остальные — timer или сессия; идём на новый круг.

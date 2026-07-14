@@ -1,0 +1,25 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "auto_collapse_reasoning": true,
+  "terminal_command_display": "collapsed",
+  "permission": {
+    "bash": "allow",
+    "external_directory": "allow"
+  },
+  "default_agent": "architect",
+  "model": "vercel/anthropic/claude-opus-4.8",
+  "small_model": "vercel/anthropic/claude-sonnet-5",
+  "agent": {
+    "code-skeptic": {
+      "permission": {
+        "edit": {
+          "*": "allow",
+          "*.md": "allow",
+          "*.mdc": "allow",
+          "*.mdx": "allow"
+        },
+        "external_directory": "allow"
+      }
+    }
+  }
+}

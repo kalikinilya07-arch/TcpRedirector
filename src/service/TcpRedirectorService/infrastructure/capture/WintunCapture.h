@@ -202,6 +202,13 @@ private:
     std::unique_ptr<capture::wintun::ITunEngine>    m_engine;
     bool                                       m_routesInstalled = false;
 
+    // C3-фикс: host-bypass /32 к вышестоящему прокси (мимо туннеля), чтобы
+    // исходящее соединение relay→proxy не заворачивалось обратно в TUN (петля)
+    // и удалённый прокси оставался достижимым.  Ставим bypass для ВСЕХ
+    // A-записей прокси (round-robin/failover), а не только для первой — иначе
+    // relay, резолвящий имя независимо, мог бы выбрать не-покрытый IP.
+    std::vector<uint32_t>                      m_bypassIps;
+
     std::atomic<bool>                          m_open{false};
 };
 

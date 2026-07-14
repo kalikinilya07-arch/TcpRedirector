@@ -56,6 +56,27 @@ public partial class StatsViewModel : ObservableObject
     private ulong _prevTx;
     private uint _prevActive;
     private double _prevConnRateTime;
+    private long _prevTrafficTimeMs;
+    private bool _hasPrevTraffic;
+
+    /// <summary>
+    /// Reset the derived-metric baselines. Call when the service restarts or the
+    /// connection drops so the next sample doesn't produce a bogus spike.
+    /// </summary>
+    public void ResetBaselines()
+    {
+        _ = App.Current.Dispatcher.BeginInvoke(() =>
+        {
+            _prevRx = 0;
+            _prevTx = 0;
+            _prevActive = 0;
+            _prevConnRateTime = 0;
+            _prevTrafficTimeMs = 0;
+            _hasPrevTraffic = false;
+            RxPoints.Clear();
+            TxPoints.Clear();
+        });
+    }
 
     /// <summary>
     /// Push new stats from polling. Updates graph, totals, and derived metrics.
@@ -70,13 +91,13 @@ public partial class StatsViewModel : ObservableObject
             TotalRx = FormatBytes(stats.TotalRxBytes);
             TotalTx = FormatBytes(stats.TotalTxBytes);
 
-            // Connection rate: delta active per minute (approximate from polling interval)
+            // Connection rate: delta active per minute (signed, no uint underflow).
             var nowSec = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
             if (_prevConnRateTime > 0) {
                 double dt = nowSec - _prevConnRateTime;
                 if (dt > 0.1) {
-                    double ratePerSec = (double)(int)(stats.ActiveConnections - _prevActive) / dt;
-                    double ratePerMin = ratePerSec * 60.0;
+                    long activeDelta = (long)stats.ActiveConnections - _prevActive;
+                    double ratePerMin = (activeDelta / dt) * 60.0;
                     ConnectionRate = $"{(ratePerMin >= 0 ? "+" : "")}{ratePerMin:F0}/min";
                 }
             }
@@ -84,19 +105,35 @@ public partial class StatsViewModel : ObservableObject
             _prevConnRateTime = nowSec;
             Uptime = FormatUptime(stats.UptimeSeconds);
 
-            // Calculate bytes per second delta
-            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            var rxDelta = stats.TotalRxBytes - _prevRx;
-            var txDelta = stats.TotalTxBytes - _prevTx;
+            // Bytes/second — normalised by the real elapsed time, guarding against
+            // the first sample (no baseline yet) and counter resets on service
+            // restart (totals go backwards → treat as 0, never underflow).
+            var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (!_hasPrevTraffic)
+            {
+                // First sample: establish the baseline, plot a flat zero point.
+                _hasPrevTraffic = true;
+                RxPoints.Add(new TrafficPoint(nowMs, 0));
+                TxPoints.Add(new TrafficPoint(nowMs, 0));
+            }
+            else
+            {
+                double dtSec = (nowMs - _prevTrafficTimeMs) / 1000.0;
+                if (dtSec <= 0) dtSec = 1.0;
+
+                ulong rxDelta = stats.TotalRxBytes >= _prevRx ? stats.TotalRxBytes - _prevRx : 0;
+                ulong txDelta = stats.TotalTxBytes >= _prevTx ? stats.TotalTxBytes - _prevTx : 0;
+
+                ulong rxRate = (ulong)(rxDelta / dtSec);
+                ulong txRate = (ulong)(txDelta / dtSec);
+
+                RxPoints.Add(new TrafficPoint(nowMs, rxRate));
+                TxPoints.Add(new TrafficPoint(nowMs, txRate));
+            }
+
             _prevRx = stats.TotalRxBytes;
             _prevTx = stats.TotalTxBytes;
-
-            // Polling every ~1s, so delta == bytes/second
-            var rxRate = rxDelta;
-            var txRate = txDelta;
-
-            RxPoints.Add(new TrafficPoint(now, rxRate));
-            TxPoints.Add(new TrafficPoint(now, txRate));
+            _prevTrafficTimeMs = nowMs;
 
             while (RxPoints.Count > _maxGraphPoints)
                 RxPoints.RemoveAt(0);

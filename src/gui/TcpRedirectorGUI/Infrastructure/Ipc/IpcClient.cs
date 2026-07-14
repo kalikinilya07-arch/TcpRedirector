@@ -27,9 +27,35 @@ public class IpcClient : ITcpRedirectorService, IDisposable
     private const string Host = "127.0.0.1";
     private const int Port = 34011;
 
+    // B1: per-run IPC auth token, read from the service's token file on connect.
+    private string _authToken = "";
+
     public IpcClient(IConfigRepository config)
     {
         _config = config;
+    }
+
+    /// <summary>
+    /// B1 (QA audit): the service writes a per-run auth token next to
+    /// <c>config.json</c> (file name <c>.ipc_token</c>) with a DACL that only
+    /// Administrators/SYSTEM can read. The elevated GUI reads it here and echoes
+    /// it in every request; the service rejects requests without the right
+    /// token, so an unprivileged local process cannot drive the service.
+    /// Returns "" when the file is absent (service then does not enforce auth).
+    /// </summary>
+    private string ReadAuthToken()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(_config.ConfigPath);
+            if (string.IsNullOrEmpty(dir)) return "";
+            var tokenPath = Path.Combine(dir, ".ipc_token");
+            return File.Exists(tokenPath) ? File.ReadAllText(tokenPath).Trim() : "";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     public bool IsConnected => _tcp?.Connected ?? false;
@@ -60,7 +86,10 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             _tcp = new TcpClient();
             await _tcp.ConnectAsync(Host, Port).WaitAsync(TimeSpan.FromSeconds(3));
             _stream = _tcp.GetStream();
-            DiagLog("ConnectAsync: connected OK");
+            // B1: refresh the auth token on every (re)connect so a service
+            // restart (which rotates the token) is handled transparently.
+            _authToken = ReadAuthToken();
+            DiagLog($"ConnectAsync: connected OK (auth token {(_authToken.Length > 0 ? "present" : "absent")})");
             ConnectionStateChanged?.Invoke(true);
         }
         catch (Exception ex)
@@ -116,7 +145,11 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             auth_required = config.AuthRequired,
             kerberos = config.KerberosEnabled,
             login = config.Login ?? "",
-            set_password = !string.IsNullOrEmpty(config.Password)
+            set_password = !string.IsNullOrEmpty(config.Password),
+            // B4 (QA audit): actually send the plaintext password so the service
+            // can DPAPI-encrypt + persist it. Previously only the boolean flag
+            // was sent, so the password was silently dropped end-to-end.
+            password = config.Password ?? ""
         });
         return r?.GetProperty("status").GetString() == "success";
     }
@@ -159,20 +192,27 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         var list = new List<ConnectionRecord>();
         foreach (var item in arr.EnumerateArray())
         {
-            list.Add(new ConnectionRecord
+            try
             {
-                Id = ulong.TryParse(item.GetProperty("id").GetString(), out var parsedId) ? parsedId : 0,
-                Pid = item.GetProperty("pid").GetUInt32(),
-                ProcessName = item.GetProperty("process_name").GetString() ?? "",
-                DestinationHost = item.GetProperty("destination_host").GetString() ?? "",
-                DestinationIp = item.GetProperty("destination_ip").GetString() ?? "",
-                DestinationPort = item.GetProperty("destination_port").GetUInt16(),
-                RxBytes = item.GetProperty("rx_bytes").GetUInt64(),
-                TxBytes = item.GetProperty("tx_bytes").GetUInt64(),
-                DurationMs = (long)item.GetProperty("duration_ms").GetUInt64(),
-                State = (ConnectionState)item.GetProperty("state").GetInt32(),
-                ProxyEnabled = item.GetProperty("proxy_enabled").GetBoolean()
-            });
+                list.Add(new ConnectionRecord
+                {
+                    Id = ulong.TryParse(GetStr(item, "id"), out var parsedId) ? parsedId : 0,
+                    Pid = GetU32(item, "pid"),
+                    ProcessName = GetStr(item, "process_name"),
+                    DestinationHost = GetStr(item, "destination_host"),
+                    DestinationIp = GetStr(item, "destination_ip"),
+                    DestinationPort = (ushort)GetU32(item, "destination_port"),
+                    RxBytes = GetU64(item, "rx_bytes"),
+                    TxBytes = GetU64(item, "tx_bytes"),
+                    DurationMs = (long)GetU64(item, "duration_ms"),
+                    State = (ConnectionState)(int)GetU32(item, "state"),
+                    ProxyEnabled = GetBool(item, "proxy_enabled", true)
+                });
+            }
+            catch
+            {
+                // Skip a single malformed record rather than dropping the batch.
+            }
         }
         return list;
     }
@@ -206,12 +246,12 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             {
                 return new ServiceStats
                 {
-                    ActiveConnections = d.GetProperty("active_connections").GetUInt32(),
-                    TotalRxBytes = d.GetProperty("total_rx_bytes").GetUInt64(),
-                    TotalTxBytes = d.GetProperty("total_tx_bytes").GetUInt64(),
-                    ProxyErrors = d.TryGetProperty("proxy_errors", out var pe) ? pe.GetUInt64() : 0,
-                    AvgLatencyMs = d.TryGetProperty("avg_latency_ms", out var al) ? al.GetDouble() : 0.0,
-                    UptimeSeconds = d.TryGetProperty("uptime_seconds", out var up) ? up.GetUInt64() : 0
+                    ActiveConnections = GetU32(d, "active_connections"),
+                    TotalRxBytes = GetU64(d, "total_rx_bytes"),
+                    TotalTxBytes = GetU64(d, "total_tx_bytes"),
+                    ProxyErrors = GetU64(d, "proxy_errors"),
+                    AvgLatencyMs = d.TryGetProperty("avg_latency_ms", out var al) && al.TryGetDouble(out var dv) ? dv : 0.0,
+                    UptimeSeconds = GetU64(d, "uptime_seconds")
                 };
             }
             catch { return null; }
@@ -239,6 +279,48 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         return r?.GetProperty("status").GetString() == "success";
     }
 
+    // ── Safe JSON accessors — tolerate missing / differently-typed fields ──
+    private static string GetStr(JsonElement e, string name)
+    {
+        if (e.TryGetProperty(name, out var v))
+        {
+            if (v.ValueKind == JsonValueKind.String) return v.GetString() ?? "";
+            if (v.ValueKind is JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False)
+                return v.ToString();
+        }
+        return "";
+    }
+
+    private static uint GetU32(JsonElement e, string name)
+    {
+        if (e.TryGetProperty(name, out var v))
+        {
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetUInt32(out var n)) return n;
+            if (v.ValueKind == JsonValueKind.String && uint.TryParse(v.GetString(), out var s)) return s;
+        }
+        return 0;
+    }
+
+    private static ulong GetU64(JsonElement e, string name)
+    {
+        if (e.TryGetProperty(name, out var v))
+        {
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetUInt64(out var n)) return n;
+            if (v.ValueKind == JsonValueKind.String && ulong.TryParse(v.GetString(), out var s)) return s;
+        }
+        return 0;
+    }
+
+    private static bool GetBool(JsonElement e, string name, bool dflt = false)
+    {
+        if (e.TryGetProperty(name, out var v))
+        {
+            if (v.ValueKind == JsonValueKind.True) return true;
+            if (v.ValueKind == JsonValueKind.False) return false;
+        }
+        return dflt;
+    }
+
     private async Task<JsonElement?> Call(string method, object? p = null)
     {
         await _lock.WaitAsync();
@@ -259,7 +341,8 @@ public class IpcClient : ITcpRedirectorService, IDisposable
                 type = "request",
                 id = Guid.NewGuid().ToString(),
                 method,
-                @params = paramsJson
+                @params = paramsJson,
+                token = _authToken   // B1: authenticate every request
             });
 
             // TCP framing: newline-delimited

@@ -171,6 +171,46 @@ int WintunSession::ReceiveInto(std::vector<uint8_t>& out_buffer,
 }
 
 // ============================================================================
+// WintunSession::TryReceiveInto — неблокирующий вариант (без ожидания event'а)
+// ============================================================================
+
+int WintunSession::TryReceiveInto(std::vector<uint8_t>& out_buffer,
+                                  std::string* errorMsg) {
+    static std::string s_dummy;
+    std::string& err = errorMsg ? *errorMsg : s_dummy;
+    err.clear();
+
+    if (!m_session || !m_api || !m_api->ReceivePacket) {
+        err = "WintunSession::TryReceiveInto: session is not started";
+        return -1;
+    }
+
+    DWORD size = 0;
+    SetLastError(0);
+    BYTE* pkt = m_api->ReceivePacket(m_session, &size);
+    if (pkt != nullptr) {
+        out_buffer.assign(pkt, pkt + size);
+        m_api->ReleaseReceivePacket(m_session, pkt);
+        return static_cast<int>(size);
+    }
+
+    DWORD gle = GetLastError();
+    if (gle == ERROR_NO_MORE_ITEMS) {
+        // Ring пуст — НЕ ждём, сразу возвращаем 0.
+        return 0;
+    }
+    if (gle == ERROR_HANDLE_EOF) {
+        err = "WintunSession::TryReceiveInto: session ended (ERROR_HANDLE_EOF)";
+        return -1;
+    }
+
+    std::ostringstream oss;
+    oss << "WintunReceivePacket failed: GLE=" << gle;
+    err = oss.str();
+    return -1;
+}
+
+// ============================================================================
 // WintunSession::Send
 // ============================================================================
 

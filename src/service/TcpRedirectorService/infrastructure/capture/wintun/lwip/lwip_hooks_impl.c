@@ -41,13 +41,21 @@ int tcp_redirector_ip4_input_hook(struct pbuf *pbuf, struct netif *input_netif)
 
     const struct ip_hdr *iphdr = (const struct ip_hdr *)pbuf->payload;
 
-    /* Забираем dest-адрес пакета и перезаписываем IP netif'а.
-     * ip4_addr_t в lwIP хранит адрес в network byte order (u32_t), как и
-     * поле iphdr->dest — так что просто копируем сырое значение через
-     * ip_addr_copy_from_ip4 (безопасное для alignment API lwIP). */
-    ip4_addr_t new_ip;
-    ip4_addr_copy(new_ip, iphdr->dest);
-    netif_set_ipaddr(input_netif, &new_ip);
+    /* Забираем dest-адрес пакета и перезаписываем IP netif'а НАПРЯМУЮ.
+     *
+     * ВАЖНО (исправление бага «рвутся параллельные соединения»):
+     * НЕЛЬЗЯ использовать netif_set_ipaddr() — в lwIP 2.2.0 смена адреса
+     * вызывает netif_do_ip_addr_changed() → tcp_netif_ip_addr_changed(),
+     * которая делает tcp_abort() ВСЕМ активным pcb, чей local_ip совпадает
+     * со старым адресом netif'а.  В tun2socks-паттерне local_ip каждого
+     * pcb == его original-dst, поэтому при переключении netif->ip_addr с
+     * dst1 на dst2 стек убивал все flow'ы к dst1.  При параллельном трафике
+     * к нескольким адресам (обычный браузер) соединения непрерывно рвали
+     * друг друга — выживал трафик лишь к одному dst за раз.
+     *
+     * NO_SYS=1 + единственный engine-тред → запись поля напрямую безопасна.
+     * ip4_addr_t хранит адрес в network byte order, как и iphdr->dest. */
+    ip4_addr_copy(*ip_2_ip4(&input_netif->ip_addr), iphdr->dest);
 
     /* 0 — lwIP продолжит стандартную обработку. */
     return 0;

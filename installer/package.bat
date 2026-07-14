@@ -15,7 +15,9 @@ setlocal enabledelayedexpansion
 :: historical manual behaviour intact (defaults unchanged) while letting the
 :: easy-mode wrapper redirect the source tree and version label.
 if not defined DEPLOY set DEPLOY=..\deploy_v3
-if not defined PKG_VERSION set PKG_VERSION=1.1.0
+:: Default package version must match the repo VERSION file (single source of truth).
+:: easy_mode_deploy.bat still overrides this with PKG_VERSION=latest.
+if not defined PKG_VERSION set PKG_VERSION=1.0.0
 set OBFUSCATED=obfuscated
 set OUTPUT=..\output
 
@@ -31,7 +33,6 @@ echo [1/3] Cleaning...
 if exist "%OBFUSCATED%" rmdir /S /Q "%OBFUSCATED%" >nul 2>&1
 if exist "%OUTPUT%" rmdir /S /Q "%OUTPUT%" >nul 2>&1
 mkdir "%OBFUSCATED%\gui\ru" >nul 2>&1
-mkdir "%OBFUSCATED%\.bin\tun2socks" >nul 2>&1
 mkdir "%OUTPUT%" >nul 2>&1
 echo       OK
 
@@ -84,23 +85,26 @@ if exist "%DEPLOY%\WinDivert.dll" (
 )
 
 :: -------------------------------------------------------------------
-:: Wintun — OPTIONAL.
+:: .bin\ engine tree — OPTIONAL. Mirror the ENTIRE staged .bin\ tree so the
+:: runtime layout the service reads is preserved verbatim:
+::     .bin\wintun\<arch>\wintun.dll   (WintunApi::DefaultDllPath)
+::     .bin\tun2socks\tun2socks.exe    (external engine resolver)
+:: Any DLL under .bin\ ships automatically.
 :: -------------------------------------------------------------------
-if exist "%DEPLOY%\wintun.dll" (
-    copy /Y "%DEPLOY%\wintun.dll" "%OBFUSCATED%\" >nul
-    echo       [OK] wintun.dll staged
+if exist "%DEPLOY%\.bin" (
+    xcopy /Y /Q /E /I "%DEPLOY%\.bin\*" "%OBFUSCATED%\.bin\" >nul 2>&1
+    if exist "%OBFUSCATED%\.bin\wintun\x64\wintun.dll" (
+        echo       [OK] .bin\wintun\x64\wintun.dll staged
+    ) else (
+        echo       [SKIP] wintun.dll absent — installer will not offer Wintun mode DLL
+    )
+    if exist "%OBFUSCATED%\.bin\tun2socks\tun2socks.exe" (
+        echo       [OK] .bin\tun2socks\tun2socks.exe staged
+    ) else (
+        echo       [SKIP] tun2socks.exe absent — external engine unavailable
+    )
 ) else (
-    echo       [SKIP] wintun.dll absent — installer will not offer Wintun mode DLL
-)
-
-:: -------------------------------------------------------------------
-:: tun2socks external engine — OPTIONAL. Preserves .bin\tun2socks\ layout.
-:: -------------------------------------------------------------------
-if exist "%DEPLOY%\.bin\tun2socks\tun2socks.exe" (
-    copy /Y "%DEPLOY%\.bin\tun2socks\tun2socks.exe" "%OBFUSCATED%\.bin\tun2socks\" >nul
-    echo       [OK] tun2socks.exe staged
-) else (
-    echo       [SKIP] tun2socks.exe absent — external engine unavailable
+    echo       [SKIP] no .bin\ tree — delivery ships without wintun/tun2socks engines
 )
 
 :: -------------------------------------------------------------------
@@ -157,7 +161,7 @@ echo set "APP_DIR=%%ProgramFiles%%\TcpRedirector"
 echo.
 echo echo [1/4] Creating directories...
 echo mkdir "%%APP_DIR%%\gui" 2^>nul
-echo mkdir "%%APP_DIR%%\.bin\tun2socks" 2^>nul
+echo mkdir "%%APP_DIR%%\.bin" 2^>nul
 echo mkdir "%%APP_DIR%%\logs" 2^>nul
 echo.
 echo echo [2/4] Copying files...
@@ -173,20 +177,21 @@ echo ^) else ^(
 echo     echo     [SKIP] WinDivert not shipped
 echo ^)
 echo.
-echo(:: --- Optional Wintun ---
-echo if exist "%%~dp0wintun.dll" ^(
-echo     copy /Y "%%~dp0wintun.dll" "%%APP_DIR%%\" ^>nul
-echo     echo     [OK] wintun engine present
+echo(:: --- Optional .bin\ engine tree ^(wintun\^<arch^>\wintun.dll, tun2socks\^) ---
+echo if exist "%%~dp0.bin" ^(
+echo     xcopy /Y /E /I "%%~dp0.bin\*" "%%APP_DIR%%\.bin\" ^>nul 2^>^&1
+echo     if exist "%%APP_DIR%%\.bin\wintun\x64\wintun.dll" ^(
+echo         echo     [OK] wintun engine present
+echo     ^) else ^(
+echo         echo     [SKIP] wintun.dll not shipped
+echo     ^)
+echo     if exist "%%APP_DIR%%\.bin\tun2socks\tun2socks.exe" ^(
+echo         echo     [OK] tun2socks.exe present
+echo     ^) else ^(
+echo         echo     [SKIP] tun2socks.exe not shipped
+echo     ^)
 echo ^) else ^(
-echo     echo     [SKIP] wintun.dll not shipped
-echo ^)
-echo.
-echo(:: --- Optional external tun2socks ---
-echo if exist "%%~dp0.bin\tun2socks\tun2socks.exe" ^(
-echo     copy /Y "%%~dp0.bin\tun2socks\tun2socks.exe" "%%APP_DIR%%\.bin\tun2socks\" ^>nul
-echo     echo     [OK] tun2socks.exe present
-echo ^) else ^(
-echo     echo     [SKIP] tun2socks.exe not shipped
+echo     echo     [SKIP] .bin\ engine tree not shipped
 echo ^)
 echo.
 echo(:: --- Seed config.json only if missing ^(v2: lives next to EXE^) ---
@@ -274,7 +279,7 @@ echo Included (present only if staged in %DEPLOY%\):
 echo   - TcpRedirector GUI (self-contained, .NET 9.0 inside)
 echo   - TcpRedirector Service
 echo   - WinDivert.dll + WinDivert64.sys        [optional]
-echo   - wintun.dll                              [optional]
+echo   - .bin\wintun\^<arch^>\wintun.dll           [optional]
 echo   - .bin\tun2socks\tun2socks.exe           [optional]
 echo   - config.default.json  (seed, first-run only)
 echo   - install.bat / uninstall.bat

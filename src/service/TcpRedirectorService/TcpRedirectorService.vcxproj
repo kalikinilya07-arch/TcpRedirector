@@ -139,7 +139,6 @@
     <ClInclude Include="domain\ports\ICapturePreflight.h" />
     <ClInclude Include="domain\ports\IConfigStore.h" />
     <ClInclude Include="domain\ports\IConnectionMonitor.h" />
-    <ClInclude Include="domain\ports\IDriverCommunicator.h" />
     <ClInclude Include="domain\ports\IProxyConnector.h" />
     <ClInclude Include="domain\services\ConnectionTracker.h" />
     <ClInclude Include="domain\services\RuleEngine.h" />
