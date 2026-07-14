@@ -233,6 +233,7 @@
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="150"/>
@@ -282,6 +283,19 @@
                                                   ItemsSource="{Binding Settings.WintunEngines}"
                                                   SelectedItem="{Binding Settings.WintunEngine, Mode=TwoWay}"
                                                   Margin="0,2"/>
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0"
+                                                   Text="Глубина лестницы маршрутов (1..8):"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center" Margin="0,2"/>
+                                        <TextBox Grid.Row="3" Grid.Column="1"
+                                                 Style="{StaticResource ValidatedTextBox}"
+                                                 Text="{Binding Settings.WintunRouteLadderPrefix, Mode=TwoWay,
+                                                                UpdateSourceTrigger=PropertyChanged,
+                                                                ValidatesOnExceptions=True,
+                                                                ValidatesOnNotifyDataErrors=True,
+                                                                NotifyOnValidationError=True}"
+                                                 Margin="0,2"/>
                                     </Grid>
 
                                     <CheckBox Content="Фильтрация по процессу (Wintun)"

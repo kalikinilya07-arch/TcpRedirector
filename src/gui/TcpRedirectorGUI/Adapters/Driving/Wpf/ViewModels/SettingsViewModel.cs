@@ -157,6 +157,10 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             wintun && WintunMtu is < 576 or > 65535
                 ? "MTU должен быть в диапазоне 576..65535" : null);
 
+        SetError(nameof(WintunRouteLadderPrefix),
+            wintun && WintunRouteLadderPrefix is < 1 or > 8
+                ? "Глубина лестницы маршрутов должна быть в диапазоне 1..8" : null);
+
         var external = wintun && WintunEngine == WintunEngineKind.External;
         SetError(nameof(ExternalExecutable),
             external && string.IsNullOrWhiteSpace(ExternalExecutable)
@@ -347,6 +351,12 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         }
     }
 
+    public int WintunRouteLadderPrefix
+    {
+        get => Wintun.RouteLadderPrefix;
+        set { if (Wintun.RouteLadderPrefix != value) { Wintun.RouteLadderPrefix = value; OnPropertyChanged(); } }
+    }
+
     public string ExternalExecutable
     {
         get => Wintun.ExternalEngine.Executable;
@@ -501,6 +511,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             OnPropertyChanged(nameof(WintunEngine));
             OnPropertyChanged(nameof(IsExternalEngine));
             OnPropertyChanged(nameof(WintunProcessFilterEnabled));
+            OnPropertyChanged(nameof(WintunRouteLadderPrefix));
             OnPropertyChanged(nameof(ExternalExecutable));
             OnPropertyChanged(nameof(ExternalSocks5Listen));
             OnPropertyChanged(nameof(ExternalRestartOnCrash));

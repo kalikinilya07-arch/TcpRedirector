@@ -85,6 +85,14 @@ public sealed class WintunSettings
     /// </summary>
     public bool ProcessFilterEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Depth of the split-tunnel route ladder (number of /N prefixes installed).
+    /// Mirrors C++ <c>wintun.route_ladder_prefix</c> (default <c>5</c>, valid
+    /// range <c>1..8</c>). Must be round-tripped so the GUI does not silently
+    /// drop it when it rewrites the whole <c>wintun</c> section on save.
+    /// </summary>
+    public int RouteLadderPrefix { get; set; } = 5;
+
     public ExternalEngineSettings ExternalEngine { get; set; } = new();
 }
 

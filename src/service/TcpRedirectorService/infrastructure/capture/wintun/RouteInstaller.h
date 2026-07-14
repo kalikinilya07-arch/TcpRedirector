@@ -36,6 +36,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -52,37 +53,48 @@ namespace wintun {
 class RouteInstaller {
 public:
     /**
-     * @brief Установить пару маршрутов 0.0.0.0/1 и 128.0.0.0/1 через указанный
-     *        адаптер.
+     * @brief Установить «лестницу» split-tunnel маршрутов через указанный адаптер.
+     *
+     * Вместо одиночной пары 0.0.0.0/1 + 128.0.0.0/1 раскладывает 0.0.0.0/0
+     * набором маршрутов длиной префикса `ladder_prefix` (2^ladder_prefix штук),
+     * ЗА ВЫЧЕТОМ carve-out диапазонов, которые нельзя заворачивать в TUN:
+     *   • 127.0.0.0/8   — loopback (наш relay + loopback-прокси);
+     *   • 0.0.0.0/8     — "this network";
+     *   • 169.254.0.0/16 — link-local.
+     * Carve-out реализован как complement: те /ladder_prefix-подсети, что целиком
+     * попадают в исключаемый диапазон, НЕ ставятся; частично пересекающиеся —
+     * дробятся глубже, пока чистая часть не отделится от исключаемой.  На практике
+     * при выровненных /8- и /16-границах достаточно пропускать целые листья.
+     *
+     * Чем больше `ladder_prefix`, тем специфичнее маршруты и тем увереннее они
+     * выигрывают longest-prefix-match у сосуществующих full-tunnel VPN.
      *
      * @param luid          LUID Wintun-адаптера (из WintunAdapter::Luid()).
-     * @param next_hop_ipv4 Строка вида "10.6.7.1" — IP-шлюз внутри туннеля.
-     *                      Совпадает с IP-адресом самого TUN-интерфейса (host часть CIDR).
-     * @param metric        Метрика для маршрута.  Должна быть НИЖЕ, чем у
-     *                      действующего дефолт-маршрута через физический интерфейс,
-     *                      чтобы наши /1 маршруты выиграли выборку.  Рекомендуемое
-     *                      значение — 1..5.  §6.8 плана называет 4; мы даём вызывающему
-     *                      выбирать.
+     * @param next_hop_ipv4 Строка вида "10.6.7.1" — sanity-check формата (маршрут
+     *                      ставится on-link, значение next-hop не используется).
+     * @param metric        Route-метрика листьев (обычно 1).
+     * @param ladder_prefix Длина префикса листьев (1..8).  1 = историческая пара /1.
      * @param outError      [out, обязателен] Диагностика при провале.
-     * @return true при полной установке ОБОИХ маршрутов.  При частичном провале
-     *         (например, первый прошёл, второй сломался) уже поставленный
-     *         маршрут откатывается перед возвратом false.
+     * @return true при полной установке.  При частичном провале уже поставленные
+     *         маршруты откатываются перед возвратом false.
      */
     static bool InstallSplitTunnel(NET_LUID luid,
                                    const std::wstring& next_hop_ipv4,
                                    uint32_t metric,
+                                   int ladder_prefix,
                                    std::string* outError);
 
     /**
-     * @brief Удалить пару маршрутов 0.0.0.0/1 и 128.0.0.0/1 на указанном LUID.
+     * @brief Удалить ВСЕ split-tunnel маршруты на указанном LUID.
      *
-     * ERROR_NOT_FOUND трактуется как success (маршрут уже отсутствует).
-     * Если одно из удалений вернуло другую ошибку — второй маршрут всё равно
-     * пробуется удалить, чтобы минимизировать шанс на orphan-маршрут.
+     * Перечисляет IPv4-таблицу и удаляет все NETMGMT on-link (NextHop=0.0.0.0)
+     * маршруты на данном LUID с PrefixLength в [1..8] — т.е. всю лестницу любой
+     * глубины, которую мы могли поставить (историческую пару /1 в том числе).
+     * ERROR_NOT_FOUND трактуется как success.
      *
      * @param luid      LUID Wintun-адаптера.
      * @param outError  [out, опционально] Диагностика при провале.  Может быть nullptr.
-     * @return true, если оба маршрута удалены (или отсутствовали).
+     * @return true, если все найденные маршруты удалены (или их не было).
      */
     static bool UninstallSplitTunnel(NET_LUID luid,
                                      std::string* outError);
@@ -122,6 +134,41 @@ public:
      * @param outError     [out, опционально] диагностика.
      */
     static bool UninstallHostBypass(uint32_t dst_ipv4_be, std::string* outError);
+
+    /**
+     * @brief Убрать «протёкшие» proxy-bypass /32 маршруты от прошлых запусков.
+     *
+     * F1-фикс (см. plans/wintun_no_traffic_debug_2026-07-14.md): InstallHostBypass
+     * ставит <proxy>/32 с Protocol=NETMGMT; при смене proxy.host между запусками
+     * или грязном стопе старый /32 остаётся и НАВСЕГДА уводит этот dst мимо
+     * туннеля (как самый специфичный префикс).  Здесь мы перечисляем IPv4-таблицу
+     * и удаляем ВСЕ /32 c Protocol=NETMGMT, КРОМЕ тех, что заданы в keep-множестве
+     * (текущие proxy-IP).  Так снимаются исключительно наши старые bypass'ы:
+     * обычные системные /32 host-маршруты имеют иной Protocol.
+     *
+     * @param keep_ipv4_be  IPv4 (network byte order), которые НЕ трогать (актуальный прокси).
+     * @param outError      [out, опционально] диагностика.
+     * @return true при успехе (частичные ошибки удаления логируются в outError, но
+     *         не считаются фатальными).
+     */
+    static bool CleanupStaleBypass(const std::vector<uint32_t>& keep_ipv4_be,
+                                   std::string* outError);
+
+    /**
+     * @brief F2: задать низкую interface-метрику IPv4 у Wintun-адаптера.
+     *
+     * При РАВНОЙ длине префикса с другим адаптером Windows выбирает маршрут с
+     * меньшей суммарной метрикой.  По умолчанию у Wintun AutomaticMetric=Enabled
+     * (метрика ~5, как у Ethernet) — это делает исход ничьей недетерминированным.
+     * Отключаем авто и задаём фиксированную низкую метрику, чтобы при равенстве
+     * префиксов выигрывать.
+     *
+     * @param luid    LUID Wintun-адаптера.
+     * @param metric  Желаемая interface-метрика (напр. 1).
+     * @param outError[out, опционально] диагностика.
+     * @return true при успехе.
+     */
+    static bool SetInterfaceMetric(NET_LUID luid, uint32_t metric, std::string* outError);
 };
 
 /**

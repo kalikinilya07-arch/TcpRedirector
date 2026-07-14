@@ -802,6 +802,20 @@ WintunSettings ConfigManager::ParseWintunSettings(const nlohmann::json& jw) cons
     // процессу в embedded-движке включена, поведение консистентно с WinDivert).
     w.process_filter_enabled = jw.value("process_filter_enabled", w.process_filter_enabled);
 
+    // route_ladder_prefix — глубина лестницы split-tunnel маршрутов (1..8).
+    // Значения вне диапазона clamp'ятся; всё, что <1, коэрсится к 1.
+    {
+        int rlp = jw.value("route_ladder_prefix", w.route_ladder_prefix);
+        if (rlp < 1) rlp = 1;
+        if (rlp > 8) rlp = 8;
+        if (rlp != jw.value("route_ladder_prefix", w.route_ladder_prefix)) {
+            std::fprintf(stderr,
+                "[WARN] ConfigManager: wintun.route_ladder_prefix out of [1..8], clamped to %d\n",
+                rlp);
+        }
+        w.route_ladder_prefix = rlp;
+    }
+
     return w;
 }
 
@@ -933,6 +947,9 @@ nlohmann::json ConfigManager::WintunSettingsToJson(const WintunSettings& w) cons
 
     // Задача 2: фильтрация по процессу внутри Wintun-движка.
     j["process_filter_enabled"] = w.process_filter_enabled;
+
+    // Глубина лестницы split-tunnel маршрутов.
+    j["route_ladder_prefix"] = w.route_ladder_prefix;
 
     return j;
 }

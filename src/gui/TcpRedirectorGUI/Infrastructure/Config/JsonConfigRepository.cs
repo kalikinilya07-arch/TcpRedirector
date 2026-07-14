@@ -172,6 +172,12 @@ public sealed class JsonConfigRepository : IConfigRepository
             if (jw["process_filter_enabled"] is JsonValue pfVal && pfVal.TryGetValue<bool>(out var pf))
                 w.ProcessFilterEnabled = pf;
 
+            // route_ladder_prefix — split-tunnel route ladder depth. Missing →
+            // default 5. Out-of-range values are clamped to 1..8, matching the
+            // C++ service (ConfigManager.cpp).
+            if (jw["route_ladder_prefix"] is JsonValue rlpVal && rlpVal.TryGetValue<int>(out var rlp))
+                w.RouteLadderPrefix = Math.Clamp(rlp, 1, 8);
+
             var je = jw["external_engine"]?.AsObject();
             if (je is not null)
             {
@@ -601,6 +607,7 @@ public sealed class JsonConfigRepository : IConfigRepository
             ["mtu"]                    = w.Mtu,
             ["engine"]                 = WintunEngineToString(w.Engine),
             ["process_filter_enabled"] = w.ProcessFilterEnabled,
+            ["route_ladder_prefix"]    = w.RouteLadderPrefix,
             ["external_engine"]  = new JsonObject
             {
                 ["executable"]          = w.ExternalEngine.Executable,

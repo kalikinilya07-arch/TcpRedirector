@@ -289,6 +289,21 @@ bool WintunCapture::Open() {
         const bool needsBypass = !IsLoopbackHost(m_proxyHost);
         const std::vector<uint32_t> proxyIps = ResolveProxyIpv4All(m_proxyHost);
 
+        // F1 (ВСЕГДА, до install и независимо от loopback/remote): снять
+        // «протёкшие» proxy-bypass /32 от прошлых запусков.  keep-множество =
+        // актуальные proxy-IP (для loopback пусто → удаляются все наши старые
+        // /32).  Иначе старый /32 к прежнему proxy.host навсегда уводит этот
+        // dst мимо туннеля (корневая причина бага, см. plans/).
+        {
+            std::string clErr;
+            if (!capture::wintun::RouteInstaller::CleanupStaleBypass(proxyIps, &clErr)) {
+                LogWarn("Stale proxy-bypass cleanup reported issues: " + clErr);
+            } else {
+                LogDebug("Stale proxy-bypass /32 cleanup done (kept "
+                         + std::to_string(proxyIps.size()) + " current proxy IP(s))");
+            }
+        }
+
         if (proxyIps.empty()) {
             if (needsBypass) {
                 LogError("Cannot resolve proxy host '" + m_proxyHost
@@ -332,23 +347,38 @@ bool WintunCapture::Open() {
         }
     }
 
-    // Шаг 7: split-tunnel маршруты через RAII-scope.  Если ниже упадём —
-    // деструктор RouteScope снимет маршруты, чтобы не оставить orphan.
+    // Шаг 6.7 (F2): понизить interface-метрику Wintun и отключить AutomaticMetric.
+    // Нужно ДО install лестницы, чтобы при равной длине префикса с другим
+    // адаптером (напр. сторонним VPN) выигрыш по метрике был наш.
+    {
+        std::string imErr;
+        if (!capture::wintun::RouteInstaller::SetInterfaceMetric(
+                m_adapter->Luid(), /*metric=*/1u, &imErr)) {
+            LogWarn("SetInterfaceMetric(1) failed (non-fatal): " + imErr);
+        } else {
+            LogDebug("Wintun interface metric set to 1 (AutomaticMetric off)");
+        }
+    }
+
+    // Шаг 7: split-tunnel маршруты (лестница /D) через RAII-scope.  Если ниже
+    // упадём — деструктор RouteScope снимет все листья, чтобы не оставить orphan.
     capture::wintun::RouteScope routeScope(m_adapter->Luid());
     err.clear();
-    // Метрика 1 — гарантированно ниже любого дефолт-маршрута; §6.8 плана
-    // указывает 4, но мы выбираем 1 для однозначного выигрыша при
-    // произвольных конфигурациях сети (в т.ч. VPN-стэках с metric=5).
+    // Метрика листьев 1 — ниже любого дефолт-маршрута.  Глубина лестницы D
+    // (route_ladder_prefix): чем больше, тем специфичнее маршруты и увереннее
+    // выигрыш longest-prefix-match у сосуществующих full-tunnel VPN.
+    const int ladderPrefix = m_settings.route_ladder_prefix;
     if (!capture::wintun::RouteInstaller::InstallSplitTunnel(
-            m_adapter->Luid(), gwW, /*metric=*/1u, &err)) {
+            m_adapter->Luid(), gwW, /*metric=*/1u, ladderPrefix, &err)) {
         LogError("RouteInstaller::InstallSplitTunnel failed: " + err);
         m_adapter.reset();
         m_api.reset();
         return false;
     }
     routeScope.MarkInstalled();
-    LogDebug("Split-tunnel routes installed (0.0.0.0/1 + 128.0.0.0/1 via "
-             + WideToUtf8(gwW) + ", metric=1)");
+    LogDebug("Split-tunnel ladder installed (/" + std::to_string(ladderPrefix)
+             + " leaves via " + WideToUtf8(gwW)
+             + ", metric=1, carve-outs 127/8+0/8+169.254/16)");
 
     // Шаг 8: data-сессия — ТОЛЬКО для embedded-движка.
     //   External-движок открывает сессию сам (§6 ownership table).
