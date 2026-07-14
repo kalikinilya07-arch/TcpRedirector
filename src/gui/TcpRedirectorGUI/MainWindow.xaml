@@ -207,10 +207,23 @@
                                           Margin="0,2"/>
                             </StackPanel>
 
-                            <!-- Wintun sub-panel — enabled only in Wintun mode -->
+                            <!-- WinDivert info block — visible only in WinDivert mode -->
                             <Border BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
                                     Margin="0,6,0,0" Padding="0,6,0,0"
-                                    IsEnabled="{Binding Settings.IsWintunSelected}">
+                                    Visibility="{Binding Settings.IsWinDivertSelected, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="Настройки WinDivert"
+                                               Foreground="#DCDCAA" FontWeight="Bold"
+                                               Margin="0,0,0,4"/>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#9CDCFE"
+                                               Text="Режим WinDivert перехватывает трафик на уровне драйвера по пути процесса. Дополнительной настройки не требуется — правила задаются в разделе «Приложения»."/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Wintun sub-panel — visible only in Wintun mode -->
+                            <Border BorderBrush="#3C3C3C" BorderThickness="0,1,0,0"
+                                    Margin="0,6,0,0" Padding="0,6,0,0"
+                                    Visibility="{Binding Settings.IsWintunSelected, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
                                     <TextBlock Text="Настройки Wintun"
                                                Foreground="#DCDCAA" FontWeight="Bold"

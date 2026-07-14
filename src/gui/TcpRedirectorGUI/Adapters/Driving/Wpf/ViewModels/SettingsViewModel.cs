@@ -47,7 +47,8 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     {
         nameof(Msg), nameof(LogMsg), nameof(LogFilterLabel),
         nameof(IsDirty), nameof(HasErrors), nameof(SelectedApp),
-        nameof(SelectedRule), nameof(IsWintunSelected), nameof(IsExternalEngine)
+        nameof(SelectedRule), nameof(IsWintunSelected), nameof(IsWinDivertSelected),
+        nameof(IsExternalEngine)
     };
 
     public SettingsViewModel(IConfigRepository config, ITcpRedirectorService? svc = null)
@@ -277,12 +278,16 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
 
     [ObservableProperty] private CaptureMode _captureMode = CaptureMode.WinDivert;
 
-    /// <summary>Drives IsEnabled on the Wintun sub-panel.</summary>
+    /// <summary>Drives Visibility of the Wintun sub-panel (shown only in Wintun mode).</summary>
     public bool IsWintunSelected => CaptureMode == CaptureMode.Wintun;
+
+    /// <summary>Drives Visibility of the WinDivert info block (shown only in WinDivert mode).</summary>
+    public bool IsWinDivertSelected => CaptureMode == CaptureMode.WinDivert;
 
     partial void OnCaptureModeChanged(CaptureMode value)
     {
         OnPropertyChanged(nameof(IsWintunSelected));
+        OnPropertyChanged(nameof(IsWinDivertSelected));
     }
 
     // ── WP5: Wintun settings ─────────────────────────
@@ -613,6 +618,10 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
                 {
                     Host = Host, Port = Port,
                     AuthRequired = AuthRequired, Login = Login,
+                    // Persist the password to config.json (DPAPI machine-scope)
+                    // regardless of whether the service is running. Empty => the
+                    // repository preserves the existing on-disk encryptedPassword.
+                    Password = currentPwd,
                     KerberosEnabled = KerberosEnabled
                 },
                 CaptureMode,

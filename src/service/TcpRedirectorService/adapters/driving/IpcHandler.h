@@ -163,7 +163,12 @@ private:
             domain::Rule rule;
             rule.id = r.value("id", "");
             {
-                std::string tmp = r["pattern"].get<std::string>();
+                // Tolerant name read (mirrors ConfigManager::JsonToRules):
+                // prefer "pattern", fall back to legacy "exe", skip if empty so
+                // a single malformed element cannot abort the whole IPC request.
+                std::string tmp = r.value("pattern", std::string());
+                if (tmp.empty()) tmp = r.value("exe", std::string());
+                if (tmp.empty()) continue;
                 rule.pattern = infrastructure::Utf8ToWide(tmp);
             }
             {

@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using TcpRedirectorGUI.Domain.Entities;
@@ -382,7 +384,15 @@ public sealed class JsonConfigRepository : IConfigRepository
             auth["enabled"]  = config.AuthRequired;
             auth["username"] = config.Login;
             auth["kerberos"] = config.KerberosEnabled;
-            // auth.encryptedPassword left untouched (preserved from disk).
+            // auth.encryptedPassword: persist the password ourselves (DPAPI
+            // machine-scope) so it survives even when the service is stopped and
+            // no live-IPC push happens. Empty password => keep whatever is on
+            // disk (existing behaviour: do not wipe a previously-saved secret).
+            if (!string.IsNullOrEmpty(config.Password))
+            {
+                var enc = EncryptPasswordDpapi(config.Password);
+                if (!string.IsNullOrEmpty(enc)) auth["encryptedPassword"] = enc;
+            }
 
             // log.* — GUI owns "level" (written elsewhere on the service scale via
             // WriteInt); only seed the others if absent so we never reset them.
@@ -404,6 +414,30 @@ public sealed class JsonConfigRepository : IConfigRepository
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Encrypts <paramref name="plaintext"/> with DPAPI in
+    /// <see cref="DataProtectionScope.LocalMachine"/> scope and returns the
+    /// standard Base64 of the blob. Machine scope is mandatory: the GUI runs as
+    /// an admin user while the service runs as LocalSystem, and only a
+    /// machine-scoped blob is decryptable by both. The plaintext is encoded as
+    /// UTF-16LE (<see cref="Encoding.Unicode"/>) so the C++ service's
+    /// <c>ConfigManager::DecryptPassword</c>, which reads the blob back as a
+    /// <c>wchar_t*</c>, gets a matching byte layout. Returns "" on failure.
+    /// </summary>
+    private static string EncryptPasswordDpapi(string plaintext)
+    {
+        try
+        {
+            var bytes = Encoding.Unicode.GetBytes(plaintext);
+            var blob = ProtectedData.Protect(bytes, null, DataProtectionScope.LocalMachine);
+            return Convert.ToBase64String(blob);
+        }
+        catch
+        {
+            return "";
         }
     }
 
@@ -621,7 +655,12 @@ public sealed class JsonConfigRepository : IConfigRepository
             if (emitted >= kLegacyRulesCap) { truncated = true; return; }
             arr.Add(new JsonObject
             {
+                // Write both keys: "exe" for legacy v1 readers and "pattern" for
+                // the schema-v2 service reader (ConfigManager::JsonToRules). The
+                // service now tolerates either, but emitting both keeps old and
+                // new readers happy and avoids depending on the fallback path.
                 ["exe"]     = pattern,
+                ["pattern"] = pattern,
                 ["port"]    = port,
                 ["proxyId"] = string.IsNullOrEmpty(proxyId) ? "default" : proxyId
             });

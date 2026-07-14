@@ -585,7 +585,13 @@ std::vector<domain::Rule> ConfigManager::JsonToRules(const nlohmann::json& j) co
         domain::Rule rule;
         rule.id = r.value("id", "");
         {
-            std::string tmp = r["pattern"].get<std::string>();
+            // Tolerant name read: prefer "pattern", fall back to the legacy
+            // "exe" key the GUI mirror writes. A hard r["pattern"].get<string>()
+            // throws type_error.302 when the key is absent (null), which used to
+            // abort LoadImpl and drop the service onto WinDivert defaults.
+            std::string tmp = r.value("pattern", std::string());
+            if (tmp.empty()) tmp = r.value("exe", std::string());
+            if (tmp.empty()) continue;  // skip malformed/nameless entries
             rule.pattern = Utf8ToWide(tmp);
         }
         {
@@ -1026,10 +1032,13 @@ std::string ConfigManager::EncryptPassword(const std::wstring& plaintext) const 
     plainBlob.pbData = (BYTE*)plaintext.data();
     plainBlob.cbData = (DWORD)(plaintext.size() * sizeof(wchar_t));
     DATA_BLOB encryptedBlob = {0};
-    // M12: align DPAPI flags with SecretsManager::Encrypt for interoperability.
-    // CRYPTPROTECT_UI_FORBIDDEN + description string (consistent with SecretsManager).
+    // Machine-scope DPAPI: the GUI runs as an admin user, the service as
+    // LocalSystem. Only CRYPTPROTECT_LOCAL_MACHINE lets one account encrypt a
+    // blob the other can decrypt, so both sides must use it. The .NET GUI writes
+    // auth.encryptedPassword with DataProtectionScope.LocalMachine to match.
     if (CryptProtectData(&plainBlob, L"TcpRedirector Proxy Password",
-            NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &encryptedBlob)) {
+            NULL, NULL, NULL,
+            CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE, &encryptedBlob)) {
         std::vector<uint8_t> data(encryptedBlob.pbData,
                                   encryptedBlob.pbData + encryptedBlob.cbData);
         LocalFree(encryptedBlob.pbData);
@@ -1045,9 +1054,10 @@ std::wstring ConfigManager::DecryptPassword(const std::string& ciphertext) const
     encryptedBlob.pbData = raw.data();
     encryptedBlob.cbData = (DWORD)raw.size();
     DATA_BLOB plainBlob = {0};
-    // M12: align DPAPI flags with encryption (CRYPTPROTECT_UI_FORBIDDEN).
+    // Machine-scope DPAPI: must match EncryptPassword and the GUI's
+    // DataProtectionScope.LocalMachine so a GUI-written blob decrypts here.
     if (CryptUnprotectData(&encryptedBlob, NULL, NULL, NULL, NULL,
-                           CRYPTPROTECT_UI_FORBIDDEN, &plainBlob)) {
+                           CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE, &plainBlob)) {
         std::wstring result((wchar_t*)plainBlob.pbData,
                             plainBlob.cbData / sizeof(wchar_t));
         LocalFree(plainBlob.pbData);
