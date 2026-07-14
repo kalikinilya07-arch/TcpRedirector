@@ -1,19 +1,11 @@
 @echo off
 title TcpRedirector Setup
 
-:: -----------------------------------------------------------------------------
-:: WP13 — mode-agnostic bootstrap. Copies whatever binaries are present in the
-:: package (WinDivert, Wintun, tun2socks are all optional). Config lives next
-:: to the EXE per WP1/WP2; %ProgramData% is no longer used.
-:: `sc create WinDivert` is intentionally NOT performed here — WinDivert
-:: installs its driver lazily on first WinDivertOpen() from the service.
-:: -----------------------------------------------------------------------------
-
 :: Require admin
 net session >nul 2>&1
 if errorlevel 1 (
     echo This installer requires Administrator privileges.
-    echo Right-click install.bat ^> Run as Administrator.
+    echo Right-click install.bat > Run as Administrator.
     pause
     exit /b 1
 )
@@ -25,9 +17,9 @@ echo.
 set "APP_DIR=%ProgramFiles%\TcpRedirector"
 
 echo [1/4] Creating directories...
-mkdir "%APP_DIR%\gui"                2>nul
-mkdir "%APP_DIR%\.bin\tun2socks"     2>nul
-mkdir "%APP_DIR%\logs"               2>nul
+mkdir "%APP_DIR%\gui" 2>nul
+mkdir "%APP_DIR%\.bin\tun2socks" 2>nul
+mkdir "%APP_DIR%\logs" 2>nul
 
 echo [2/4] Copying files...
 xcopy /Y /E /Q "%~dp0gui\*" "%APP_DIR%\gui\" >nul 2>&1
@@ -63,9 +55,6 @@ if not exist "%APP_DIR%\config.json" (
     if exist "%~dp0config.default.json" (
         copy /Y "%~dp0config.default.json" "%APP_DIR%\config.json" >nul
         echo     [OK] config.json seeded from config.default.json
-    ) else if exist "%~dp0config.json" (
-        copy /Y "%~dp0config.json" "%APP_DIR%\config.json" >nul
-        echo     [OK] config.json seeded from package
     ) else (
         echo     [INFO] no seed shipped; service will generate defaults on first run
     )
@@ -82,6 +71,6 @@ powershell -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateS
 
 echo ========================================
 echo  Installation complete
-echo  Launch: Start Menu ^> TcpRedirector
+echo  Launch: Start Menu > TcpRedirector
 echo ========================================
 pause

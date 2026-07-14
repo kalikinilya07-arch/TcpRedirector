@@ -25,10 +25,6 @@ Thumbs.db
 *.userprefs
 *.suo
 *.cache
-*.dll
-*.exe
-*.sys
-*.msi
 *.pdb
 *.nupkg
 *.log

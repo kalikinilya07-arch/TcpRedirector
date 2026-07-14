@@ -67,8 +67,8 @@ if exist "%VERSION_FILE%" (
     set /p SAVED_VERSION=<"%VERSION_FILE%"
     copy /Y "%VERSION_FILE%" "%VERSION_BAK%" >nul 2>&1
     echo     [OK] Saved original VERSION ^(!SAVED_VERSION!^)
-    :: build.bat only needs a non-empty VERSION; keep the real value so the
-    :: build banner stays truthful. We restore byte-for-byte from the backup.
+    rem build.bat only needs a non-empty VERSION; keep the real value so the
+    rem build banner stays truthful. We restore byte-for-byte from the backup.
 ) else (
     echo     [INFO] No VERSION file present - writing a temporary %FALLBACK_VERSION%
     echo %FALLBACK_VERSION%> "%VERSION_FILE%"
@@ -239,9 +239,9 @@ if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe" set "IS
 
 if defined ISCC (
     echo     [INFO] ISCC found: !ISCC!
-    :: setup.iss reads MyAppVersion from /D override if present (backward-compatible
-    :: default is baked into the .iss). SourceDir=obfuscated was just filled by
-    :: package.bat, so the compile picks up the freshly staged tree.
+    rem setup.iss reads MyAppVersion from /D override if present (backward-compatible
+    rem default is baked into the .iss). SourceDir=obfuscated was just filled by
+    rem package.bat, so the compile picks up the freshly staged tree.
     "!ISCC!" /DMyAppVersion=%EASY_VERSION% "%ROOT%\installer\setup.iss"
     if exist "%ROOT%\output\TcpRedirector_Setup.exe" (
         echo     [OK] Setup EXE: %ROOT%\output\TcpRedirector_Setup.exe
@@ -296,7 +296,7 @@ if "%VERSION_EXISTED%"=="1" (
         echo     [OK] VERSION restored to original ^(%SAVED_VERSION%^)
     )
 ) else (
-    :: No VERSION existed before; remove the temporary one we created.
+    rem No VERSION existed before; remove the temporary one we created.
     if exist "%VERSION_FILE%" del /Q "%VERSION_FILE%" >nul 2>&1
     echo     [OK] Temporary VERSION removed ^(none existed before^)
 )

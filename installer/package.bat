@@ -164,7 +164,7 @@ echo echo [2/4] Copying files...
 echo xcopy /Y /E /Q "%%~dp0gui\*" "%%APP_DIR%%\gui\" ^>nul 2^>^&1
 echo copy /Y "%%~dp0TcpRedirectorService.exe" "%%APP_DIR%%\" ^>nul
 echo.
-echo :: --- Optional WinDivert ---
+echo(:: --- Optional WinDivert ---
 echo if exist "%%~dp0WinDivert.dll" ^(
 echo     copy /Y "%%~dp0WinDivert.dll"   "%%APP_DIR%%\" ^>nul
 echo     copy /Y "%%~dp0WinDivert64.sys" "%%APP_DIR%%\" ^>nul 2^>^&1
@@ -173,7 +173,7 @@ echo ^) else ^(
 echo     echo     [SKIP] WinDivert not shipped
 echo ^)
 echo.
-echo :: --- Optional Wintun ---
+echo(:: --- Optional Wintun ---
 echo if exist "%%~dp0wintun.dll" ^(
 echo     copy /Y "%%~dp0wintun.dll" "%%APP_DIR%%\" ^>nul
 echo     echo     [OK] wintun engine present
@@ -181,7 +181,7 @@ echo ^) else ^(
 echo     echo     [SKIP] wintun.dll not shipped
 echo ^)
 echo.
-echo :: --- Optional external tun2socks ---
+echo(:: --- Optional external tun2socks ---
 echo if exist "%%~dp0.bin\tun2socks\tun2socks.exe" ^(
 echo     copy /Y "%%~dp0.bin\tun2socks\tun2socks.exe" "%%APP_DIR%%\.bin\tun2socks\" ^>nul
 echo     echo     [OK] tun2socks.exe present
@@ -189,7 +189,7 @@ echo ^) else ^(
 echo     echo     [SKIP] tun2socks.exe not shipped
 echo ^)
 echo.
-echo :: --- Seed config.json only if missing (v2: lives next to EXE) ---
+echo(:: --- Seed config.json only if missing ^(v2: lives next to EXE^) ---
 echo if not exist "%%APP_DIR%%\config.json" ^(
 echo     if exist "%%~dp0config.default.json" ^(
 echo         copy /Y "%%~dp0config.default.json" "%%APP_DIR%%\config.json" ^>nul
