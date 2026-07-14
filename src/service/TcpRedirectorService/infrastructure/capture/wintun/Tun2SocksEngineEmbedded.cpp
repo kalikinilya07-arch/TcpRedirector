@@ -320,11 +320,20 @@ struct EngineTramp {
         }
 
         if (::connect(s, reinterpret_cast<sockaddr*>(&target), sizeof(target)) != 0) {
+            const int wsaErr = ::WSAGetLastError();
             if (relay_src_port != 0 && engine->m_conn_table != nullptr) {
                 engine->m_conn_table->Remove(relay_src_port);
             }
             ::closesocket(s);
             tcp_abort(newpcb);
+            // Ранее этот сбой был молчаливым («ошибок в логах нет», хотя flow
+            // не форвардился).  Теперь явно логируем на WARN.
+            engine->FilterLog(domain::LogLevel::Warn,
+                "[wintun][flow] connect to relay 127.0.0.1:"
+                + std::to_string(engine->m_relay_port) + " FAILED (WSA="
+                + std::to_string(wsaErr) + ") for dst "
+                + meta.original_dst_ip + ":" + std::to_string(meta.original_dst_port)
+                + " — flow dropped");
             return ERR_ABRT;
         }
         BOOL nodelay = TRUE;
@@ -366,6 +375,18 @@ struct EngineTramp {
         engine->m_active_flows.fetch_add(1, std::memory_order_relaxed);
 
         raw->sock_reader = std::thread([engine, raw]() { engine->FlowSocketReader(raw); });
+
+        // T5: явная DEBUG-строка на каждый установленный PROXY-flow — «кто/куда
+        // подключается» (процесс, dst, эфемерный relay-порт для восстановления
+        // original-dst).  Помогает диагностировать «трафик виден, но не идёт».
+        engine->FilterLog(domain::LogLevel::Debug,
+            "[wintun][flow] PROXY pid=" + std::to_string(flowPid)
+            + " proc=" + WideToUtf8(flowProc)
+            + " src=" + meta.source_ip + ":" + std::to_string(meta.source_port)
+            + " dst=" + meta.original_dst_ip + ":" + std::to_string(meta.original_dst_port)
+            + " relay_port=" + std::to_string(engine->m_relay_port)
+            + " relay_src_port=" + std::to_string(relay_src_port)
+            + " connect=OK");
 
         if (engine->m_on_flow) {
             try { engine->m_on_flow(meta); }
@@ -654,6 +675,10 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
     std::vector<uint8_t> rxbuf;
     rxbuf.reserve(2048);
 
+    // T5: троттлинг периодической TRACE-сводки счётчиков пакетов.
+    ULONGLONG lastStatsTick = ::GetTickCount64();
+    uint64_t  lastV4 = 0, lastV6 = 0;
+
     while (m_running.load(std::memory_order_relaxed)) {
         // Дрейним всё, что есть в wintun'е, ДО следующего wait'а — иначе
         // event сбрасывается, а пакеты остаются.
@@ -672,6 +697,22 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
             std::string ignored_err;
             int n = m_session->TryReceiveInto(rxbuf, &ignored_err);
             if (n <= 0) break; // 0 — ring пуст; <0 — ошибка сессии
+
+            // Версия IP — старший ниббл первого байта.  IPv6 (=6) lwIP-стек не
+            // обрабатывает (IPv4-only): при block_ipv6 отвечаем RST на TCP-SYN
+            // (мгновенный откат приложения на IPv4), прочий IPv6 дропаем.  Без
+            // block_ipv6 — пропускаем в lwIP (там он молча отбросится).
+            if (n >= 1 && (rxbuf[0] >> 4) == 6) {
+                m_pkts_v6.fetch_add(1, std::memory_order_relaxed);
+                if (m_block_ipv6) {
+                    HandleIpv6Packet(rxbuf.data(), n);
+                    continue; // не отдаём в lwIP
+                }
+                // block_ipv6=false — падаем ниже, lwIP отбросит IPv6 сам.
+            } else {
+                m_pkts_v4.fetch_add(1, std::memory_order_relaxed);
+            }
+
             std::lock_guard<std::recursive_mutex> lk(m_core_lock);
             struct pbuf* p = pbuf_alloc(PBUF_RAW, static_cast<u16_t>(n), PBUF_POOL);
             if (!p) continue; // pool пуст — дропаем пакет (TCP пересчитается)
@@ -686,6 +727,29 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
             std::lock_guard<std::recursive_mutex> lk(m_core_lock);
             sys_check_timeouts();
         }
+
+        // T5: периодическая (раз в ~5 c) TRACE-сводка о трафике из туннеля —
+        // видно, доходят ли пакеты и в каком соотношении IPv4/IPv6.  Логируем
+        // только при изменении, чтобы не спамить в простое.
+        if (m_filter.log) {
+            const ULONGLONG now = ::GetTickCount64();
+            if (now - lastStatsTick >= 5000) {
+                const uint64_t v4 = m_pkts_v4.load(std::memory_order_relaxed);
+                const uint64_t v6 = m_pkts_v6.load(std::memory_order_relaxed);
+                if (v4 != lastV4 || v6 != lastV6) {
+                    std::ostringstream os;
+                    os << "[wintun][rx-stats] tun packets: ipv4=" << v4
+                       << " ipv6=" << v6
+                       << " (ipv6_rst=" << m_ipv6_rst.load(std::memory_order_relaxed)
+                       << " ipv6_dropped=" << m_ipv6_dropped.load(std::memory_order_relaxed)
+                       << ") active_flows=" << m_active_flows.load(std::memory_order_relaxed);
+                    FilterLog(domain::LogLevel::Trace, os.str());
+                    lastV4 = v4;
+                    lastV6 = v6;
+                }
+                lastStatsTick = now;
+            }
+        }
         // Ждём событие: пакет из туннеля, stop или периодический timer (250 мс)
         // для регулярного sys_check_timeouts().
         DWORD r = ::WaitForMultipleObjects(3, waits, FALSE, 500);
@@ -695,6 +759,123 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
 
     ::CancelWaitableTimer(timer);
     ::CloseHandle(timer);
+}
+
+/* ------------------------------------------------------------------------- */
+/*  IPv6-нейтрализация: RST на IPv6 TCP-SYN, дроп прочего IPv6                    */
+/* ------------------------------------------------------------------------- */
+
+namespace {
+
+// 16-битная контрольная сумма поверх произвольного буфера (для TCP over IPv6
+// с псевдозаголовком).  data/len — суммируемая область; возвращает свёрнутую
+// сумму в host byte order (не инвертированную — инверсию делает вызывающий).
+uint32_t Checksum16Accumulate(const uint8_t* data, size_t len, uint32_t seed) {
+    uint32_t sum = seed;
+    size_t i = 0;
+    for (; i + 1 < len; i += 2) {
+        sum += (static_cast<uint32_t>(data[i]) << 8) | data[i + 1];
+    }
+    if (i < len) {
+        sum += static_cast<uint32_t>(data[i]) << 8; // нечётный последний байт
+    }
+    return sum;
+}
+
+uint16_t Fold16(uint32_t sum) {
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return static_cast<uint16_t>(~sum & 0xFFFF);
+}
+
+} // namespace
+
+bool Tun2SocksEngineEmbedded::HandleIpv6Packet(const uint8_t* pkt, int len) {
+    // Разбор фиксированного IPv6-заголовка (40 байт).  Дробную поддержку
+    // extension-headers не делаем — у TCP-SYN их на практике нет.
+    if (len < 40) { m_ipv6_dropped.fetch_add(1, std::memory_order_relaxed); return true; }
+    const uint8_t nextHeader = pkt[6];
+    const uint8_t* srcAddr = pkt + 8;   // 16 байт
+    const uint8_t* dstAddr = pkt + 24;  // 16 байт
+
+    // Только TCP (6) обрабатываем RST'ом; прочее (UDP/ICMPv6/ext) — дроп.
+    if (nextHeader != 6 /*IPPROTO_TCP*/) {
+        m_ipv6_dropped.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    const int tcpOff = 40;
+    if (len < tcpOff + 20) { m_ipv6_dropped.fetch_add(1, std::memory_order_relaxed); return true; }
+
+    const uint8_t* tcp = pkt + tcpOff;
+    const uint16_t srcPort = (static_cast<uint16_t>(tcp[0]) << 8) | tcp[1];
+    const uint16_t dstPort = (static_cast<uint16_t>(tcp[2]) << 8) | tcp[3];
+    const uint32_t seq = (static_cast<uint32_t>(tcp[4]) << 24) |
+                         (static_cast<uint32_t>(tcp[5]) << 16) |
+                         (static_cast<uint32_t>(tcp[6]) << 8)  |
+                          static_cast<uint32_t>(tcp[7]);
+    const uint8_t flags = tcp[13];
+    const bool isSyn = (flags & 0x02) != 0;
+    const bool isRst = (flags & 0x04) != 0;
+    const bool isAck = (flags & 0x10) != 0;
+
+    // RST шлём только на «чистый» SYN (не SYN-ACK, не RST).  Прочие TCP-сегменты
+    // IPv6 (ретрансмиты и т.п.) — дроп, приложение и так упадёт по таймауту/RST.
+    if (isRst || !isSyn || isAck) {
+        m_ipv6_dropped.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    // Формируем IPv6 TCP RST|ACK: swap src/dst адресов и портов, seq=0,
+    // ack=incoming_seq+1.  40 (IPv6) + 20 (TCP без опций) = 60 байт.
+    uint8_t out[60];
+    std::memset(out, 0, sizeof(out));
+    // --- IPv6 header ---
+    out[0] = 0x60;                 // version=6, traffic class 0
+    out[4] = 0x00; out[5] = 20;    // payload length = 20 (TCP header)
+    out[6] = 6;                    // next header = TCP
+    out[7] = 64;                   // hop limit
+    std::memcpy(out + 8,  dstAddr, 16); // src = исходный dst
+    std::memcpy(out + 24, srcAddr, 16); // dst = исходный src
+    // --- TCP header ---
+    uint8_t* rtcp = out + 40;
+    rtcp[0] = static_cast<uint8_t>(dstPort >> 8); rtcp[1] = static_cast<uint8_t>(dstPort & 0xFF);
+    rtcp[2] = static_cast<uint8_t>(srcPort >> 8); rtcp[3] = static_cast<uint8_t>(srcPort & 0xFF);
+    // seq = 0 (уже занулено).  ack = seq+1.
+    const uint32_t ackNum = seq + 1;
+    rtcp[8]  = static_cast<uint8_t>((ackNum >> 24) & 0xFF);
+    rtcp[9]  = static_cast<uint8_t>((ackNum >> 16) & 0xFF);
+    rtcp[10] = static_cast<uint8_t>((ackNum >> 8) & 0xFF);
+    rtcp[11] = static_cast<uint8_t>(ackNum & 0xFF);
+    rtcp[12] = 0x50;               // data offset = 5 (20 байт), reserved 0
+    rtcp[13] = 0x14;               // flags = RST|ACK
+    // window=0, urgent=0.  Контрольная сумма — ниже.
+
+    // TCP checksum с IPv6-псевдозаголовком (RFC 2460): src(16)+dst(16)+
+    // upper-layer-length(4)+zeros(3)+next-header(1) + сам TCP-сегмент.
+    uint8_t pseudo[40];
+    std::memcpy(pseudo,      out + 8,  16); // src (RST src)
+    std::memcpy(pseudo + 16, out + 24, 16); // dst (RST dst)
+    pseudo[32] = 0; pseudo[33] = 0; pseudo[34] = 0; pseudo[35] = 20; // upper-layer len
+    pseudo[36] = 0; pseudo[37] = 0; pseudo[38] = 0; pseudo[39] = 6;  // next header
+    uint32_t sum = Checksum16Accumulate(pseudo, sizeof(pseudo), 0);
+    sum = Checksum16Accumulate(rtcp, 20, sum);
+    const uint16_t csum = Fold16(sum);
+    rtcp[16] = static_cast<uint8_t>(csum >> 8);
+    rtcp[17] = static_cast<uint8_t>(csum & 0xFF);
+
+    // Отправляем RST обратно в туннель.
+    if (m_session && m_session->Send(out, sizeof(out))) {
+        m_ipv6_rst.fetch_add(1, std::memory_order_relaxed);
+        if (m_filter.log) {
+            std::ostringstream os;
+            os << "[wintun][ipv6-rst] src_port=" << srcPort
+               << " dst_port=" << dstPort
+               << " -> RST|ACK sent (forcing IPv4 fallback)";
+            FilterLog(domain::LogLevel::Trace, os.str());
+        }
+    } else {
+        m_ipv6_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */

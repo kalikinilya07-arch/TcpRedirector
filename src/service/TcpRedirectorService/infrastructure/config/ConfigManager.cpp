@@ -816,6 +816,9 @@ WintunSettings ConfigManager::ParseWintunSettings(const nlohmann::json& jw) cons
         w.route_ladder_prefix = rlp;
     }
 
+    // block_ipv6 — по умолчанию true (нейтрализация IPv6-утечки в Wintun-режиме).
+    w.block_ipv6 = jw.value("block_ipv6", w.block_ipv6);
+
     return w;
 }
 
@@ -950,6 +953,9 @@ nlohmann::json ConfigManager::WintunSettingsToJson(const WintunSettings& w) cons
 
     // Глубина лестницы split-tunnel маршрутов.
     j["route_ladder_prefix"] = w.route_ladder_prefix;
+
+    // Блокировка IPv6 на время Wintun-захвата.
+    j["block_ipv6"] = w.block_ipv6;
 
     return j;
 }

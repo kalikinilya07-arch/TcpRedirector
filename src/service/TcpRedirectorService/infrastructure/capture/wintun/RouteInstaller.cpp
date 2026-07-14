@@ -436,6 +436,122 @@ bool RouteInstaller::SetInterfaceMetric(NET_LUID luid, uint32_t metric,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// IPv6 catch-all (::/1 + 8000::/1) — заворот всего IPv6 в TUN.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Заполнить MIB_IPFORWARD_ROW2 для IPv6-маршрута /prefix_len с on-link
+// next-hop (::).  first_byte — старший байт префикса (0x00 для ::/1,
+// 0x80 для 8000::/1); остальные 15 байт нулевые.
+void FillRowV6(MIB_IPFORWARD_ROW2& row, NET_LUID luid,
+               uint8_t first_byte, uint8_t prefix_len, uint32_t metric) {
+    InitializeIpForwardEntry(&row);
+    row.InterfaceLuid = luid;
+    row.DestinationPrefix.Prefix.si_family = AF_INET6;
+    row.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
+    std::memset(&row.DestinationPrefix.Prefix.Ipv6.sin6_addr, 0,
+                sizeof(row.DestinationPrefix.Prefix.Ipv6.sin6_addr));
+    row.DestinationPrefix.Prefix.Ipv6.sin6_addr.u.Byte[0] = first_byte;
+    row.DestinationPrefix.PrefixLength = prefix_len;
+    row.NextHop.si_family = AF_INET6;
+    row.NextHop.Ipv6.sin6_family = AF_INET6;
+    std::memset(&row.NextHop.Ipv6.sin6_addr, 0, sizeof(row.NextHop.Ipv6.sin6_addr));
+    row.Metric   = metric;
+    row.Protocol = MIB_IPPROTO_NETMGMT;
+    row.Origin   = NlroManual;
+    row.SitePrefixLength = 0;
+}
+
+} // namespace
+
+bool RouteInstaller::InstallIpv6CatchAll(NET_LUID luid, uint32_t metric,
+                                         std::string* outError) {
+    const uint8_t firstBytes[2] = { 0x00, 0x80 }; // ::/1 и 8000::/1
+    int installed = 0;
+    for (int i = 0; i < 2; ++i) {
+        MIB_IPFORWARD_ROW2 row{};
+        FillRowV6(row, luid, firstBytes[i], /*prefix_len=*/1u, metric);
+        DWORD rc = CreateOneRoute(row);
+        if (rc != NO_ERROR) {
+            // Откат уже поставленного.
+            for (int j = 0; j < i; ++j) {
+                MIB_IPFORWARD_ROW2 r{};
+                FillRowV6(r, luid, firstBytes[j], 1u, 0u);
+                (void)DeleteOneRoute(r);
+            }
+            if (outError) {
+                *outError = FormatWinErr("CreateIpForwardEntry2(ipv6 catch-all)", rc);
+            }
+            return false;
+        }
+        ++installed;
+    }
+    return installed == 2;
+}
+
+bool RouteInstaller::UninstallIpv6CatchAll(NET_LUID luid, std::string* outError) {
+    PMIB_IPFORWARD_TABLE2 table = nullptr;
+    DWORD rc = GetIpForwardTable2(AF_INET6, &table);
+    if (rc != NO_ERROR || table == nullptr) {
+        if (outError) *outError = FormatWinErr("GetIpForwardTable2(uninstall v6)", rc);
+        return false;
+    }
+
+    std::string errAgg;
+    bool anyErr = false;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IPFORWARD_ROW2& r = table->Table[i];
+        if (r.InterfaceLuid.Value != luid.Value) continue;
+        if (r.DestinationPrefix.Prefix.si_family != AF_INET6) continue;
+        if (r.DestinationPrefix.PrefixLength != 1) continue;
+        if (r.Protocol != MIB_IPPROTO_NETMGMT) continue;
+        // Только on-link (NextHop ::) — наши.
+        bool nextHopZero = true;
+        for (int b = 0; b < 16; ++b) {
+            if (r.NextHop.Ipv6.sin6_addr.u.Byte[b] != 0) { nextHopZero = false; break; }
+        }
+        if (!nextHopZero) continue;
+
+        MIB_IPFORWARD_ROW2 del = r;
+        DWORD drc = DeleteIpForwardEntry2(&del);
+        if (drc != NO_ERROR && drc != ERROR_NOT_FOUND) {
+            anyErr = true;
+            errAgg += " " + FormatWinErr("DeleteIpForwardEntry2(ipv6 catch-all)", drc);
+        }
+    }
+    FreeMibTable(table);
+
+    if (anyErr) {
+        if (outError) *outError = "RouteInstaller::UninstallIpv6CatchAll partial:" + errAgg;
+        return false;
+    }
+    return true;
+}
+
+bool RouteInstaller::SetInterfaceMetricV6(NET_LUID luid, uint32_t metric,
+                                          std::string* outError) {
+    MIB_IPINTERFACE_ROW row{};
+    InitializeIpInterfaceEntry(&row);
+    row.Family = AF_INET6;
+    row.InterfaceLuid = luid;
+    DWORD rc = GetIpInterfaceEntry(&row);
+    if (rc != NO_ERROR) {
+        if (outError) *outError = FormatWinErr("GetIpInterfaceEntry(v6)", rc);
+        return false;
+    }
+    row.UseAutomaticMetric = FALSE;
+    row.Metric = metric;
+    row.SitePrefixLength = 0;
+    rc = SetIpInterfaceEntry(&row);
+    if (rc != NO_ERROR) {
+        if (outError) *outError = FormatWinErr("SetIpInterfaceEntry(v6)", rc);
+        return false;
+    }
+    return true;
+}
+
 bool RouteInstaller::IsInstalled(NET_LUID luid) {
     IN_ADDR zero{}; zero.S_un.S_addr = 0;
 

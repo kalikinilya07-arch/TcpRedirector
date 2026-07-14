@@ -175,6 +175,15 @@ public:
         m_conn_table = table;
     }
 
+    /**
+     * @brief Включить нейтрализацию IPv6: движок отвечает TCP RST на IPv6-SYN,
+     *        приходящий из туннеля (не-TCP IPv6 дропается), чтобы приложение
+     *        мгновенно откатилось на IPv4 (туннель/relay/CONNECT — только IPv4).
+     *        Работает вместе с IPv6 catch-all маршрутами (WintunCapture).
+     *        Должно вызываться ДО Start().
+     */
+    void SetBlockIpv6(bool enabled) { m_block_ipv6 = enabled; }
+
     ~Tun2SocksEngineEmbedded() override;
 
     Tun2SocksEngineEmbedded(const Tun2SocksEngineEmbedded&) = delete;
@@ -253,6 +262,14 @@ private:
     // (см. SetConnectionTable).  nullptr → форвардинг к прокси невозможен.
     domain::ports::IConnectionTable* m_conn_table = nullptr;
 
+    // Нейтрализация IPv6: RST на IPv6-SYN, дроп прочего IPv6 (см. SetBlockIpv6).
+    bool                           m_block_ipv6 = false;
+
+    // Разбор IPv6-пакета из туннеля: при block_ipv6 отвечает TCP RST на SYN,
+    // иначе просто дропает.  Возвращает true, если пакет обработан (не должен
+    // идти в lwIP).  Реализация в .cpp.
+    bool HandleIpv6Packet(const uint8_t* pkt, int len);
+
     HANDLE                         m_stop_event = nullptr;
     std::thread                    m_engine_thread;
     std::atomic<bool>              m_running{false};
@@ -277,6 +294,13 @@ private:
     std::atomic<uint64_t>          m_rx_bytes{0};
     std::atomic<uint64_t>          m_tx_bytes{0};
     std::atomic<uint32_t>          m_active_flows{0};
+
+    // Диагностические счётчики (T5): пакеты IPv4/IPv6 из туннеля, RST на IPv6,
+    // дропнутый IPv6.  Периодически логируются в EngineThreadMain (TRACE).
+    std::atomic<uint64_t>          m_pkts_v4{0};
+    std::atomic<uint64_t>          m_pkts_v6{0};
+    std::atomic<uint64_t>          m_ipv6_rst{0};
+    std::atomic<uint64_t>          m_ipv6_dropped{0};
 
     // Одноразовая инициализация lwIP (per-process).  См. Start() и §"NO_SYS notes"
     // выше — Start после Stop в v1 не поддерживается.

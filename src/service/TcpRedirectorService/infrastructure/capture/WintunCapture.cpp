@@ -249,6 +249,15 @@ bool WintunCapture::Open() {
         return false;
     }
     LogInfo("Adapter ready: name='" + m_settings.adapter_name + "'");
+    // T5/T6 диагностика: LUID + ifIndex адаптера — помогает соотнести маршруты
+    // (Get-NetRoute -ifIndex ...) с нашим TUN и выявить остаточные адаптеры.
+    LogDebug("Adapter LUID=0x" + [&]{
+                 char b[24];
+                 std::snprintf(b, sizeof(b), "%016llX",
+                               static_cast<unsigned long long>(m_adapter->Luid().Value));
+                 return std::string(b);
+               }()
+             + " ifIndex=" + std::to_string(m_adapter->InterfaceIndex()));
 
     // Шаг 5: назначение IPv4-адреса.
     err.clear();
@@ -380,6 +389,35 @@ bool WintunCapture::Open() {
              + " leaves via " + WideToUtf8(gwW)
              + ", metric=1, carve-outs 127/8+0/8+169.254/16)");
 
+    // Шаг 7.5: заворот IPv6 в TUN (при block_ipv6).  Туннель/relay/CONNECT —
+    // только IPv4; на dual-stack хостах ОС предпочитает глобальный IPv6 и
+    // трафик уходит мимо TUN.  Ставим ::/1 + 8000::/1, чтобы IPv6-пакеты
+    // попадали в embedded-движок, который ответит TCP RST на IPv6-SYN и
+    // заставит приложение откатиться на IPv4.  Non-fatal: при провале IPv4
+    // всё равно работает (IPv6 может утечь).
+    if (m_settings.block_ipv6) {
+        std::string v6mErr;
+        if (!capture::wintun::RouteInstaller::SetInterfaceMetricV6(
+                m_adapter->Luid(), /*metric=*/1u, &v6mErr)) {
+            LogDebug("SetInterfaceMetricV6(1) failed (non-fatal, IPv6 may be off): " + v6mErr);
+        }
+        std::string v6err;
+        if (!capture::wintun::RouteInstaller::InstallIpv6CatchAll(
+                m_adapter->Luid(), /*metric=*/1u, &v6err)) {
+            LogWarn("InstallIpv6CatchAll failed (non-fatal): " + v6err
+                    + " — IPv6 traffic may leak past the tunnel/proxy. "
+                      "Set wintun.block_ipv6=false to silence, or ensure IPv6 is "
+                      "enabled on the adapter.");
+        } else {
+            m_ipv6RoutesInstalled = true;
+            LogDebug("IPv6 catch-all routes installed (::/1 + 8000::/1 on Wintun, "
+                     "metric=1) — IPv6 SYN will be RST'd by embedded engine to "
+                     "force IPv4 fallback");
+        }
+    } else {
+        LogDebug("block_ipv6=false — IPv6 not touched (may leak past proxy)");
+    }
+
     // Шаг 8: data-сессия — ТОЛЬКО для embedded-движка.
     //   External-движок открывает сессию сам (§6 ownership table).
     if (useEmbedded) {
@@ -429,6 +467,10 @@ bool WintunCapture::Open() {
             // этого relay не может восстановить адрес назначения и закрывает
             // каждый flow — трафик виден в туннеле, но не форвардится к прокси.
             embedded->SetConnectionTable(m_connTable);
+
+            // Нейтрализация IPv6: RST на IPv6-SYN из туннеля (работает вместе с
+            // IPv6 catch-all маршрутами, поставленными выше).
+            embedded->SetBlockIpv6(m_settings.block_ipv6);
 
             if (pf.enabled && pf.rule_engine) {
                 LogInfo("Process filter ENABLED for embedded engine "
@@ -563,6 +605,18 @@ void WintunCapture::TearDown() {
             LogDebug("Split-tunnel routes uninstalled");
         }
         m_routesInstalled = false;
+    }
+
+    // 3a2. Снятие IPv6 catch-all маршрутов (::/1 + 8000::/1), если ставили.
+    if (m_ipv6RoutesInstalled && m_adapter) {
+        std::string err;
+        if (!capture::wintun::RouteInstaller::UninstallIpv6CatchAll(
+                m_adapter->Luid(), &err)) {
+            LogWarn("RouteInstaller::UninstallIpv6CatchAll: " + err);
+        } else {
+            LogDebug("IPv6 catch-all routes uninstalled");
+        }
+        m_ipv6RoutesInstalled = false;
     }
 
     // 3b. Снятие host-bypass /32 к прокси (все A-записи).

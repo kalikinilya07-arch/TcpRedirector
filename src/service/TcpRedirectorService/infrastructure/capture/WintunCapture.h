@@ -201,6 +201,8 @@ private:
     std::shared_ptr<capture::wintun::WintunSession> m_session;
     std::unique_ptr<capture::wintun::ITunEngine>    m_engine;
     bool                                       m_routesInstalled = false;
+    // IPv6 catch-all маршруты (::/1 + 8000::/1) — при wintun.block_ipv6=true.
+    bool                                       m_ipv6RoutesInstalled = false;
 
     // C3-фикс: host-bypass /32 к вышестоящему прокси (мимо туннеля), чтобы
     // исходящее соединение relay→proxy не заворачивалось обратно в TUN (петля)

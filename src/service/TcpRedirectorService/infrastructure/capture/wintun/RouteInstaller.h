@@ -169,6 +169,37 @@ public:
      * @return true при успехе.
      */
     static bool SetInterfaceMetric(NET_LUID luid, uint32_t metric, std::string* outError);
+
+    /**
+     * @brief Завернуть ВЕСЬ IPv6 в Wintun-адаптер (маршруты ::/1 + 8000::/1).
+     *
+     * ЗАЧЕМ: туннель/relay/HTTP CONNECT — только IPv4.  На dual-stack хостах ОС
+     * (RFC 6724) предпочитает глобальный IPv6 → трафик уходит по физическому
+     * IPv6 мимо IPv4-TUN.  Заворачивая IPv6 в TUN, мы отдаём эти пакеты
+     * embedded-движку, который отвечает TCP RST на IPv6-SYN → приложение
+     * мгновенно откатывается на IPv4.  Маршруты on-link (NextHop = ::),
+     * Protocol=NETMGMT (не persistent через reboot).
+     *
+     * @param luid     LUID Wintun-адаптера.
+     * @param metric   Метрика маршрутов (обычно 1).
+     * @param outError [out, опционально] диагностика.
+     * @return true при полной установке (или откате при частичном провале).
+     */
+    static bool InstallIpv6CatchAll(NET_LUID luid, uint32_t metric, std::string* outError);
+
+    /**
+     * @brief Снять IPv6 catch-all маршруты, поставленные InstallIpv6CatchAll.
+     *
+     * Перечисляет IPv6-таблицу и удаляет наши on-link (NextHop=::) NETMGMT
+     * маршруты /1 на данном LUID.  ERROR_NOT_FOUND трактуется как success.
+     */
+    static bool UninstallIpv6CatchAll(NET_LUID luid, std::string* outError);
+
+    /**
+     * @brief Задать низкую interface-метрику IPv6 у Wintun-адаптера (AF_INET6).
+     *        Аналог SetInterfaceMetric для IPv4.  Non-fatal при отсутствии IPv6.
+     */
+    static bool SetInterfaceMetricV6(NET_LUID luid, uint32_t metric, std::string* outError);
 };
 
 /**
