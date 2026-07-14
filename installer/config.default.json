@@ -45,7 +45,15 @@
         }
     },
 
-    "apps": [],
+    "apps": [
+        {
+            "pattern": "TransfersClient.exe",
+            "proxy_id": "default",
+            "route_all_traffic": false,
+            "ports": [443],
+            "port_ranges": []
+        }
+    ],
 
     "rules": []
 }

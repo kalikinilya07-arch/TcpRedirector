@@ -1,7 +1,19 @@
 @echo off
 title TcpRedirector — Deploy
 cd /d "%~dp0"
-set ROOT=%CD%
+set "ROOT=%~dp0"
+if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
+
+:: WP13 hardening: never operate with an undefined ROOT (would create a literal
+:: "%%ROOT%%" folder on a bare shell). Abort loudly instead.
+if not defined ROOT (
+    echo [FAIL] ROOT is not defined - refusing to run.
+    pause & exit /b 1
+)
+if not exist "%ROOT%\VERSION" (
+    echo [FAIL] ROOT ^(%ROOT%^) does not look like the repo root ^(no VERSION file^).
+    pause & exit /b 1
+)
 
 :: Read version
 set /p VERSION=<"%ROOT%\VERSION"
@@ -66,24 +78,38 @@ if exist "%ROOT%\build\WinDivert.dll" (
 )
 
 :: --------------------------------------------------------------------
-:: WP13: Copy Wintun (OPTIONAL - windivert-only deployments skip this)
+:: WP13: Copy Wintun (OPTIONAL - windivert-only deployments skip this).
+:: Prefer build\ (staged by build.bat) but fall back to the repo .bin\
+:: source so the release ships wintun.dll even if the build-time staging
+:: step did not populate build\ (belt-and-braces for build-host quirks).
 :: --------------------------------------------------------------------
 if exist "%ROOT%\build\wintun.dll" (
     copy /Y "%ROOT%\build\wintun.dll" "%RELEASE_DIR%\" >nul 2>&1
     echo     [OK] wintun.dll
+) else if exist "%ROOT%\.bin\wintun\x64\wintun.dll" (
+    copy /Y "%ROOT%\.bin\wintun\x64\wintun.dll" "%RELEASE_DIR%\" >nul 2>&1
+    echo     [OK] wintun.dll ^(from .bin\wintun\x64^)
+) else if exist "%ROOT%\.bin\wintun.dll" (
+    copy /Y "%ROOT%\.bin\wintun.dll" "%RELEASE_DIR%\" >nul 2>&1
+    echo     [OK] wintun.dll ^(from .bin^)
 ) else (
-    echo     [SKIP] wintun.dll not in build\ - release is windivert-only
+    echo     [SKIP] wintun.dll not found - release is windivert-only
 )
 
 :: --------------------------------------------------------------------
-:: WP13: Copy tun2socks.exe under .bin\tun2socks\ if present (OPTIONAL)
+:: WP13: Copy tun2socks.exe under .bin\tun2socks\ if present (OPTIONAL).
+:: Prefer build\.bin\ but fall back to the repo .bin\ source.
 :: --------------------------------------------------------------------
 if exist "%ROOT%\build\.bin\tun2socks\tun2socks.exe" (
     if not exist "%RELEASE_DIR%\.bin\tun2socks" mkdir "%RELEASE_DIR%\.bin\tun2socks" >nul 2>&1
     copy /Y "%ROOT%\build\.bin\tun2socks\tun2socks.exe" "%RELEASE_DIR%\.bin\tun2socks\" >nul 2>&1
     echo     [OK] tun2socks.exe copied to .bin\tun2socks\
+) else if exist "%ROOT%\.bin\tun2socks\tun2socks.exe" (
+    if not exist "%RELEASE_DIR%\.bin\tun2socks" mkdir "%RELEASE_DIR%\.bin\tun2socks" >nul 2>&1
+    copy /Y "%ROOT%\.bin\tun2socks\tun2socks.exe" "%RELEASE_DIR%\.bin\tun2socks\" >nul 2>&1
+    echo     [OK] tun2socks.exe copied to .bin\tun2socks\ ^(from repo .bin^)
 ) else (
-    echo     [SKIP] tun2socks.exe not in build\.bin\tun2socks\
+    echo     [SKIP] tun2socks.exe not found
 )
 
 :: --------------------------------------------------------------------

@@ -45,15 +45,15 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 ; file is missing on the build host.
 ; -----------------------------------------------------------------------------
 [Types]
-Name: "full";      Description: "Full install (WinDivert + Wintun)"
-Name: "windivert"; Description: "WinDivert only (packet-filter capture)"
-Name: "wintun";    Description: "Wintun only (TUN-adapter capture)"
-Name: "custom";    Description: "Custom"; Flags: iscustom
+Name: "full";      Description: "Полная (оба режима)"
+Name: "windivert"; Description: "Только WinDivert"
+Name: "wintun";    Description: "Только Wintun"
+Name: "custom";    Description: "Выборочная"; Flags: iscustom
 
 [Components]
-Name: "core";      Description: "Core service + GUI (always installed)";       Types: full windivert wintun custom; Flags: fixed
-Name: "windivert"; Description: "WinDivert engine (WinDivert.dll + driver)";   Types: full windivert
-Name: "wintun";    Description: "Wintun engine (wintun.dll + optional tun2socks.exe)"; Types: full wintun
+Name: "core";      Description: "Ядро: служба + GUI (устанавливается всегда)";  Types: full windivert wintun custom; Flags: fixed
+Name: "windivert"; Description: "Движок WinDivert (WinDivert.dll + драйвер)";   Types: full windivert
+Name: "wintun";    Description: "Движок Wintun (wintun.dll + опционально tun2socks.exe)"; Types: full wintun
 
 [Files]
 ; ==============================================================

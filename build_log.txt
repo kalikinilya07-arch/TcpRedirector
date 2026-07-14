@@ -1,0 +1,275 @@
+========================================
+ Building TcpRedirector
+========================================
+
+[INFO] Version: 1.0.0
+[INFO] Visual Studio found: D:\Program Files\Microsoft Visual Studio\2022\Community
+[0/3] Cleaning build directory...
+[OK]
+[1/3] Compiling RuleEngine tests...
+RuleEngineTest.cpp
+=== TcpRedirector Service Unit Tests ===
+
+Test: WildcardMatch...
+  PASS
+Test: PathRule...
+  PASS
+Test: GlobalRule...
+  PASS
+Test: PriorityOrder...
+  PASS
+Test: DisabledRule...
+  PASS
+Test: RemoveRule...
+  PASS
+Test: MatchForFlow_NoAppRules_ReturnsUnmatched...
+  PASS
+Test: MatchForFlow_ByProcessNameAndPort_Matches...
+  PASS
+Test: MatchForFlow_ProcessMatches_PortNot_ReturnsUnmatched...
+  PASS
+Test: MatchForFlow_RouteAllTraffic_MatchesAnyPort...
+  PASS
+Test: MatchForFlow_PortRange_InclusiveBoundsMatch...
+  PASS
+Test: MatchForFlow_MultiplePortsAndRanges_UnionSemantics...
+  PASS
+Test: MatchForFlow_TwoRules_FirstMatchWins...
+  PASS
+Test: MatchForFlow_ExePathSpecified_MustMatch...
+  PASS
+Test: MatchForFlow_ConcurrentSetAndMatch_NoRace...
+  PASS (writes=60690 matches=766146)
+Test: SetAppRules_ThenSetLegacyRules_BothWorkIndependently...
+  PASS
+
+All tests passed!
+[PASS]
+[2/3] Building GUI (self-contained)...
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  TcpRedirectorGUI -> e:\Projects\work\China\TcpRedirector\src\gui\TcpRedirectorGUI\bin\Release\net9.0-windows\win-x64\TcpRedirectorGUI.dll
+  TcpRedirectorGUI -> e:\Projects\work\China\TcpRedirector\build\gui\
+
+Workload updates are available. Run `dotnet workload list` for more information.
+[OK]
+[3/3] Building Service...
+    (cleaned .obj/.iobj/.ipdb cache)
+Build started 14.07.2026 2:36:04.
+
+Project "e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj" on node 1 (default targets).
+PrepareForBuild:
+  Structured output is enabled. The formatting of compiler diagnostics will reflect the error hierarchy. See https://aka.ms/cpp/structured-output for more details.
+InitializeBuildStatus:
+  Creating "e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\TcpRedir.B8E4F2A1.tlog\unsuccessfulbuild" because "AlwaysCreate" was specified.
+  Touching "e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\TcpRedir.B8E4F2A1.tlog\unsuccessfulbuild".
+ClCompile:
+  D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\CL.exe /c /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\ /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\..\..\..\external /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\..\..\..\external\boost /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\lwip /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\..\..\..\external\lwip\src\include /Zi /nologo /W3 /WX- /diagnostics:column /sdl /O2 /Oi /GL /D WIN32_LEAN_AND_MEAN /D _WINSOCK_DEPRECATED_NO_WARNINGS /D WIN32 /D _WINDOWS /D NDEBUG /D _CONSOLE /D _CRT_SECURE_NO_WARNINGS /D _UNICODE /D UNICODE /Gm- /EHsc /MD /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /std:c++20 /permissive- /Fo"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\\" /Fd"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\vc143.pdb" /external:W3 /Gd /TP /FC /errorReport:queue infrastructure\auth\auth_sspi.cpp infrastructure\capture\WinDivertCapture.cpp infrastructure\capture\WintunCapture.cpp infrastructure\capture\wintun\RouteInstaller.cpp infrastructure\capture\wintun\Tun2SocksEngineEmbedded.cpp infrastructure\capture\wintun\Tun2SocksEngineExternal.cpp infrastructure\capture\wintun\WintunAdapter.cpp infrastructure\capture\wintun\WintunApi.cpp infrastructure\capture\wintun\WintunSession.cpp infrastructure\capture\wintun\lwip\sys_now_msvc.cpp infrastructure\config\ConfigManager.cpp infrastructure\logging\Logger.cpp infrastructure\process\ChildProcessSupervisor.cpp infrastructure\stats\StatsCollector.cpp main.cpp
+  auth_sspi.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\auth\auth_sspi.h(16,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'infrastructure/auth/auth_sspi.cpp')
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\auth\auth_sspi.h(16,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  WinDivertCapture.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WinDivertCapture.h(16,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'infrastructure/capture/WinDivertCapture.cpp')
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WinDivertCapture.h(16,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  WintunCapture.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WintunCapture.cpp(6,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WintunCapture.cpp(6,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  RouteInstaller.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\RouteInstaller.cpp(9,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\RouteInstaller.cpp(9,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  Tun2SocksEngineEmbedded.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\Tun2SocksEngineEmbedded.cpp(24,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\Tun2SocksEngineEmbedded.cpp(24,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  Tun2SocksEngineExternal.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\Tun2SocksEngineExternal.cpp(6,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\Tun2SocksEngineExternal.cpp(6,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  WintunAdapter.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunAdapter.cpp(10,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunAdapter.cpp(10,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  WintunApi.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunApi.h(31,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'infrastructure/capture/wintun/WintunApi.cpp')
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunApi.h(31,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  WintunSession.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunSession.h(29,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'infrastructure/capture/wintun/WintunSession.cpp')
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunSession.h(29,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  sys_now_msvc.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\lwip\sys_now_msvc.cpp(20,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\lwip\sys_now_msvc.cpp(20,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  ConfigManager.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\config\ConfigManager.h(17,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'infrastructure/config/ConfigManager.cpp')
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\config\ConfigManager.h(17,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  Logger.cpp
+  ChildProcessSupervisor.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\process\ChildProcessSupervisor.cpp(8,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\process\ChildProcessSupervisor.cpp(8,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+  StatsCollector.cpp
+  main.cpp
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WinDivertCapture.h(16,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'main.cpp')
+      e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WinDivertCapture.h(16,9):
+      "WIN32_LEAN_AND_MEAN" ранее объявлен в командной строке
+  
+e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\adapters\driving\IpcHandler.h(221,25): warning C4244: инициализация: преобразование "uint64_t" в "uint32_t", возможна потеря данных [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'main.cpp')
+  
+D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\xutility(4813,18): warning C4244: =: преобразование "wchar_t" в "char", возможна потеря данных [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  (compiling source file 'main.cpp')
+      D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\xutility(4813,18):
+      контекст создания экземпляра шаблона (сначала самый старый)
+          e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\adapters\driven\ProxyEngine.h(132,31):
+          выполняется компиляция ссылки на экземпляр шаблон функции "std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string<std::_String_iterator<std::_String_val<std::_Simple_types<_Elem>>>,0>(_Iter,_Iter,const _Alloc &)"
+          with
+          [
+              _Elem=wchar_t,
+              _Iter=std::_String_iterator<std::_String_val<std::_Simple_types<wchar_t>>>,
+              _Alloc=std::allocator<char>
+          ]
+              e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\adapters\driven\ProxyEngine.h(132,31):
+              см. первую ссылку на "std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string" в "tcp_redirector::infrastructure::ProxySession::ConnectToProxy"
+          D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\xstring(812,17):
+          выполняется компиляция ссылки на экземпляр шаблон функции "void std::basic_string<char,std::char_traits<char>,std::allocator<char>>::_Construct_from_iter<wchar_t*,wchar_t*,_Size_type>(_Iter,const _Sent,_Size)"
+          with
+          [
+              _Size_type=unsigned __int64,
+              _Iter=wchar_t *,
+              _Sent=wchar_t *,
+              _Size=unsigned __int64
+          ]
+          D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\xstring(968,18):
+          выполняется компиляция ссылки на экземпляр шаблон функции "_OutIt *std::_Copy_n_unchecked4<wchar_t*,_Size,char*>(_InIt,_SizeTy,_OutIt)"
+          with
+          [
+              _OutIt=char *,
+              _Size=unsigned __int64,
+              _InIt=wchar_t *,
+              _SizeTy=unsigned __int64
+          ]
+  
+  D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\CL.exe /c /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\ /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\..\..\..\external /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\..\..\..\external\boost /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\lwip /Ie:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\..\..\..\external\lwip\src\include /Zi /nologo /W3 /WX- /diagnostics:column /sdl /O2 /Oi /GL /D WIN32_LEAN_AND_MEAN /D _WINSOCK_DEPRECATED_NO_WARNINGS /D WIN32 /D _WINDOWS /D NDEBUG /D _CONSOLE /D _CRT_SECURE_NO_WARNINGS /D _UNICODE /D UNICODE /Gm- /EHsc /MD /GS /Gy /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /permissive- /Fo"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\\" /Fd"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\vc143.pdb" /external:W3 /Gd /TC /FC /errorReport:queue ..\..\..\external\lwip\src\core\altcp.c ..\..\..\external\lwip\src\core\altcp_alloc.c ..\..\..\external\lwip\src\core\altcp_tcp.c ..\..\..\external\lwip\src\core\def.c ..\..\..\external\lwip\src\core\inet_chksum.c ..\..\..\external\lwip\src\core\init.c ..\..\..\external\lwip\src\core\ip.c ..\..\..\external\lwip\src\core\ipv4\ip4.c ..\..\..\external\lwip\src\core\ipv4\ip4_addr.c ..\..\..\external\lwip\src\core\ipv4\ip4_frag.c ..\..\..\external\lwip\src\core\mem.c ..\..\..\external\lwip\src\core\memp.c ..\..\..\external\lwip\src\core\netif.c ..\..\..\external\lwip\src\core\pbuf.c ..\..\..\external\lwip\src\core\raw.c ..\..\..\external\lwip\src\core\stats.c ..\..\..\external\lwip\src\core\sys.c ..\..\..\external\lwip\src\core\tcp.c ..\..\..\external\lwip\src\core\tcp_in.c ..\..\..\external\lwip\src\core\tcp_out.c ..\..\..\external\lwip\src\core\timeouts.c infrastructure\capture\wintun\lwip\lwip_hooks_impl.c
+  altcp.c
+  altcp_alloc.c
+  altcp_tcp.c
+  def.c
+  inet_chksum.c
+  init.c
+  ip.c
+  ip4.c
+  ip4_addr.c
+  ip4_frag.c
+  mem.c
+  memp.c
+  netif.c
+  pbuf.c
+  raw.c
+  stats.c
+  sys.c
+  tcp.c
+  tcp_in.c
+  tcp_out.c
+  Компиляция...
+  timeouts.c
+  lwip_hooks_impl.c
+Link:
+  D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe /ERRORREPORT:QUEUE /OUT:"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\TcpRedirectorService.exe" /INCREMENTAL:NO /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib crypt32.lib ws2_32.lib iphlpapi.lib psapi.lib version.lib kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\TcpRedirectorService.pdb" /SUBSYSTEM:CONSOLE /OPT:REF /OPT:ICF /LTCG:incremental /LTCGOUT:"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\TcpRedirectorService.iobj" /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\TcpRedirectorService.lib" /MACHINE:X64 e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\main.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\WinDivertCapture.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\WintunCapture.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\WintunApi.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\WintunAdapter.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\WintunSession.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\Tun2SocksEngineEmbedded.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\Tun2SocksEngineExternal.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\RouteInstaller.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\ChildProcessSupervisor.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\ConfigManager.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\Logger.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\StatsCollector.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\auth_sspi.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\sys_now_msvc.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\lwip_hooks_impl.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\init.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\def.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\inet_chksum.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\ip.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\mem.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\memp.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\netif.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\pbuf.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\raw.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\stats.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\sys.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\tcp.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\tcp_in.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\tcp_out.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\timeouts.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\altcp.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\altcp_alloc.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\altcp_tcp.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\ip4.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\ip4_addr.obj
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\ip4_frag.obj
+  Создание кода
+  Previous IPDB not found, fall back to full compilation.
+  All 6926 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Создание кода завершено
+  TcpRedirectorService.vcxproj -> e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\TcpRedirectorService.exe
+FinalizeBuildStatus:
+  Deleting file "e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\TcpRedir.B8E4F2A1.tlog\unsuccessfulbuild".
+  Touching "e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\build\service\x64\Release\obj\TcpRedir.B8E4F2A1.tlog\TcpRedirectorService.lastbuildstate".
+Done Building Project "e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj" (default targets).
+
+Build succeeded.
+
+"e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj" (default target) (1) ->
+(ClCompile target) -> 
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\auth\auth_sspi.h(16,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WinDivertCapture.h(16,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WintunCapture.cpp(6,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\RouteInstaller.cpp(9,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\Tun2SocksEngineEmbedded.cpp(24,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\Tun2SocksEngineExternal.cpp(6,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunAdapter.cpp(10,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunApi.h(31,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\WintunSession.h(29,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\wintun\lwip\sys_now_msvc.cpp(20,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\config\ConfigManager.h(17,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\process\ChildProcessSupervisor.cpp(8,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\infrastructure\capture\WinDivertCapture.h(16,9): warning C4005: WIN32_LEAN_AND_MEAN: изменение макроопределения [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\adapters\driving\IpcHandler.h(221,25): warning C4244: инициализация: преобразование "uint64_t" в "uint32_t", возможна потеря данных [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+  D:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\xutility(4813,18): warning C4244: =: преобразование "wchar_t" в "char", возможна потеря данных [e:\Projects\work\China\TcpRedirector\src\service\TcpRedirectorService\TcpRedirectorService.vcxproj]
+
+    15 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:17.56
+[OK]
+    [OK] WinDivert.dll + WinDivert64.sys copied
+���।�������� ������: copied.
