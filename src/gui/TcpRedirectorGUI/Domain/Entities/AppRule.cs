@@ -93,6 +93,16 @@ public sealed class WintunSettings
     /// </summary>
     public int RouteLadderPrefix { get; set; } = 5;
 
+    /// <summary>
+    /// Neutralize IPv6 while Wintun capture is active (embedded is IPv4-only).
+    /// Mirrors C++ <c>wintun.block_ipv6</c> (default <c>true</c>). When enabled,
+    /// the service routes all IPv6 into the TUN and the embedded engine answers
+    /// TCP RST to IPv6 SYNs, forcing an immediate IPv4 fallback. Must be
+    /// round-tripped so the GUI does not silently drop it when it rewrites the
+    /// whole <c>wintun</c> section on save.
+    /// </summary>
+    public bool BlockIpv6 { get; set; } = true;
+
     public ExternalEngineSettings ExternalEngine { get; set; } = new();
 }
 

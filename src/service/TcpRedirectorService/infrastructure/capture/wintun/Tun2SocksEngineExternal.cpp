@@ -175,17 +175,25 @@ bool Tun2SocksEngineExternal::Start(std::string* outError) {
     }
 
     // 2. Собираем argv.  Порядок:
-    //      -device wintun://<adapter_name>
-    //      -proxy  socks5://<socks5_listen>
-    //      -loglevel info
+    //      --device   wintun://<adapter_name>
+    //      --proxy    socks5://<socks5_listen>
+    //      --loglevel info
     //      <extra_args...>
+    //
+    // ВАЖНО (T8): xjasonlyu/tun2socks использует Go-пакет pflag, где ДЛИННЫЕ
+    // опции требуют ДВОЙНОГО дефиса (`--device`, `--proxy`, `--loglevel`), а
+    // одиночный дефис — это ТОЛЬКО шорткаты (`-d`, `-p`).  Раньше передавались
+    // `-device`/`-proxy`/`-loglevel` (одиночный дефис): pflag парсил их как
+    // шорткаты, `-loglevel` ловился как `-l` → «unknown shorthand flag 'l'»,
+    // tun2socks падал с кодом 2 и супервизор уходил в рестарт-цикл до лимита
+    // («child restart rate limit reached») — external-режим не работал вовсе.
     process::ChildProcessConfig cfg;
     cfg.executable = exe;
-    cfg.args.push_back(L"-device");
+    cfg.args.push_back(L"--device");
     cfg.args.push_back(L"wintun://" + m_adapterName);
-    cfg.args.push_back(L"-proxy");
+    cfg.args.push_back(L"--proxy");
     cfg.args.push_back(L"socks5://" + Utf8ToWide(m_ext.socks5_listen));
-    cfg.args.push_back(L"-loglevel");
+    cfg.args.push_back(L"--loglevel");
     cfg.args.push_back(L"info");
     for (const auto& a : m_ext.extra_args) {
         if (!a.empty()) cfg.args.push_back(Utf8ToWide(a));

@@ -181,4 +181,203 @@ DEBUG (маршруты/старт) и TRACE (пер-пакет/пер-flow), п
 - Полноценный IPv6-туннель в embedded (реальное проксирование IPv6→прокси) —
   большой объём (IPv6 в lwIP + relay). Вне рамок; RST-фолбэк — прагматичный v1.
 - Авто-удаление дублирующих адаптеров — оставлено как диагностика (риск).
+
+---
+
+## Runtime follow-up (2026-07-15) — «трафик приходит в TUN, но не выходит наружу»
+
+Пользователь: в GUI видно, что трафик приходит в виртуальную сеть, но наружу не
+идёт. Просьба проверить маршрутизацию virtual↔physical и полноту конфига
+(`output/config.json`).
+
+### Ключевая находка: тест идёт на СТАРОМ бинаре, лог устарел
+- Пересборка (этот план, T1–T6) легла в
+  `src/service/TcpRedirectorService/build/service/x64/Release/TcpRedirectorService.exe`,
+  а **НЕ** в `C:\Program Files\TcpRedirector\` — развёрнутый бинарь **не обновлён**.
+- Развёрнутый лог `C:\Program Files\TcpRedirector\.logs\tcp_redirector.log`
+  заканчивается `2026-07-14 21:15:49` строкой «Service is running» и **не содержит
+  НИ ОДНОЙ** пер-соединенческой строки (`CONNECT`, `No connection record`,
+  `connect to proxy failed`). То есть сегодняшний тест этим бинарём/логом не
+  фиксируется, и новые диагностические строки (T5) физически не могут появиться.
+- **Вывод:** первый и обязательный шаг — **пере-деплой свежей сборки + рестарт
+  службы**. Уже одно это может починить egress, если развёрнутый бинарь старше
+  фикса B8 (регистрация original-dst в `ConnectionTable`): без B8 embedded-flow
+  порождает `No connection record for port X` (DEBUG) и relay молча закрывает
+  соединение — ровно «пришло в TUN, но не вышло».
+
+### Анализ маршрутизации virtual↔physical для ТЕКУЩЕГО конфига
+Конфиг: proxy `192.168.1.80:8080` (в LAN `192.168.1.0/24`), Wi-Fi хоста
+`192.168.1.147/24`, `route_ladder_prefix=5`, `process_filter_enabled=false`
+(весь IPv4-TCP → PROXY).
+- Лестница `/5` (on-link, metric 1) на Wintun покрывает `0.0.0.0/0` минус
+  carve-outs (`127/8,0/8,169.254/16`).
+- `InstallHostBypass` ставит `192.168.1.80/32` через физ. путь (GetBestRoute2)
+  ДО лестницы; плюс connected-маршрут LAN `192.168.1.0/24` (/24 > /5) на Wi-Fi.
+- **Итог:** relay→proxy (`192.168.1.80`) уходит физически, НЕ заворачивается в
+  TUN. Для этого конфига «петли virtual↔physical» на пути к прокси НЕТ — маршрутизация
+  прокси-байпаса корректна. Значит корень egress-проблемы, скорее всего, **не в
+  route table**, а на прикладном уровне relay→proxy (см. ниже) либо в устаревшем
+  бинаре.
+- Побочно: при `route_all_traffic=true` любой LAN-адресат приложения (не только
+  прокси) затягивается в TUN и проксируется — ожидаемо для «весь трафик».
+
+### Список подозреваемых для egress (подтвердить НОВЫМИ логами после деплоя)
+1. **Устаревший бинарь без B8** (самый вероятный) → `No connection record` →
+   relay закрывает flow. Лечится деплоем свежей сборки.
+2. **Basic-auth 407.** `auth.enabled=true`, Basic, `username=admin`,
+   `encryptedPassword` задан. Если прокси требует авторизацию, а DPAPI-пароль не
+   расшифровывается под аккаунтом службы (LocalSystem) — CONNECT получает **407**,
+   relay пишет `CONNECT failed: <...407...>` (WARN) и закрывает. Симптом ровно
+   «внутрь пришло, наружу не пошло». Проверка: в новом логе искать `407`/
+   `CONNECT failed`. Лечение: заново ввести пароль в GUI (после миграции DPAPI на
+   LocalMachine старые user-scope пароли нечитаемы — см. `ИЗВЕСТНЫЕ_ПРОБЛЕМЫ.md` §0.4).
+3. **Достижимость прокси.** `192.168.1.80:8080` реально слушает? Проверить
+   `Test-NetConnection 192.168.1.80 -Port 8080` с хоста; в логе — `connect to
+   proxy failed: <WSA>`.
+4. **relay→proxy connect уходит в TUN?** Только если `/32`-bypass не встал
+   (в логе будет соответствующий WARN из `WintunCapture`); для loopback-прокси
+   не применимо, но здесь прокси remote — bypass обязателен и логируется.
+
+### Пробел конфига/GUI (реальный, добавить)
+- **T7 (новое): GUI не пишет `block_ipv6`.** `JsonConfigRepository.cs`
+  (`ReadWintunSettings`/`WintunToJson`) читает/пишет `process_filter_enabled` и
+  `route_ladder_prefix`, но **не** `block_ipv6`. Поэтому сгенерированный
+  `config.json` его не содержит. Функционально не блокирует (C++ default=`true`),
+  но пользователь не может управлять флагом и его не видно в файле.
+  Добавить: поле `BlockIpv6` в C#-модель `WintunSettings`, чтение
+  (`jw["block_ipv6"]`, default true) и запись (`["block_ipv6"] = w.BlockIpv6`)
+  через merge (не терять поле). Опционально — чекбокс в GUI. Низкий приоритет.
+- Прочие поля секции `wintun` в присланном `output/config.json` присутствуют и
+  валидны; ничего критичного больше не отсутствует.
+
+### Протокол деплоя и верификации (обязательный порядок)
+1. Собрать (уже сделано, 0 ошибок) и **развернуть** свежий сервис в
+   `C:\Program Files\TcpRedirector\`: остановить службу
+   (`sc stop TcpRedirectorService`), скопировать новый
+   `build\service\x64\Release\TcpRedirectorService.exe` поверх развёрнутого
+   (или прогнать `deploy.bat`), затем `sc start TcpRedirectorService`.
+   ⚠️ Требуется агент с правами записи в `Program Files` + управления службой
+   (этот шаг — вне plan-режима).
+2. Убедиться, что `log.level=3` (DEBUG) — уже так.
+3. Воспроизвести трафик тестовым приложением.
+4. Прочитать НОВЫЙ хвост `C:\Program Files\TcpRedirector\.logs\tcp_redirector.log`
+   и классифицировать по подозреваемым 1–4:
+   - есть `[wintun][flow] PROXY ... connect=OK` + relay `CONNECT response: 200 OK`
+     → egress работает;
+   - `No connection record` → всё ещё старый бинарь/не B8;
+   - `CONNECT failed: ...407...` → проблема авторизации (п.2);
+   - `connect to proxy failed` → прокси недостижим (п.3);
+   - `[wintun][ipv6-rst] ...` и рост `ipv6_rst` в `[wintun][rx-stats]` →
+     IPv6-нейтрализация работает.
+5. Если egress ОК по IPv4 — проверить, что `ping`/утилиты больше не уходят по
+   IPv6 (см. основной раздел «Проверка»).
+
+### Подтверждение по полному логу (`output/tcp_redirector.log`, 340 строк, до 21:15:49)
+- **Relay не обработал НИ ОДНОГО соединения** во всех запусках: `ConnectionHandler`
+  на КАЖДОЕ соединение пишет DEBUG `m_proxyAuthRequired=… m_kerberosAuth=…`
+  (`TcpRelayServer.h:392`), плюс `No connection record` / `CONNECT response`.
+  В логе НЕТ ни одной подстроки «connect»/«connection». Значит на
+  `127.0.0.1:34010` соединения не приходили → лог заморожен на инициализации,
+  сегодняшний тест им не фиксируется. Redeploy нового бинаря обязателен.
+- Лог заканчивается embedded-запуском 21:15:49 (`process_filter DISABLED`,
+  Option 2b), после «Service is running» — тишина.
+
+### T8 (новое, РЕАЛЬНЫЙ БАГ) — external-движок роняет tun2socks кривыми аргументами
+Из лога (строки ~90–320) видно детерминированный краш external-движка:
+```
+unknown shorthand flag: 'l' in -loglevel
+tun2socks exited (code=2); supervisor will restart …
+child restart rate limit reached (6/60s); giving up
+```
+- **Причина.** `Tun2SocksEngineExternal.cpp:184-189` передаёт длинные опции с
+  ОДИНАРНЫМ дефисом: `-device`, `-proxy`, `-loglevel`. Бинарь
+  `xjasonlyu/tun2socks` использует Go `pflag`: длинные опции требуют ДВОЙНОЙ дефис
+  (`--device`, `--proxy`, `--loglevel`), а одиночный дефис — только шорткаты
+  (`-d`, `-p`). Поэтому `-loglevel` парсится как шорткат `-l` → «unknown shorthand
+  flag 'l'» → exit code 2; `-device`/`-proxy` тоже молча искажаются.
+- **Фикс.** В `Tun2SocksEngineExternal::…` заменить на двойной дефис:
+  ```
+  cfg.args.push_back(L"--device");  cfg.args.push_back(L"wintun://" + m_adapterName);
+  cfg.args.push_back(L"--proxy");   cfg.args.push_back(L"socks5://" + …socks5_listen);
+  cfg.args.push_back(L"--loglevel");cfg.args.push_back(L"info");
+  ```
+  (или шорткаты `-d`/`-p` + `--loglevel`). Обновить и комментарий-пример
+  (строки 178-181). После фикса external-режим станет рабочей альтернативой
+  embedded (полезно как обходной путь, пока embedded диагностируется).
+- **Приоритет.** Высокий как отдельный дефект, но НЕ на пути текущего теста
+  (конфиг `engine=embedded`). Для пользователя это второй рабочий вариант.
 - Пункт 3.1/3.2 (локинг/однократное решение flow) из аудита — не трогаем здесь.
+
+---
+
+## Статус применения (2026-07-15) — ВСЕ ЗАДАЧИ ПРИМЕНЕНЫ
+- **T1–T6 ПРИМЕНЕНЫ** к рабочему дереву. Файлы: `Config.h`, `ConfigManager.cpp`,
+  `RouteInstaller.h/.cpp`, `WintunCapture.h/.cpp`, `Tun2SocksEngineEmbedded.h/.cpp`,
+  `docs/*`.
+- **T8 ПРИМЕНЕН** — `Tun2SocksEngineExternal.cpp`: `--device/--proxy/--loglevel`.
+- **T7 ПРИМЕНЕН** (включая опциональный UI):
+  - `Domain/Entities/AppRule.cs` — поле `BlockIpv6` (default true);
+  - `JsonConfigRepository.cs` — чтение `block_ipv6` + запись в `WintunSettingsToJson`;
+  - `SettingsViewModel.cs` — свойство `WintunBlockIpv6` + `OnPropertyChanged` в reload;
+  - `MainWindow.xaml` — чекбокс «Блокировать IPv6…».
+- **Верификация сборки (2026-07-15):** сервис `msbuild Release/x64` → 0 ошибок;
+  GUI `dotnet build -c Release` → 0 ошибок/0 предупреждений; юнит-тесты
+  `RuleEngineTest` и `ConnectionTableTest` → exit 0 (PASS).
+- **Установку/деплой/рестарт службы и сбор логов пользователь делает сам**
+  (по его просьбе — здесь не выполнялось). Свежий сервис:
+  `src/service/TcpRedirectorService/build/service/x64/Release/TcpRedirectorService.exe`;
+  GUI: `src/gui/TcpRedirectorGUI/bin/Release/net9.0-windows/`.
+- Ниже сохранены точные снимки правок (для истории/ревью).
+
+## Готовые к применению правки (T8 + T7)
+
+### T8 — `src/service/TcpRedirectorService/infrastructure/capture/wintun/Tun2SocksEngineExternal.cpp`
+Заменить блок ~184-189 (одинарный → двойной дефис):
+```cpp
+    cfg.args.push_back(L"--device");
+    cfg.args.push_back(L"wintun://" + m_adapterName);
+    cfg.args.push_back(L"--proxy");
+    cfg.args.push_back(L"socks5://" + Utf8ToWide(m_ext.socks5_listen));
+    cfg.args.push_back(L"--loglevel");
+    cfg.args.push_back(L"info");
+```
+(Комментарий-пример ~178-181 привести к `--device/--proxy/--loglevel`.)
+
+### T7a — `src/gui/TcpRedirectorGUI/Domain/Entities/AppRule.cs`
+После `RouteLadderPrefix` (строка ~94) добавить свойство в `WintunSettings`:
+```csharp
+    /// <summary>
+    /// Neutralize IPv6 while Wintun capture is active. Mirrors C++
+    /// <c>wintun.block_ipv6</c> (default <c>true</c>). Round-tripped so the GUI
+    /// does not drop it when rewriting the wintun section.
+    /// </summary>
+    public bool BlockIpv6 { get; set; } = true;
+```
+
+### T7b — `JsonConfigRepository.cs` `ReadWintunSettings` (после строки ~179)
+```csharp
+            // block_ipv6 — neutralize IPv6 in Wintun mode. Missing → default true.
+            if (jw["block_ipv6"] is JsonValue biVal && biVal.TryGetValue<bool>(out var bi))
+                w.BlockIpv6 = bi;
+```
+
+### T7c — `JsonConfigRepository.cs` `WintunSettingsToJson` (после строки ~610)
+```csharp
+            ["block_ipv6"]             = w.BlockIpv6,
+```
+
+### T7d (опционально) — GUI-контрол
+- `SettingsViewModel.cs`: свойство `WintunBlockIpv6` (get/set `Wintun.BlockIpv6`
+  + `OnPropertyChanged`), продублировать `OnPropertyChanged(nameof(WintunBlockIpv6))`
+  рядом со строкой ~513-514; чекбокс в XAML настроек Wintun. Низкий приоритет —
+  round-trip (T7a–c) уже сохраняет поле, даже без UI.
+
+## Проверка после ручной пересборки (без установки — на усмотрение пользователя)
+- Сервис: `msbuild TcpRedirectorService.vcxproj /p:Configuration=Release /p:Platform=x64`
+  → 0 ошибок (пред-существующие C4005 — не в счёт).
+- GUI: `dotnet build TcpRedirectorGUI.csproj -c Release` → 0 ошибок; при сохранении
+  из GUI в `config.json` появляется `block_ipv6`.
+- Юнит-тесты не затрагиваются T7/T8.
+- После самостоятельного деплоя нового сервиса — классифицировать egress по
+  «Протоколу деплоя и верификации» (см. выше): `[wintun][flow] … connect=OK`,
+  `CONNECT failed …407…`, `connect to proxy failed`, `No connection record`.

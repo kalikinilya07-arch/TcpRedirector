@@ -178,6 +178,11 @@ public sealed class JsonConfigRepository : IConfigRepository
             if (jw["route_ladder_prefix"] is JsonValue rlpVal && rlpVal.TryGetValue<int>(out var rlp))
                 w.RouteLadderPrefix = Math.Clamp(rlp, 1, 8);
 
+            // block_ipv6 — neutralize IPv6 in Wintun mode. Missing → default
+            // true, matching the C++ service default.
+            if (jw["block_ipv6"] is JsonValue biVal && biVal.TryGetValue<bool>(out var bi))
+                w.BlockIpv6 = bi;
+
             var je = jw["external_engine"]?.AsObject();
             if (je is not null)
             {
@@ -608,6 +613,7 @@ public sealed class JsonConfigRepository : IConfigRepository
             ["engine"]                 = WintunEngineToString(w.Engine),
             ["process_filter_enabled"] = w.ProcessFilterEnabled,
             ["route_ladder_prefix"]    = w.RouteLadderPrefix,
+            ["block_ipv6"]             = w.BlockIpv6,
             ["external_engine"]  = new JsonObject
             {
                 ["executable"]          = w.ExternalEngine.Executable,
