@@ -265,7 +265,10 @@ struct EngineTramp {
             //     (DIRECT тогда не возникает — весь TCP идёт в PROXY);
             //   • селективное проксирование С прямым проходом остального →
             //     capture_mode=windivert.
-            engine->FilterLog(domain::LogLevel::Trace,
+            // Понижено Trace→Debug (задача №3): это ключевая диагностика
+            // «почему трафик не идёт» — должна быть видна на DEBUG (level=3),
+            // а не только на экспертном TRACE (level=4).
+            engine->FilterLog(domain::LogLevel::Debug,
                 "[wintun][DIRECT-drop] non-matched flow dropped (embedded has no "
                 "direct pass-through) -> " + meta.original_dst_ip + ":"
                 + std::to_string(meta.original_dst_port));
@@ -743,7 +746,10 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
                        << " (ipv6_rst=" << m_ipv6_rst.load(std::memory_order_relaxed)
                        << " ipv6_dropped=" << m_ipv6_dropped.load(std::memory_order_relaxed)
                        << ") active_flows=" << m_active_flows.load(std::memory_order_relaxed);
-                    FilterLog(domain::LogLevel::Trace, os.str());
+                    // Понижено Trace→Debug (задача №3): сводка «доходят ли
+                    // пакеты до TUN и в каком соотношении IPv4/IPv6» — ключ к
+                    // диагностике «трафик не выходит», должна быть видна на DEBUG.
+                    FilterLog(domain::LogLevel::Debug, os.str());
                     lastV4 = v4;
                     lastV6 = v6;
                 }
@@ -932,10 +938,22 @@ bool Tun2SocksEngineEmbedded::Start(std::string* outError) {
     netif_set_link_up(nf);
     m_netif = nf;
 
-    // Catch-all listener.  Bind на IP_ANY_TYPE:0 → accept'ится любой SYN.
-    // Хук IP4_INPUT (см. lwip_hooks_impl.c) переписывает netif->ip_addr на
-    // dest каждого пакета → ip4_input_accept проходит.  Внутри TCP-стека
-    // такой pcb (bind = *:0) считается матчащимся любому dst/src.
+    // Catch-all listener.  Bind на IP_ANY_TYPE, порт 0 — WILDCARD по порту.
+    //
+    // B14 (критично): в стоковом lwIP tcp_bind(pcb, IP_ANY_TYPE, 0) НЕ даёт
+    // wildcard по порту — при port==0 вызывается tcp_new_port() и listener
+    // получает КОНКРЕТНЫЙ эфемерный порт, а tcp_input матчит SYN к listener'у
+    // только при lpcb->local_port == dst-порт.  Из-за этого ни один SYN
+    // приложения (dst 9080/9300/443/…) не матчился, OnAccept не вызывался, и
+    // трафик «входил в туннель, но не выходил на прокси» (active_flows=0).
+    //
+    // Хук IP4_INPUT (lwip_hooks_impl.c) решает только проверку IP-адреса
+    // (переписывает netif->ip_addr на dst), но НЕ проверку порта.  Поэтому
+    // ниже мы принудительно возвращаем local_port=0 ПОСЛЕ tcp_bind, а
+    // project-owned патч в tcp_in.c (TCP_REDIRECTOR_WILDCARD_LISTEN, см.
+    // lwipopts.h + ИЗВЕСТНЫЕ_ПРОБЛЕМЫ.md §B14) трактует listener с
+    // local_port==0 как «любой порт» и подставляет реальный dst-порт в новый
+    // pcb, чтобы OnAccept восстановил original-dst.
     struct tcp_pcb* pcb = tcp_new();
     if (!pcb) {
         netif_remove(nf);
@@ -963,6 +981,14 @@ bool Tun2SocksEngineEmbedded::Start(std::string* outError) {
         }
         return false;
     }
+#if defined(TCP_REDIRECTOR_WILDCARD_LISTEN) && TCP_REDIRECTOR_WILDCARD_LISTEN
+    // B14: tcp_bind(…, 0) назначил конкретный эфемерный порт через
+    // tcp_new_port(); принудительно сбрасываем его в 0, чтобы listener стал
+    // wildcard'ом по порту.  tcp_listen ниже скопирует local_port=0 в
+    // listen-pcb, а патч в tcp_in.c примет SYN на любой dst-порт.  pcb ещё не
+    // в списках lwIP — сброс порта безопасен (NO_SYS, единственный тред).
+    pcb->local_port = 0;
+#endif
     struct tcp_pcb* listen_pcb = tcp_listen(pcb);
     if (!listen_pcb) {
         tcp_close(pcb);

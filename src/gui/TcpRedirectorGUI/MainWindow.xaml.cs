@@ -20,13 +20,31 @@ public partial class MainWindow : Window
         PwdBox.PasswordChanged += (_, _) =>
         {
             _vm.Settings.Password = PwdBox.Password;
+            UpdatePwdPlaceholder();
         };
 
         // Clear PasswordBox when Password is set to empty after Save
         _vm.Settings.Saved += () =>
         {
             PwdBox.Clear();
+            UpdatePwdPlaceholder();
         };
+
+        // Плейсхолдер «••••••••» показываем только когда поле пустое (и в VM
+        // есть сохранённый пароль). При наборе символов — скрываем.
+        Loaded += (_, _) => UpdatePwdPlaceholder();
+    }
+
+    // Скрывает overlay-плейсхолдер, как только в PasswordBox есть символы.
+    // Наличие сохранённого пароля отражает Settings.PasswordPlaceholder
+    // (пусто, если пароль не задан) — здесь только гасим его при вводе.
+    private void UpdatePwdPlaceholder()
+    {
+        if (PwdPlaceholder is null) return;
+        PwdPlaceholder.Visibility =
+            string.IsNullOrEmpty(PwdBox.Password)
+                ? Visibility.Visible
+                : Visibility.Collapsed;
     }
 }
 

@@ -132,8 +132,13 @@ private:
         // this, a proxy Basic-auth password could not be set from the GUI at all.
         if (config.has_password && !config.plain_password.empty()) {
             m_configManager->Load();
+            // SetPassword уважает auth.encryptPassword (Задача №2): при true —
+            // DPAPI+Base64 в encryptedPassword; при false — plaintext в password.
             m_configManager->SetPassword(config.plain_password);
-            if (m_logger) m_logger->Info("ipc", "Proxy password updated and persisted (DPAPI)");
+            const bool enc = m_configManager->GetConfig().auth.encryptPassword;
+            if (m_logger) m_logger->Info("ipc",
+                std::string("Proxy password updated and persisted (")
+                + (enc ? "DPAPI" : "plaintext") + ")");
         }
         result["status"] = "success";
     }

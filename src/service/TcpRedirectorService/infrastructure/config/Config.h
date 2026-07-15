@@ -53,15 +53,41 @@ struct AuthSettings {
     std::string username;              //!< Логин для Basic Auth
     std::string encryptedPassword;     //!< Пароль, зашифрованный через DPAPI (Base64)
     bool        kerberos = false;      //!< Использовать Negotiate/Kerberos вместо Basic
+
+    //! (Задача №2) Шифровать ли пароль прокси через DPAPI.
+    //! true (по умолчанию) — прежнее поведение: пароль хранится в
+    //! encryptedPassword (DPAPI+Base64).
+    //! false — пароль хранится/используется «как есть» в открытом поле
+    //! password (в обход DPAPI). Диагностический/совместимостный режим:
+    //! снимает класс проблем «DPAPI-blob зашифрован не тем аккаунтом/скоупом
+    //! → не расшифровался → Basic-auth молча падает». ВНИМАНИЕ: пароль лежит
+    //! в config.json открытым текстом — только для доверенного окружения.
+    bool        encryptPassword = true;
+    //! Пароль в открытом виде. Используется ТОЛЬКО при encryptPassword=false.
+    std::string password;
 };
 
 /**
  * @brief Настройки системы логирования.
  */
 struct LogSettings {
-    int  level = 2;               //!< Уровень логирования: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG
+    int  level = 2;               //!< Уровень: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE
     bool fileEnabled = true;      //!< Писать ли лог в файл
     int  maxSizeMB = 50;          //!< Максимальный размер файла до ротации (МБ)
+};
+
+/**
+ * @brief Настройки локального IPC-канала управления (GUI ↔ служба).
+ */
+struct IpcSettings {
+    //! (Задача №1) Требовать ли токен-аутентификацию на IPC-канале.
+    //! true (по умолчанию) — прежнее поведение: служба генерирует .ipc_token
+    //! (DACL Administrators/SYSTEM) и отклоняет запросы без корректного токена.
+    //! false — аутентификация НЕ навязывается: любой локальный клиент может
+    //! управлять службой через loopback без токена/привилегий.
+    //! ВНИМАНИЕ: повышает локальную поверхность атаки — только для
+    //! диагностики/доверенного окружения.
+    bool auth_enabled = true;
 };
 
 /**
@@ -266,6 +292,8 @@ struct Config {
     CaptureMode    capture_mode = CaptureMode::WinDivert; //!< Активный движок захвата.
     WintunSettings wintun;                                 //!< Настройки Wintun-адаптера.
     std::vector<AppRule> apps;                             //!< Пер-приложение правила v2.
+
+    IpcSettings    ipc;    //!< (Задача №1) Настройки IPC-канала управления.
 
     /**
      * @brief Извлечь имя исполняемого файла из полного пути (legacy).

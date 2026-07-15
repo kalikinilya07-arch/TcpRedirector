@@ -111,6 +111,23 @@ public:
             }
         }
 
+        // ИСПРАВЛЕНИЕ (задача №3): применяем УРОВЕНЬ логирования из config.json.
+        // Ранее логгер инициализировался жёстко на LogLevel::Info и после
+        // Load() никогда не получал фактический log.level — поэтому смена
+        // уровня в конфиге ни на что не влияла, а DEBUG/TRACE-диагностика
+        // (в т.ч. Wintun rx-stats/PROXY-трейс) была невидима. Теперь уровень
+        // берётся из конфига (файловая шкала 0=ERROR..3=DEBUG, 4=TRACE) и
+        // применяется к логгеру. Живой set_log_level через IPC работал и
+        // раньше; здесь чиним именно старт.
+        {
+            const domain::LogLevel cfgLevel = m_configManager->GetLogLevel();
+            m_logger->SetLevel(cfgLevel);
+            m_logger->Info("service",
+                "Log level applied from config: file_level="
+                + std::to_string(m_configManager->GetConfig().log.level)
+                + " (0=ERROR,1=WARN,2=INFO,3=DEBUG,4=TRACE)");
+        }
+
         // Proxy config from ConfigManager — uses GetProxyConfig() to get decrypted password
         domain::ProxyConfig proxyCfg = m_configManager->GetProxyConfig();
         {
@@ -323,14 +340,26 @@ public:
         // written next to the EXE (same dir as config.json) with an
         // Administrators/SYSTEM-only DACL. The elevated GUI reads it and echoes
         // it in every request; unauthenticated local callers are rejected.
-        try {
-            std::filesystem::path tokenPath =
-                std::filesystem::path(infrastructure::paths::GetExecutableDirectoryW())
-                / L".ipc_token";
-            m_pipeServer->SetAuthTokenFilePath(tokenPath.wstring());
-        } catch (const std::exception& e) {
+        //
+        // (Задача №1) Токен-аутентификацию можно ОТКЛЮЧИТЬ через config
+        // (ipc.auth_enabled=false): тогда путь токена не задаётся, TcpIpcServer
+        // оставляет m_authToken пустым и НЕ проверяет запросы — любой локальный
+        // клиент управляет службой без токена/привилегий. Диагностический режим.
+        if (m_configManager->GetConfig().ipc.auth_enabled) {
+            try {
+                std::filesystem::path tokenPath =
+                    std::filesystem::path(infrastructure::paths::GetExecutableDirectoryW())
+                    / L".ipc_token";
+                m_pipeServer->SetAuthTokenFilePath(tokenPath.wstring());
+            } catch (const std::exception& e) {
+                m_logger->Warn("service",
+                    std::string("Could not resolve IPC token path: ") + e.what());
+            }
+        } else {
             m_logger->Warn("service",
-                std::string("Could not resolve IPC token path: ") + e.what());
+                "IPC auth DISABLED by config (ipc.auth_enabled=false): any local "
+                "client may control the service WITHOUT a token. Use only in a "
+                "trusted environment.");
         }
         m_ipcHandler = std::make_unique<adapters::IpcHandler>(
             m_ruleEngine.get(), m_connectionTracker.get(),

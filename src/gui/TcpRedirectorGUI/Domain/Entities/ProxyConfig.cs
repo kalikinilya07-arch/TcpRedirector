@@ -9,6 +9,18 @@ public class ProxyConfig
     public string Password { get; set; } = string.Empty;
     public bool HasPassword { get; set; }
 
+    // (Задача №2) Шифровать ли пароль прокси через DPAPI.
+    //  • true  — прежнее поведение: auth.encryptedPassword (DPAPI+Base64).
+    //  • false — пароль хранится/используется «как есть» в auth.password.
+    public bool EncryptPassword { get; set; } = true;
+
+    // (Задача №1) Требовать ли токен-аутентификацию на IPC-канале (ipc.auth_enabled).
+    //  • true  — прежнее поведение: служба требует .ipc_token.
+    //  • false — любой локальный клиент управляет службой без токена.
+    // Переносится через ProxyConfig, т.к. WriteFullV2 принимает именно его как
+    // «конфиг-носитель» от ViewModel.
+    public bool IpcAuthEnabled { get; set; } = true;
+
     // Capture target — путь к приложению, чей трафик перехватывается
     // (WinDivert фильтрует по этому пути, НЕ через RuleEngine)
     public string ExePath { get; set; } = string.Empty;

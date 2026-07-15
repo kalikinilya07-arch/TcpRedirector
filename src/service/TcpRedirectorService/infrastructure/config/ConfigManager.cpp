@@ -136,9 +136,23 @@ domain::ProxyConfig ConfigManager::GetProxyConfig() const {
     pc.auth_required = m_config.auth.enabled;
     pc.kerberos_auth = m_config.auth.kerberos;
     pc.login = Utf8ToWide(m_config.auth.username);
-    pc.has_password = !m_config.auth.encryptedPassword.empty();
-    if (pc.has_password) {
-        pc.plain_password = DecryptPassword(m_config.auth.encryptedPassword);
+
+    // (Задача №2) Пароль: два режима хранения.
+    //  • encryptPassword=false → пароль хранится/используется «как есть» в
+    //    открытом поле auth.password (в обход DPAPI). Снимает класс проблем
+    //    «DPAPI-blob не расшифровался под учёткой службы → Basic-auth падает».
+    //  • encryptPassword=true (по умолчанию) → прежняя логика: расшифровка
+    //    auth.encryptedPassword через DPAPI.
+    if (!m_config.auth.encryptPassword) {
+        pc.has_password = !m_config.auth.password.empty();
+        if (pc.has_password) {
+            pc.plain_password = Utf8ToWide(m_config.auth.password);
+        }
+    } else {
+        pc.has_password = !m_config.auth.encryptedPassword.empty();
+        if (pc.has_password) {
+            pc.plain_password = DecryptPassword(m_config.auth.encryptedPassword);
+        }
     }
     return pc;
 }
@@ -180,11 +194,16 @@ bool ConfigManager::SetRules(const std::vector<domain::Rule>& rules) {
 
 domain::LogLevel ConfigManager::GetLogLevel() const {
     std::shared_lock lock(m_mutex);
+    // Файловая шкала службы: 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG, 4=TRACE.
+    // Уровень 4 (TRACE) — экспертный: включает максимально подробную
+    // диагностику (в т.ч. Wintun rx-stats/PROXY-трейс). GUI пишет 0..3;
+    // значение 4 доступно ручной правкой config.json.
     switch (m_config.log.level) {
         case 0: return domain::LogLevel::Error;
         case 1: return domain::LogLevel::Warn;
         case 2: return domain::LogLevel::Info;
         case 3: return domain::LogLevel::Debug;
+        case 4: return domain::LogLevel::Trace;
         default: return domain::LogLevel::Info;
     }
 }
@@ -197,6 +216,7 @@ bool ConfigManager::SetLogLevel(domain::LogLevel level) {
         case domain::LogLevel::Warn:  m_config.log.level = 1; break;
         case domain::LogLevel::Info:  m_config.log.level = 2; break;
         case domain::LogLevel::Debug: m_config.log.level = 3; break;
+        case domain::LogLevel::Trace: m_config.log.level = 4; break;
         default: m_config.log.level = 2; break;
     }
     if (SaveImpl()) {
@@ -273,6 +293,10 @@ bool ConfigManager::UpdateConfigNoSave(const Config& newConfig) {
 
 std::wstring ConfigManager::GetPlainPassword() const {
     std::shared_lock lock(m_mutex);
+    // (Задача №2) При encryptPassword=false пароль лежит открытым текстом.
+    if (!m_config.auth.encryptPassword) {
+        return Utf8ToWide(m_config.auth.password);
+    }
     if (m_config.auth.encryptedPassword.empty())
         return {};
     return DecryptPassword(m_config.auth.encryptedPassword);
@@ -280,7 +304,16 @@ std::wstring ConfigManager::GetPlainPassword() const {
 
 void ConfigManager::SetPassword(const std::wstring& plainPassword) {
     std::unique_lock lock(m_mutex);
-    m_config.auth.encryptedPassword = EncryptPassword(plainPassword);
+    // (Задача №2) Уважаем режим хранения пароля.
+    if (!m_config.auth.encryptPassword) {
+        // Храним «как есть» (plaintext). Зашифрованное поле очищаем, чтобы
+        // не путать источники истины.
+        m_config.auth.password = WideToUtf8(plainPassword);
+        m_config.auth.encryptedPassword.clear();
+    } else {
+        m_config.auth.encryptedPassword = EncryptPassword(plainPassword);
+        m_config.auth.password.clear();
+    }
     SaveImpl();
 }
 
@@ -326,6 +359,7 @@ bool ConfigManager::LoadImpl() {
         m_config.capture_mode   = CaptureMode::WinDivert;
         m_config.wintun         = WintunSettings{};
         m_config.apps.clear();
+        m_config.ipc            = IpcSettings{};   // (Задача №1) сброс IPC-настроек
 
         // -------- Загрузка v1-секций (без регресса) --------
         if (j.contains("app") && j["app"].is_object()) {
@@ -345,6 +379,11 @@ bool ConfigManager::LoadImpl() {
             m_config.auth.username = a.value("username", std::string());
             m_config.auth.encryptedPassword = a.value("encryptedPassword", std::string());
             m_config.auth.kerberos = a.value("kerberos", false);
+            // (Задача №2) Режим хранения пароля. Дефолт encryptPassword=true —
+            // обратная совместимость: старые конфиги без поля продолжают
+            // использовать DPAPI-encryptedPassword.
+            m_config.auth.encryptPassword = a.value("encryptPassword", true);
+            m_config.auth.password = a.value("password", std::string());
         }
         if (j.contains("log") && j["log"].is_object()) {
             auto& l = j["log"];
@@ -355,6 +394,12 @@ bool ConfigManager::LoadImpl() {
         if (j.contains("stats") && j["stats"].is_object()) {
             auto& s = j["stats"];
             m_config.stats.updateIntervalMs = s.value("updateIntervalMs", 2000);
+        }
+        // (Задача №1) IPC-настройки. Дефолт auth_enabled=true — обратная
+        // совместимость: без секции ipc поведение прежнее (токен требуется).
+        if (j.contains("ipc") && j["ipc"].is_object()) {
+            auto& i = j["ipc"];
+            m_config.ipc.auth_enabled = i.value("auth_enabled", true);
         }
 
         // -------- Legacy rules[] --------
@@ -449,10 +494,15 @@ bool ConfigManager::SaveImpl() {
         j["auth"]["username"] = m_config.auth.username;
         j["auth"]["encryptedPassword"] = m_config.auth.encryptedPassword;
         j["auth"]["kerberos"] = m_config.auth.kerberos;
+        // (Задача №2) Режим хранения пароля.
+        j["auth"]["encryptPassword"] = m_config.auth.encryptPassword;
+        j["auth"]["password"] = m_config.auth.password;
         j["log"]["level"] = m_config.log.level;
         j["log"]["fileEnabled"] = m_config.log.fileEnabled;
         j["log"]["maxSizeMB"] = m_config.log.maxSizeMB;
         j["stats"]["updateIntervalMs"] = m_config.stats.updateIntervalMs;
+        // (Задача №1) IPC-настройки.
+        j["ipc"]["auth_enabled"] = m_config.ipc.auth_enabled;
 
         // v2: wintun{...} и apps[]
         j["wintun"] = WintunSettingsToJson(m_config.wintun);
@@ -571,10 +621,13 @@ nlohmann::json ConfigManager::ConfigToJson(const Config& cfg) const {
     j["auth"]["username"] = cfg.auth.username;
     j["auth"]["encryptedPassword"] = cfg.auth.encryptedPassword;
     j["auth"]["kerberos"] = cfg.auth.kerberos;
+    j["auth"]["encryptPassword"] = cfg.auth.encryptPassword;  // (Задача №2)
+    j["auth"]["password"] = cfg.auth.password;                // (Задача №2)
     j["log"]["level"] = cfg.log.level;
     j["log"]["fileEnabled"] = cfg.log.fileEnabled;
     j["log"]["maxSizeMB"] = cfg.log.maxSizeMB;
     j["stats"]["updateIntervalMs"] = cfg.stats.updateIntervalMs;
+    j["ipc"]["auth_enabled"] = cfg.ipc.auth_enabled;          // (Задача №1)
     return j;
 }
 

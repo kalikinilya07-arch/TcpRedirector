@@ -191,12 +191,27 @@
 
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="Password:"
                                        VerticalAlignment="Center" Margin="8,2,0,2"/>
-                            <PasswordBox Grid.Row="0" Grid.Column="3"
-                                         x:Name="PwdBox" Margin="8,2,0,2"/>
+                            <!-- PasswordBox + overlay-плейсхолдер: если пароль уже
+                                 сохранён (в любом формате), показываем «••••••••»,
+                                 пока поле пустое; при вводе символов плейсхолдер
+                                 скрывается. Само поле остаётся пустым до ввода. -->
+                            <Grid Grid.Row="0" Grid.Column="3" Margin="8,2,0,2">
+                                <PasswordBox x:Name="PwdBox"/>
+                                <TextBlock x:Name="PwdPlaceholder"
+                                           Text="{Binding Settings.PasswordPlaceholder}"
+                                           Foreground="#7F7F7F"
+                                           VerticalAlignment="Center"
+                                           Margin="4,0,0,0"
+                                           IsHitTestVisible="False"/>
+                            </Grid>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
                                       Content="Use Kerberos protocol"
                                       IsChecked="{Binding Settings.KerberosEnabled, Mode=TwoWay}"
+                                      Margin="0,2"/>
+                            <CheckBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                      Content="Шифровать пароль (DPAPI). Снимите — хранить/использовать пароль как есть (plaintext в config.json)"
+                                      IsChecked="{Binding Settings.EncryptPassword, Mode=TwoWay}"
                                       Margin="0,2"/>
                         </Grid>
                     </Border>
@@ -493,6 +508,20 @@
                                        TextWrapping="Wrap"
                                        Text="Примечание: пер-соединённая трасса заполняется в режимах WinDivert и Wintun (embedded). В режиме Wintun (external) детализация по соединениям недоступна."/>
                         </Grid>
+                    </Border>
+
+                    <!-- Дополнительно: IPC / безопасность -->
+                    <TextBlock Text="ДОПОЛНИТЕЛЬНО (IPC / БЕЗОПАСНОСТЬ)"
+                               Style="{StaticResource SectionHeader}"/>
+                    <Border Style="{StaticResource SectionBorder}">
+                        <StackPanel>
+                            <CheckBox Content="Требовать токен-аутентификацию на IPC-канале (рекомендуется)"
+                                      IsChecked="{Binding Settings.IpcAuthEnabled, Mode=TwoWay}"
+                                      Margin="0,2"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#DCDCAA" FontSize="11"
+                                       Margin="0,2,0,0"
+                                       Text="Снимите флажок, чтобы отключить проверку токена: любой локальный клиент сможет управлять службой без .ipc_token и без привилегий. Диагностический режим — используйте только в доверенном окружении. Изменение вступает в силу после перезапуска службы."/>
+                        </StackPanel>
                     </Border>
 
                     <!-- Log Level -->

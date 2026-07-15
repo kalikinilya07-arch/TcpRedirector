@@ -323,7 +323,16 @@ tcp_input(struct pbuf *p, struct netif *inp)
         continue;
       }
 
+      /* TCPREDIR B14 (project-owned patch, guarded by TCP_REDIRECTOR_WILDCARD_LISTEN
+       * in lwipopts.h): a listener bound to port 0 is treated as a WILDCARD over
+       * the destination port so the tun2socks catch-all listener accepts a SYN to
+       * ANY dst port. Without this, stock lwIP matches only local_port == dst and
+       * OnAccept never fires (active_flows=0). See ИЗВЕСТНЫЕ_ПРОБЛЕМЫ.md §B14. */
+#if defined(TCP_REDIRECTOR_WILDCARD_LISTEN) && TCP_REDIRECTOR_WILDCARD_LISTEN
+      if (lpcb->local_port == 0 || lpcb->local_port == tcphdr->dest) {
+#else
       if (lpcb->local_port == tcphdr->dest) {
+#endif
         if (IP_IS_ANY_TYPE_VAL(lpcb->local_ip)) {
           /* found an ANY TYPE (IPv4/IPv6) match */
 #if SO_REUSE
@@ -675,7 +684,16 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
     /* Set up the new PCB. */
     ip_addr_copy(npcb->local_ip, *ip_current_dest_addr());
     ip_addr_copy(npcb->remote_ip, *ip_current_src_addr());
+    /* TCPREDIR B14 (project-owned patch): for a wildcard-port listener
+     * (local_port==0) take the REAL destination port from the SYN
+     * (tcphdr->dest, already in host order — see tcp_input byte-swap) so the
+     * engine recovers the original destination in OnAccept via
+     * newpcb->local_port. For a normal listener behaviour is unchanged. */
+#if defined(TCP_REDIRECTOR_WILDCARD_LISTEN) && TCP_REDIRECTOR_WILDCARD_LISTEN
+    npcb->local_port = (pcb->local_port == 0) ? tcphdr->dest : pcb->local_port;
+#else
     npcb->local_port = pcb->local_port;
+#endif
     npcb->remote_port = tcphdr->src;
     npcb->state = SYN_RCVD;
     npcb->rcv_nxt = seqno + 1;

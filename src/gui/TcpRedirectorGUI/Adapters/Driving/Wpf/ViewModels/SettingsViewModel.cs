@@ -48,7 +48,9 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         nameof(Msg), nameof(LogMsg), nameof(LogFilterLabel),
         nameof(IsDirty), nameof(HasErrors), nameof(SelectedApp),
         nameof(SelectedRule), nameof(IsWintunSelected), nameof(IsWinDivertSelected),
-        nameof(IsExternalEngine)
+        nameof(IsExternalEngine),
+        // Не «контентные»: отражают лишь наличие сохранённого пароля/плейсхолдер.
+        nameof(HasStoredPassword), nameof(PasswordPlaceholder)
     };
 
     public SettingsViewModel(IConfigRepository config, ITcpRedirectorService? svc = null)
@@ -259,6 +261,29 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     [ObservableProperty] private string _password = "";
     [ObservableProperty] private bool _kerberosEnabled;
 
+    // (Задача №2) Шифровать ли пароль прокси (DPAPI) или хранить plaintext.
+    [ObservableProperty] private bool _encryptPassword = true;
+
+    // (Задача №1) Требовать ли токен-аутентификацию на IPC-канале.
+    [ObservableProperty] private bool _ipcAuthEnabled = true;
+
+    // Уже сохранён ли пароль (в любом формате: DPAPI-encrypted ИЛИ plaintext).
+    // Управляет плейсхолдером поля пароля в UI: показываем «****», если пароль
+    // задан, а само поле остаётся пустым (пользователь вводит новый только при
+    // необходимости заменить). Не помечает конфиг «грязным».
+    [ObservableProperty] private bool _hasStoredPassword;
+
+    /// <summary>
+    /// Текст-плейсхолдер для поля пароля: маскировка «••••••••», если пароль
+    /// уже сохранён, иначе пусто. Само поле Password остаётся пустым до ввода.
+    /// </summary>
+    public string PasswordPlaceholder => HasStoredPassword ? "••••••••" : "";
+
+    partial void OnHasStoredPasswordChanged(bool value)
+    {
+        OnPropertyChanged(nameof(PasswordPlaceholder));
+    }
+
     partial void OnKerberosEnabledChanged(bool value)
     {
         if (value && !AuthRequired)
@@ -437,13 +462,18 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     // (0=TRACE,1=DEBUG,2=INFO,3=WARN,4=ERROR — see domain::LogLevel and the
     // service's IPC set_log_level, which casts the int directly).
     // But config.json "log.level" is read by the service's
-    // ConfigManager::GetLogLevel on a DIFFERENT, inverted, coarser scale
-    // (0=ERROR,1=WARN,2=INFO,3=DEBUG; no TRACE). Persisting the domain value
+    // ConfigManager::GetLogLevel on a DIFFERENT, inverted scale
+    // (0=ERROR,1=WARN,2=INFO,3=DEBUG,4=TRACE). Persisting the domain value
     // verbatim inverted the level (e.g. "errors only" became INFO, "all"
     // became errors-only). Translate at the config-file boundary only.
+    //
+    // (Задача №3) Служба теперь понимает файловый уровень 4=TRACE, поэтому
+    // доменный TRACE(0) больше НЕ схлопывается в DEBUG — он честно
+    // отображается в файловый 4 и обратно (полная трассировка, в т.ч.
+    // Wintun rx-stats/PROXY-трейс).
     private static int DomainToFileLogLevel(int domain) => domain switch
     {
-        0 => 3, // TRACE -> DEBUG (file scale has no TRACE; use most verbose)
+        0 => 4, // TRACE -> TRACE (file scale теперь имеет TRACE=4)
         1 => 3, // DEBUG -> DEBUG
         2 => 2, // INFO  -> INFO
         3 => 1, // WARN  -> WARN
@@ -457,6 +487,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         1 => 3, // WARN
         2 => 2, // INFO
         3 => 1, // DEBUG
+        4 => 0, // TRACE
         _ => 2  // default INFO
     };
 
@@ -502,7 +533,18 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             AuthRequired = _config.ReadBool("auth", "enabled");
             KerberosEnabled = _config.ReadBool("auth", "kerberos");
             Login = _config.ReadString("auth", "username");
+            // (Задача №2) Режим хранения пароля. Дефолт true — обратная
+            // совместимость со старыми конфигами без этого поля.
+            EncryptPassword = _config.ReadBool("auth", "encryptPassword", true);
+            // Поле ввода всегда пустое; наличие сохранённого пароля показываем
+            // плейсхолдером. Пароль считается заданным, если непусто ЛЮБОЕ из
+            // полей: encryptedPassword (DPAPI) ИЛИ password (plaintext).
             Password = "";
+            HasStoredPassword =
+                !string.IsNullOrEmpty(_config.ReadString("auth", "encryptedPassword"))
+                || !string.IsNullOrEmpty(_config.ReadString("auth", "password"));
+            // (Задача №1) IPC-аутентификация. Дефолт true — как в службе.
+            IpcAuthEnabled = _config.ReadBool("ipc", "auth_enabled", true);
             // B3: config.json stores log.level in the service file scale; map it
             // back to the domain scale the combo/IPC use.
             LogLevelFilter = FileToDomainLogLevel(_config.ReadInt("log", "level", 2));
@@ -636,11 +678,14 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
                 {
                     Host = Host, Port = Port,
                     AuthRequired = AuthRequired, Login = Login,
-                    // Persist the password to config.json (DPAPI machine-scope)
-                    // regardless of whether the service is running. Empty => the
-                    // repository preserves the existing on-disk encryptedPassword.
+                    // Persist the password to config.json regardless of whether
+                    // the service is running. Empty => the repository preserves
+                    // the existing on-disk password (encrypted or plaintext).
                     Password = currentPwd,
-                    KerberosEnabled = KerberosEnabled
+                    KerberosEnabled = KerberosEnabled,
+                    // (Задача №2/№1) режимы хранения пароля и IPC-аутентификации.
+                    EncryptPassword = EncryptPassword,
+                    IpcAuthEnabled = IpcAuthEnabled
                 },
                 CaptureMode,
                 Wintun,
@@ -696,11 +741,18 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
                     {
                         Host = Host, Port = Port,
                         AuthRequired = AuthRequired, Login = Login,
-                        Password = currentPwd, KerberosEnabled = KerberosEnabled
+                        Password = currentPwd, KerberosEnabled = KerberosEnabled,
+                        EncryptPassword = EncryptPassword,
+                        IpcAuthEnabled = IpcAuthEnabled
                     });
                 }
                 catch { /* IPC failure is non-fatal */ }
             }
+
+            // Если пользователь ввёл новый пароль — теперь он сохранён; иначе
+            // сохраняем прежнее состояние «есть/нет пароля».
+            if (!string.IsNullOrEmpty(currentPwd))
+                HasStoredPassword = true;
 
             Msg = $"\u2713 Сохранено в {_config.ConfigPath}";
             Password = "";

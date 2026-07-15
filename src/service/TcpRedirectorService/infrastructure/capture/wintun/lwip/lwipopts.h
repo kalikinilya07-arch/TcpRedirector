@@ -105,6 +105,22 @@
  * destination-IP не совпадает с IP нашего netif'а.  См. lwip_hooks.h. */
 #define LWIP_HOOK_FILENAME              "lwip_hooks.h"
 
+/* --- catch-all listener: wildcard destination port (B14) ----------------- */
+/* Проект держит ОДИН catch-all TCP-listener (tcp_bind(IP_ANY_TYPE, 0) +
+ * tcp_listen), который должен принимать SYN на ЛЮБОЙ destination-порт
+ * (tun2socks-паттерн).  Стоковый lwIP матчит listener только при
+ * lpcb->local_port == dst-порт (см. tcp_in.c), а порт-0 в tcp_bind получает
+ * конкретный эфемерный порт через tcp_new_port() — поэтому НИ ОДИН SYN не
+ * матчился и OnAccept никогда не вызывался («трафик входит в туннель, но не
+ * выходит на прокси», active_flows=0).  См. ИЗВЕСТНЫЕ_ПРОБЛЕМЫ.md §B14.
+ *
+ * Этот флаг включает МИНИМАЛЬНЫЙ project-owned патч в vendored tcp_in.c
+ * (помечен «TCPREDIR B14»): listen-pcb с local_port==0 трактуется как
+ * wildcard по порту, а порт нового pcb берётся из реального dst SYN'а
+ * (tcphdr->dest) — чтобы движок восстановил original-dst в OnAccept.
+ * Все правки vendored-кода обёрнуты в этот макрос и легко откатываются. */
+#define TCP_REDIRECTOR_WILDCARD_LISTEN  1
+
 /* --- alignment / packing ------------------------------------------------- */
 /* определено в arch/cc.h — здесь ничего не переопределяем */
 

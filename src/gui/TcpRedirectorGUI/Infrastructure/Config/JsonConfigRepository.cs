@@ -395,15 +395,36 @@ public sealed class JsonConfigRepository : IConfigRepository
             auth["enabled"]  = config.AuthRequired;
             auth["username"] = config.Login;
             auth["kerberos"] = config.KerberosEnabled;
-            // auth.encryptedPassword: persist the password ourselves (DPAPI
-            // machine-scope) so it survives even when the service is stopped and
-            // no live-IPC push happens. Empty password => keep whatever is on
-            // disk (existing behaviour: do not wipe a previously-saved secret).
+            // (Задача №2) Режим хранения пароля.
+            auth["encryptPassword"] = config.EncryptPassword;
+            // auth.encryptedPassword / auth.password: persist the password
+            // ourselves so it survives even when the service is stopped and no
+            // live-IPC push happens. Empty password => keep whatever is on disk
+            // (do not wipe a previously-saved secret).
             if (!string.IsNullOrEmpty(config.Password))
             {
-                var enc = EncryptPasswordDpapi(config.Password);
-                if (!string.IsNullOrEmpty(enc)) auth["encryptedPassword"] = enc;
+                if (config.EncryptPassword)
+                {
+                    var enc = EncryptPasswordDpapi(config.Password);
+                    if (!string.IsNullOrEmpty(enc)) auth["encryptedPassword"] = enc;
+                    // При переключении в encrypted-режим чистим plaintext.
+                    auth["password"] = "";
+                }
+                else
+                {
+                    // Plaintext-режим: пароль «как есть», encrypted-поле чистим.
+                    auth["password"] = config.Password;
+                    auth["encryptedPassword"] = "";
+                }
             }
+            else if (auth["password"] is null)
+            {
+                // Гарантируем присутствие ключа для консистентности схемы.
+                auth["password"] = "";
+            }
+            // (Задача №1) IPC-настройки — GUI владеет флагом auth_enabled.
+            var ipc = GetOrCreateObject(j, "ipc");
+            ipc["auth_enabled"] = config.IpcAuthEnabled;
 
             // log.* — GUI owns "level" (written elsewhere on the service scale via
             // WriteInt); only seed the others if absent so we never reset them.
