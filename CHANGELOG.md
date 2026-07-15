@@ -1,6 +1,20 @@
-# TcpRedirector v1.1.0
+# TcpRedirector v1.1.1
 
 ## Ключевые изменения
+
+### Исправления (v1.1.1)
+- **SetProxyConfig**: исправлено сохранение флага `kerberos` в config.json
+- **SetProxyConfig**: пароль больше не очищается при сохранении без повторного ввода (`set_password=false`)
+- **IpcHandler::SetConfig**: теперь проверяет результат `SetProxyConfig` и `Save`, возвращает ошибку при провале
+- **TcpRelayServer**: rate-limit предупреждений "Auth provider failed" — не чаще 1 раза в 30 секунд
+- **KerberosAgentProvider**: авто-запуск AuthAgent через `CreateProcessAsUser` (WTS API) при недоступности pipe
+- **Инсталлятор**: TcpRedirectorAuthAgent.exe включён в пакет, добавлена верификация после копирования
+
+---
+
+# TcpRedirector v1.1.0
+
+## Ключевые изменения (v1.1.0)
 
 ### Non-Admin GUI
 - GUI больше не требует прав администратора для запуска

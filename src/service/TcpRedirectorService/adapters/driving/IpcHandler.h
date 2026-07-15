@@ -150,8 +150,18 @@ private:
             std::string pwd = j.value("password", std::string());
             config.plain_password = infrastructure::Utf8ToWide(pwd);
         }
-        m_configManager->SetProxyConfig(config);
-        m_configManager->Save();  // persist to C:\ProgramData\TcpRedirector\config.json
+        if (!m_configManager->SetProxyConfig(config)) {
+            result["status"] = "error";
+            result["error"] = "failed to save proxy config";
+            return;
+        }
+        // SetProxyConfig already calls SaveImpl() internally; this second Save()
+        // ensures rules (set earlier by set_rules) are also persisted together.
+        if (!m_configManager->Save()) {
+            result["status"] = "error";
+            result["error"] = "failed to persist config";
+            return;
+        }
         result["status"] = "success";
     }
 

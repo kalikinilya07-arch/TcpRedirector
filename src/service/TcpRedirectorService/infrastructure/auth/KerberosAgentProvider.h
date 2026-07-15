@@ -2,6 +2,8 @@
 
 #include "../../domain/ports/IAuthenticationProvider.h"
 #include <windows.h>
+#include <wtsapi32.h>
+#include <userenv.h>
 #include <string>
 #include <string_view>
 #include <memory>
@@ -10,6 +12,9 @@
 #include <mutex>
 #include <chrono>
 #include <nlohmann/json.hpp>
+
+#pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "userenv.lib")
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -53,6 +58,10 @@ private:
     void DisconnectFromAgent();
     void KeepaliveLoop();
     void EnsureConnected();
+
+    // ---- AuthAgent auto-launch ----
+    static bool LaunchAuthAgentInUserSession();
+    static std::atomic<bool> s_launchInProgress;
 
     // ---- JSON-RPC helpers ----
     nlohmann::json Call(const std::string& method,

@@ -325,6 +325,8 @@ private:
 
         // ---- Authentication via IAuthenticationProvider ----
         // Context lives exactly one HTTP CONNECT. Created here, destroyed after 200 or error.
+        // v1.1.1: rate-limit auth failure warnings to 1 per 30s (per thread) to avoid log spam
+        // when AuthAgent is not running but proxy doesn't require auth.
         uint64_t authContextId = 0;
         bool authContextActive = false;
         int authRetries = 0;
@@ -337,7 +339,7 @@ private:
 
         if (m_proxyAuthRequired && m_authProvider) {
             if (!authContextActive) {
-                // Create new context for this CONNECT
+                // Create new context for this CONNECT (preemptive authentication)
                 std::string spn = "HTTP/" + m_proxyHost;
                 auto ctxResult = m_authProvider->CreateContext(spn);
                 if (ctxResult.success) {
@@ -349,11 +351,20 @@ private:
                         connect_req += "Proxy-Authorization: Negotiate " + ctxResult.token + "\r\n";
                     }
                 } else {
-                    Log(domain::LogLevel::Warn, "Auth provider failed: " + ctxResult.error_message);
+                    // v1.1.1: rate-limit warning to 1 per 30 seconds
+                    auto now = std::chrono::steady_clock::now();
+                    if (now - m_lastAuthWarnTime > std::chrono::seconds(30)) {
+                        m_lastAuthWarnTime = now;
+                        Log(domain::LogLevel::Warn, "Auth provider failed: " + ctxResult.error_message);
+                    }
                 }
             } else {
-                // Context already active — should not happen on first pass
-                Log(domain::LogLevel::Warn, "Auth context already active on retry_connect");
+                // Context already active — add token from previous CreateContext/ContinueContext
+                if (m_authProvider->GetType() == domain::ports::AuthProviderType::Basic) {
+                    connect_req += "Proxy-Authorization: Basic " + m_lastAuthToken + "\r\n";
+                } else {
+                    connect_req += "Proxy-Authorization: Negotiate " + m_lastAuthToken + "\r\n";
+                }
             }
         }
 
@@ -446,6 +457,7 @@ private:
                 closesocket(proxy_sock);
                 return;
             }
+            m_lastAuthToken = contResult.token;
             authRetries++;
             if (authRetries > 5) {
                 Log(domain::LogLevel::Warn, "CONNECT failed: retry limit exceeded");
@@ -461,6 +473,7 @@ private:
         else {
             Log(domain::LogLevel::Warn, "CONNECT failed: " + std::string(resp_buf, 100));
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+            if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
@@ -624,6 +637,8 @@ private:
     RelayConnCallback m_connCb;
     domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
     domain::ports::IAuthenticationProvider* m_authProvider = nullptr;
+    std::string m_lastAuthToken;  // v1.1.1: cached token for auth retry after 407
+    std::chrono::steady_clock::time_point m_lastAuthWarnTime;  // v1.1.1: rate-limit auth warnings
 
     // H4: number of active bridge pairs (incremented before StartBridge,
     // decremented after both directions finish).  Stop() polls this counter

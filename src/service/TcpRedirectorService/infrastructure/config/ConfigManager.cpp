@@ -69,12 +69,16 @@ bool ConfigManager::SetProxyConfig(const domain::ProxyConfig& config) {
     m_config.proxy.port = config.port;
     m_config.proxy.enabled = true;
     m_config.auth.enabled = config.auth_required;
+    m_config.auth.kerberos = config.kerberos_auth;
     m_config.auth.username = WideToUtf8(config.login);
-    if (config.has_password && !m_config.auth.encryptedPassword.empty()) {
-        // пароль уже зашифрован — оставляем
+    // v1.1.1: only update password when explicitly provided (set_password=true).
+    // If set_password is false, preserve the existing encrypted password.
+    if (config.has_password) {
+        m_config.auth.encryptedPassword = EncryptPassword(config.plain_password);
     }
+    // else: keep existing encryptedPassword unchanged
     NotifyListeners(oldCfg, m_config);
-    return true;  // config.json is persisted by GUI via WriteFull()
+    return SaveImpl();  // Persist to config.json
 }
 
 // ====================================================================

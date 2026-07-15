@@ -217,8 +217,96 @@ void KerberosAgentProvider::KeepaliveLoop() {
 
 void KerberosAgentProvider::EnsureConnected() {
     if (!m_connected.load(std::memory_order_acquire)) {
-        ConnectToAgent();
+        if (!ConnectToAgent()) {
+            // v1.1.1: try to launch AuthAgent in user session
+            LaunchAuthAgentInUserSession();
+            // Retry connection after launch
+            ConnectToAgent();
+        }
     }
+}
+
+// ============================================================================
+// AuthAgent auto-launch (WTS API)
+// ============================================================================
+
+std::atomic<bool> KerberosAgentProvider::s_launchInProgress{false};
+
+bool KerberosAgentProvider::LaunchAuthAgentInUserSession() {
+    // Rate-limit: only one launch attempt at a time
+    bool expected = false;
+    if (!s_launchInProgress.compare_exchange_strong(expected, true,
+                                                     std::memory_order_acquire)) {
+        return false;  // another thread is already launching
+    }
+
+    bool result = false;
+    HANDLE userToken = nullptr;
+    HANDLE dupToken = nullptr;
+    LPVOID envBlock = nullptr;
+
+    // Get active console session
+    DWORD sessionId = WTSGetActiveConsoleSessionId();
+    if (sessionId == 0xFFFFFFFF) {
+        goto cleanup;
+    }
+
+    if (!WTSQueryUserToken(sessionId, &userToken)) {
+        goto cleanup;
+    }
+
+    // Duplicate token for CreateProcessAsUser
+    if (!DuplicateTokenEx(userToken, TOKEN_ALL_ACCESS, nullptr,
+                          SecurityImpersonation, TokenPrimary, &dupToken)) {
+        goto cleanup;
+    }
+
+    // Create environment block for the user
+    if (!CreateEnvironmentBlock(&envBlock, dupToken, FALSE)) {
+        envBlock = nullptr;  // proceed without custom environment
+    }
+
+    {
+        wchar_t cmdLine[] = L"C:\\Program Files\\TcpRedirector\\TcpRedirectorAuthAgent.exe";
+        wchar_t workDir[] = L"C:\\Program Files\\TcpRedirector";
+
+        STARTUPINFOW si = {};
+        si.cb = sizeof(si);
+        si.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
+
+        PROCESS_INFORMATION pi = {};
+
+        if (CreateProcessAsUserW(
+                dupToken,
+                nullptr,           // app name (use cmdLine)
+                cmdLine,           // command line
+                nullptr,           // process attributes
+                nullptr,           // thread attributes
+                FALSE,             // inherit handles
+                CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS,
+                envBlock,          // environment
+                workDir,           // working directory
+                &si,
+                &pi)) {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            result = true;
+        }
+    }
+
+cleanup:
+    if (envBlock) {
+        DestroyEnvironmentBlock(envBlock);
+    }
+    if (dupToken) {
+        CloseHandle(dupToken);
+    }
+    if (userToken) {
+        CloseHandle(userToken);
+    }
+
+    s_launchInProgress.store(false, std::memory_order_release);
+    return result;
 }
 
 // ============================================================================

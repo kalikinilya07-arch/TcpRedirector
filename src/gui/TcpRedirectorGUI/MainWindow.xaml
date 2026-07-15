@@ -114,8 +114,8 @@
         <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
             <Grid Width="1060" Height="620">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="0.38*"/>
-                    <RowDefinition Height="0.62*"/>
+                    <RowDefinition Height="0.55*"/>
+                    <RowDefinition Height="0.45*"/>
                 </Grid.RowDefinitions>
 
                 <!-- SETTINGS (compact) -->
