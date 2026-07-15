@@ -103,10 +103,11 @@ bool ConfigManager::SetRules(const std::vector<domain::Rule>& rules) {
 domain::LogLevel ConfigManager::GetLogLevel() const {
     std::shared_lock lock(m_mutex);
     switch (m_config.log.level) {
-        case 0: return domain::LogLevel::Error;
-        case 1: return domain::LogLevel::Warn;
+        case 0: return domain::LogLevel::Trace;
+        case 1: return domain::LogLevel::Debug;
         case 2: return domain::LogLevel::Info;
-        case 3: return domain::LogLevel::Debug;
+        case 3: return domain::LogLevel::Warn;
+        case 4: return domain::LogLevel::Error;
         default: return domain::LogLevel::Info;
     }
 }
@@ -115,10 +116,11 @@ bool ConfigManager::SetLogLevel(domain::LogLevel level) {
     std::unique_lock lock(m_mutex);
     Config oldCfg = m_config;
     switch (level) {
-        case domain::LogLevel::Error: m_config.log.level = 0; break;
-        case domain::LogLevel::Warn:  m_config.log.level = 1; break;
+        case domain::LogLevel::Trace: m_config.log.level = 0; break;
+        case domain::LogLevel::Debug: m_config.log.level = 1; break;
         case domain::LogLevel::Info:  m_config.log.level = 2; break;
-        case domain::LogLevel::Debug: m_config.log.level = 3; break;
+        case domain::LogLevel::Warn:  m_config.log.level = 3; break;
+        case domain::LogLevel::Error: m_config.log.level = 4; break;
         default: m_config.log.level = 2; break;
     }
     if (SaveImpl()) {

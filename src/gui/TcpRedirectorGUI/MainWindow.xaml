@@ -127,7 +127,7 @@
                             CornerRadius="3">
                         <StackPanel Orientation="Horizontal">
                             <Button Content="💾 Save All Settings"
-                                    Command="{Binding Settings.SaveAsyncCommand}"
+                                    Command="{Binding Settings.SaveCommand}"
                                     Style="{StaticResource PrimaryButton}"
                                     Padding="12,4" FontSize="12" FontWeight="Bold"
                                     IsEnabled="{Binding IsServiceAvailable}"/>

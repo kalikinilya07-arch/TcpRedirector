@@ -198,6 +198,13 @@ public:
             }
             rotSettings.compress = cfg.log_rotation.compress;
             m_logger->EnableScheduledRotation(rotSettings);
+            if (rotSettings.enabled) {
+                m_logger->Info("service", "Log rotation enabled: " + rotSettings.schedule +
+                    " at " + std::to_string(rotSettings.hour) + ":" +
+                    (rotSettings.minute < 10 ? "0" : "") + std::to_string(rotSettings.minute) +
+                    ", max_age=" + std::to_string(rotSettings.max_age_days) + "d" +
+                    ", compress=" + (rotSettings.compress ? "yes" : "no"));
+            }
         }
 
         // Record service start time for uptime tracking
