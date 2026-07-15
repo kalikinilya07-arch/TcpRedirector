@@ -30,7 +30,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         Settings = settings;
         Stats = stats;
 
-        _pollIntervalMs = Math.Max(200, config.ReadInt("stats", "updateIntervalMs", 1000));
+        _pollIntervalMs = Math.Max(500, config.ReadInt("stats", "updateIntervalMs", 1000));
 
         _svc.ConnectionStateChanged += OnConnectionStateChanged;
 

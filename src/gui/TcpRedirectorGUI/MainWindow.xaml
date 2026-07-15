@@ -4,7 +4,7 @@
         xmlns:vm="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels"
         xmlns:ctl="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.Controls"
         Title="TcpRedirector"
-        Height="800" Width="1100" MinHeight="600" MinWidth="900"
+        Height="900" Width="1100" MinHeight="700" MinWidth="900"
         Background="#1E1E1E"
         FontFamily="Segoe UI"
         TextElement.Foreground="#CCCCCC"
@@ -97,13 +97,6 @@
                                Margin="8,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
 
-                <!-- Connection info -->
-                <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock FontSize="12" Foreground="#858585">
-                        <Run Text="Traffic:"/>
-                        <Run Text="{Binding TotalTraffic, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
-                    </TextBlock>
-                </StackPanel>
             </Grid>
         </Border>
 
@@ -112,10 +105,10 @@
              settings + statistics, no scrollbars
              ============================================ -->
         <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
-            <Grid Width="1060" Height="620">
+            <Grid Width="1060" Height="720">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="0.55*"/>
-                    <RowDefinition Height="0.45*"/>
+                    <RowDefinition Height="0.60*"/>
+                    <RowDefinition Height="0.40*"/>
                 </Grid.RowDefinitions>
 
                 <!-- SETTINGS (compact) -->
@@ -342,6 +335,10 @@
                             <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12" Margin="16,0">
                                 <Run Text="Uptime:"/>
                                 <Run Text="{Binding Stats.Uptime, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
+                            </TextBlock>
+                            <TextBlock Grid.Column="3" Foreground="#858585" FontSize="12" Margin="16,0">
+                                <Run Text="Traffic:"/>
+                                <Run Text="{Binding TotalTraffic, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                             <TextBlock Grid.Column="4" Foreground="#858585" FontSize="12" Margin="16,0">
                                 <Run Text="Rate:"/>
