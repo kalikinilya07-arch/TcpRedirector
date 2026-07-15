@@ -3,12 +3,25 @@
 ## Ключевые изменения
 
 ### Исправления (v1.1.1)
+
+#### Сохранение конфигурации
 - **SetProxyConfig**: исправлено сохранение флага `kerberos` в config.json
 - **SetProxyConfig**: пароль больше не очищается при сохранении без повторного ввода (`set_password=false`)
 - **IpcHandler::SetConfig**: теперь проверяет результат `SetProxyConfig` и `Save`, возвращает ошибку при провале
-- **TcpRelayServer**: rate-limit предупреждений "Auth provider failed" — не чаще 1 раза в 30 секунд
+
+#### Стабильность AuthAgent
 - **KerberosAgentProvider**: авто-запуск AuthAgent через `CreateProcessAsUser` (WTS API) при недоступности pipe
-- **Инсталлятор**: TcpRedirectorAuthAgent.exe включён в пакет, добавлена верификация после копирования
+- **LaunchAuthAgentInUserSession**: полное логирование всех точек отказа (session, token, duplicate, create process) с кодами ошибок
+- **DuplicateTokenEx**: `TOKEN_ALL_ACCESS` → `TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY` (минимальные права)
+- **Динамический путь**: `GetModuleFileNameW` вместо хардкода `C:\Program Files\TcpRedirector\`
+- **KeepaliveLoop**: теперь тоже вызывает `LaunchAuthAgentInUserSession` при обрыве соединения (не только `EnsureConnected`)
+
+#### Устойчивость прокси-соединений
+- **TcpRelayServer**: retry при 504/502 Gateway Error (до 3 попыток с пересозданием сокета)
+- **TcpRelayServer**: rate-limit предупреждений "Auth provider failed" — не чаще 1 раза в 30 секунд
+
+#### Инсталлятор
+- TcpRedirectorAuthAgent.exe включён в пакет, добавлена верификация после копирования
 
 ---
 

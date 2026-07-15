@@ -111,6 +111,11 @@ public:
                 if (authMode == infrastructure::AuthenticationMode::KerberosOnly ||
                     authMode == infrastructure::AuthenticationMode::KerberosPreferred) {
                     auto kerberosProvider = std::make_unique<infrastructure::KerberosAgentProvider>();
+                    // v1.1.1: set log callback for AuthAgent launch diagnostics
+                    infrastructure::KerberosAgentProvider::SetLogCallback(
+                        [this](const std::string& msg) {
+                            m_logger->Info("auth-agent", msg);
+                        });
                     m_authProvider = std::move(kerberosProvider);
                     m_logger->Info("service", "Authentication: KerberosAgent (mode=" +
                         std::to_string(static_cast<int>(authMode)) + ")");

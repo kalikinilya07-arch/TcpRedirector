@@ -11,6 +11,7 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
+#include <functional>
 #include <nlohmann/json.hpp>
 
 #pragma comment(lib, "wtsapi32.lib")
@@ -46,6 +47,14 @@ public:
     domain::ports::AuthProviderType GetType() const override {
         return domain::ports::AuthProviderType::KerberosAgent;
     }
+
+    /// Set log callback for diagnostic messages (including from LaunchAuthAgentInUserSession).
+    static void SetLogCallback(std::function<void(const std::string&)> cb) {
+        s_logFn = std::move(cb);
+    }
+
+    // Exposed for StaticLog helper in .cpp
+    static std::function<void(const std::string&)> s_logFn;
 
 private:
     static constexpr const wchar_t* kPipeName = L"\\\\.\\pipe\\TcpRedirectorAuth";

@@ -267,11 +267,37 @@ private:
         Log(domain::LogLevel::Debug, "m_proxyAuthRequired=" + std::to_string(m_proxyAuthRequired) +
             " m_kerberosAuth=" + std::to_string(m_kerberosAuth));
 
+        // Resolve proxy host once (reused across retries)
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = IPPROTO_TCP;
+        struct addrinfo* proxyResult = nullptr;
+        if (getaddrinfo(m_proxyHost.c_str(), nullptr, &hints, &proxyResult) != 0 || !proxyResult) {
+            Log(domain::LogLevel::Error, "Failed to resolve proxy: " + m_proxyHost);
+            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+            closesocket(client_sock);
+            return;
+        }
+
+        sockaddr_in proxy_addr;
+        memset(&proxy_addr, 0, sizeof(proxy_addr));
+        proxy_addr.sin_family = AF_INET;
+        proxy_addr.sin_port = htons(m_proxyPort);
+        proxy_addr.sin_addr = ((struct sockaddr_in*)proxyResult->ai_addr)->sin_addr;
+
+        // v1.1.1: retry loop for gateway errors (504/502)
+        int gatewayRetries = 0;
+        const int MAX_GATEWAY_RETRIES = 3;
+
+    retry_proxy_connect:
         SOCKET proxy_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (proxy_sock == INVALID_SOCKET) {
             Log(domain::LogLevel::Error, "Failed to create proxy socket");
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
+            freeaddrinfo(proxyResult);
             return;
         }
 
@@ -285,35 +311,13 @@ private:
         setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char*)&bufsize, sizeof(bufsize));
         setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char*)&bufsize, sizeof(bufsize));
 
-        // Resolve proxy host via getaddrinfo
-        struct addrinfo hints;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-        struct addrinfo* result = nullptr;
-        if (getaddrinfo(m_proxyHost.c_str(), nullptr, &hints, &result) != 0 || !result) {
-            Log(domain::LogLevel::Error, "Failed to resolve proxy: " + m_proxyHost);
-            if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
-            closesocket(client_sock);
-            closesocket(proxy_sock);
-            if (result) freeaddrinfo(result);
-            return;
-        }
-
-        sockaddr_in proxy_addr;
-        memset(&proxy_addr, 0, sizeof(proxy_addr));
-        proxy_addr.sin_family = AF_INET;
-        proxy_addr.sin_port = htons(m_proxyPort);
-        proxy_addr.sin_addr = ((struct sockaddr_in*)result->ai_addr)->sin_addr;
-        freeaddrinfo(result);
-
         auto t_connect_start = std::chrono::steady_clock::now();
         if (connect(proxy_sock, (sockaddr*)&proxy_addr, sizeof(proxy_addr)) != 0) {
             Log(domain::LogLevel::Error, "connect to proxy failed: " + std::to_string(WSAGetLastError()));
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
+            freeaddrinfo(proxyResult);
             return;
         }
 
@@ -376,6 +380,7 @@ private:
             if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
             closesocket(proxy_sock);
+            freeaddrinfo(proxyResult);
             return;
         }
 
@@ -387,6 +392,7 @@ private:
             if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
             closesocket(proxy_sock);
+            freeaddrinfo(proxyResult);
             return;
         }
         resp_buf[bytes] = '\0';
@@ -425,6 +431,8 @@ private:
                        (const char*)&keepalive, sizeof(keepalive));
             setsockopt(client_sock, SOL_SOCKET, SO_KEEPALIVE,
                        (const char*)&keepalive, sizeof(keepalive));
+
+            freeaddrinfo(proxyResult);
         }
         else if (authContextActive && m_authProvider &&
                  m_authProvider->GetType() == domain::ports::AuthProviderType::KerberosAgent &&
@@ -437,6 +445,7 @@ private:
                 m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
+                freeaddrinfo(proxyResult);
                 return;
             }
             Log(domain::LogLevel::Debug, "Got 407 challenge, continuing context...");
@@ -447,6 +456,7 @@ private:
                 m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
+                freeaddrinfo(proxyResult);
                 return;
             }
             if (contResult.token.empty()) {
@@ -455,6 +465,7 @@ private:
                 m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
+                freeaddrinfo(proxyResult);
                 return;
             }
             m_lastAuthToken = contResult.token;
@@ -465,17 +476,36 @@ private:
                 m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
                 closesocket(proxy_sock);
+                freeaddrinfo(proxyResult);
                 return;
             }
             Log(domain::LogLevel::Debug, "Retry CONNECT with new token (attempt " + std::to_string(authRetries) + ")");
             goto retry_connect;
         }
         else {
-            Log(domain::LogLevel::Warn, "CONNECT failed: " + std::string(resp_buf, 100));
+            std::string respStr(resp_buf, bytes);
+            bool isGatewayError = (respStr.find("504") != std::string::npos ||
+                                   respStr.find("502") != std::string::npos);
+
+            if (isGatewayError && gatewayRetries < MAX_GATEWAY_RETRIES) {
+                gatewayRetries++;
+                Log(domain::LogLevel::Debug, "Proxy gateway error (504/502), retry " +
+                    std::to_string(gatewayRetries) + "/" + std::to_string(MAX_GATEWAY_RETRIES));
+                if (authContextActive && m_authProvider) {
+                    m_authProvider->CloseContext(authContextId);
+                    authContextActive = false;
+                }
+                closesocket(proxy_sock);
+                Sleep(500);
+                goto retry_proxy_connect;
+            }
+
+            Log(domain::LogLevel::Warn, "CONNECT failed: " + respStr.substr(0, 100));
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
             closesocket(proxy_sock);
+            freeaddrinfo(proxyResult);
             return;
         }
 

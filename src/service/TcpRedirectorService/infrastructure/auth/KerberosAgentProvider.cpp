@@ -5,6 +5,17 @@
 namespace tcp_redirector {
 namespace infrastructure {
 
+// Static members
+std::atomic<bool> KerberosAgentProvider::s_launchInProgress{false};
+std::function<void(const std::string&)> KerberosAgentProvider::s_logFn;
+
+// Helper: log via static callback if set
+static void StaticLog(const std::string& msg) {
+    if (KerberosAgentProvider::s_logFn) {
+        KerberosAgentProvider::s_logFn(msg);
+    }
+}
+
 KerberosAgentProvider::KerberosAgentProvider() {
     // Запускаем keepalive-поток
     m_keepaliveThread = std::thread([this]() { KeepaliveLoop(); });
@@ -198,7 +209,14 @@ void KerberosAgentProvider::KeepaliveLoop() {
 
         if (!m_connected.load(std::memory_order_acquire)) {
             // Попытка переподключения
-            ConnectToAgent();
+            if (!ConnectToAgent()) {
+                // v1.1.1: try to launch AuthAgent from keepalive too
+                // (not just from EnsureConnected on first request)
+                LaunchAuthAgentInUserSession();
+                // Wait for agent to initialize its pipe, then retry
+                Sleep(2000);
+                ConnectToAgent();
+            }
             continue;
         }
 
@@ -220,24 +238,24 @@ void KerberosAgentProvider::EnsureConnected() {
         if (!ConnectToAgent()) {
             // v1.1.1: try to launch AuthAgent in user session
             LaunchAuthAgentInUserSession();
-            // Retry connection after launch
+            // Wait for agent to initialize its pipe, then retry
+            Sleep(2000);
             ConnectToAgent();
         }
     }
 }
 
 // ============================================================================
-// AuthAgent auto-launch (WTS API)
+// AuthAgent auto-launch (WTS API) — v1.1.1 with full diagnostics
 // ============================================================================
-
-std::atomic<bool> KerberosAgentProvider::s_launchInProgress{false};
 
 bool KerberosAgentProvider::LaunchAuthAgentInUserSession() {
     // Rate-limit: only one launch attempt at a time
     bool expected = false;
     if (!s_launchInProgress.compare_exchange_strong(expected, true,
                                                      std::memory_order_acquire)) {
-        return false;  // another thread is already launching
+        StaticLog("[AuthAgent] launch already in progress, skipping");
+        return false;
     }
 
     bool result = false;
@@ -245,30 +263,48 @@ bool KerberosAgentProvider::LaunchAuthAgentInUserSession() {
     HANDLE dupToken = nullptr;
     LPVOID envBlock = nullptr;
 
-    // Get active console session
+    // Step 1: Get active console session
     DWORD sessionId = WTSGetActiveConsoleSessionId();
     if (sessionId == 0xFFFFFFFF) {
+        StaticLog("[AuthAgent] launch failed: no active console session (WTSGetActiveConsoleSessionId returned 0xFFFFFFFF)");
         goto cleanup;
     }
+    StaticLog("[AuthAgent] active console session: " + std::to_string(sessionId));
 
+    // Step 2: Query user token
     if (!WTSQueryUserToken(sessionId, &userToken)) {
+        DWORD err = GetLastError();
+        StaticLog("[AuthAgent] launch failed: WTSQueryUserToken error " + std::to_string(err));
         goto cleanup;
     }
 
-    // Duplicate token for CreateProcessAsUser
-    if (!DuplicateTokenEx(userToken, TOKEN_ALL_ACCESS, nullptr,
-                          SecurityImpersonation, TokenPrimary, &dupToken)) {
+    // Step 3: Duplicate token with minimal required rights
+    // (was TOKEN_ALL_ACCESS — too broad, may fail on restricted tokens)
+    if (!DuplicateTokenEx(userToken,
+                          TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY,
+                          nullptr, SecurityImpersonation, TokenPrimary, &dupToken)) {
+        DWORD err = GetLastError();
+        StaticLog("[AuthAgent] launch failed: DuplicateTokenEx error " + std::to_string(err));
         goto cleanup;
     }
 
-    // Create environment block for the user
+    // Step 4: Create environment block (non-fatal if fails)
     if (!CreateEnvironmentBlock(&envBlock, dupToken, FALSE)) {
+        DWORD err = GetLastError();
+        StaticLog("[AuthAgent] CreateEnvironmentBlock failed (non-fatal): " + std::to_string(err));
         envBlock = nullptr;  // proceed without custom environment
     }
 
+    // Step 5: Determine agent path dynamically (relative to service executable)
     {
-        wchar_t cmdLine[] = L"C:\\Program Files\\TcpRedirector\\TcpRedirectorAuthAgent.exe";
-        wchar_t workDir[] = L"C:\\Program Files\\TcpRedirector";
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring dir(exePath);
+        size_t pos = dir.find_last_of(L"\\/");
+        if (pos != std::wstring::npos) {
+            dir = dir.substr(0, pos + 1);
+        }
+        std::wstring agentPath = dir + L"TcpRedirectorAuthAgent.exe";
 
         STARTUPINFOW si = {};
         si.cb = sizeof(si);
@@ -279,18 +315,30 @@ bool KerberosAgentProvider::LaunchAuthAgentInUserSession() {
         if (CreateProcessAsUserW(
                 dupToken,
                 nullptr,           // app name (use cmdLine)
-                cmdLine,           // command line
+                agentPath.data(),  // command line
                 nullptr,           // process attributes
                 nullptr,           // thread attributes
                 FALSE,             // inherit handles
                 CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS,
                 envBlock,          // environment
-                workDir,           // working directory
+                dir.c_str(),       // working directory
                 &si,
                 &pi)) {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
             result = true;
+
+            // Convert wide path to UTF-8 for logging
+            int len = WideCharToMultiByte(CP_UTF8, 0, agentPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            std::string agentPathUtf8(len, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, agentPath.c_str(), -1, &agentPathUtf8[0], len, nullptr, nullptr);
+            while (!agentPathUtf8.empty() && agentPathUtf8.back() == '\0') agentPathUtf8.pop_back();
+
+            StaticLog("[AuthAgent] launched successfully in session " + std::to_string(sessionId) +
+                      ": " + agentPathUtf8);
+        } else {
+            DWORD err = GetLastError();
+            StaticLog("[AuthAgent] launch failed: CreateProcessAsUserW error " + std::to_string(err));
         }
     }
 
@@ -347,15 +395,13 @@ void KerberosAgentProvider::SendMessage(HANDLE pipe, const std::string& msg) {
 std::string KerberosAgentProvider::ReadMessage(HANDLE pipe) {
     char buf[65536];
     DWORD bytesRead = 0;
-
     if (!ReadFile(pipe, buf, sizeof(buf) - 1, &bytesRead, nullptr)) {
         DWORD err = GetLastError();
-        if (err == ERROR_BROKEN_PIPE) {
+        if (err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED) {
             DisconnectFromAgent();
         }
         throw std::runtime_error("ReadFile failed: " + std::to_string(err));
     }
-
     buf[bytesRead] = '\0';
     return std::string(buf, bytesRead);
 }
