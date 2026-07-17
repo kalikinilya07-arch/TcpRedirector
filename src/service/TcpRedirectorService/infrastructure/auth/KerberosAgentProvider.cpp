@@ -7,6 +7,7 @@ namespace infrastructure {
 
 // Static members
 std::atomic<bool> KerberosAgentProvider::s_launchInProgress{false};
+std::atomic<int64_t> KerberosAgentProvider::s_lastLaunchTime{0};
 std::function<void(const std::string&)> KerberosAgentProvider::s_logFn;
 
 // Helper: log via static callback if set
@@ -132,22 +133,27 @@ void KerberosAgentProvider::Reset() {
 // ============================================================================
 
 bool KerberosAgentProvider::ConnectToAgent() {
-    std::lock_guard<std::mutex> lock(m_pipeMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_pipeMutex);
 
     if (m_pipe != INVALID_HANDLE_VALUE) {
         return true;  // Уже подключены
     }
 
     // Ожидаем доступности pipe (до 5 секунд)
+    DWORD lastErr = 0;
     for (int attempt = 0; attempt < 10; ++attempt) {
         if (!WaitNamedPipeW(kPipeName, kPipeTimeout)) {
-            if (GetLastError() == ERROR_SEM_TIMEOUT) {
+            lastErr = GetLastError();
+            if (lastErr == ERROR_SEM_TIMEOUT) {
+                StaticLog("[ConnectToAgent] attempt " + std::to_string(attempt) + ": pipe exists but busy, retrying...");
                 continue;  // Pipe существует, но занят — ждём
             }
             // Pipe не существует — ждём и пробуем снова
+            StaticLog("[ConnectToAgent] attempt " + std::to_string(attempt) + ": pipe not found (err=" + std::to_string(lastErr) + "), sleeping 500ms...");
             Sleep(500);
             continue;
         }
+        StaticLog("[ConnectToAgent] attempt " + std::to_string(attempt) + ": WaitNamedPipeW OK");
         break;
     }
 
@@ -161,12 +167,16 @@ bool KerberosAgentProvider::ConnectToAgent() {
         nullptr);       // No template
 
     if (pipe == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        StaticLog("[ConnectToAgent] CreateFileW failed: err=" + std::to_string(err));
         return false;
     }
+    StaticLog("[ConnectToAgent] CreateFileW OK");
 
     // Установить режим сообщений
     DWORD mode = PIPE_READMODE_MESSAGE;
     if (!SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr)) {
+        StaticLog("[ConnectToAgent] SetNamedPipeHandleState failed: err=" + std::to_string(GetLastError()));
         CloseHandle(pipe);
         return false;
     }
@@ -183,10 +193,14 @@ bool KerberosAgentProvider::ConnectToAgent() {
             m_version.store(resp["result"]["version"].get<int>(),
                            std::memory_order_release);
             m_connected.store(true, std::memory_order_release);
+            StaticLog("[ConnectToAgent] version negotiation OK, connected");
             return true;
         }
+        StaticLog("[ConnectToAgent] version negotiation: unexpected response");
+    } catch (const std::exception& e) {
+        StaticLog("[ConnectToAgent] version negotiation exception: " + std::string(e.what()));
     } catch (...) {
-        // Version negotiation failed
+        StaticLog("[ConnectToAgent] version negotiation: unknown exception");
     }
 
     CloseHandle(m_pipe);
@@ -195,7 +209,7 @@ bool KerberosAgentProvider::ConnectToAgent() {
 }
 
 void KerberosAgentProvider::DisconnectFromAgent() {
-    std::lock_guard<std::mutex> lock(m_pipeMutex);
+    std::lock_guard<std::recursive_mutex> lock(m_pipeMutex);
     m_connected.store(false, std::memory_order_release);
     if (m_pipe != INVALID_HANDLE_VALUE) {
         CloseHandle(m_pipe);
@@ -210,12 +224,14 @@ void KerberosAgentProvider::KeepaliveLoop() {
         if (!m_connected.load(std::memory_order_acquire)) {
             // Попытка переподключения
             if (!ConnectToAgent()) {
-                // v1.1.1: try to launch AuthAgent from keepalive too
-                // (not just from EnsureConnected on first request)
+                // Launch AuthAgent and poll for pipe readiness
                 LaunchAuthAgentInUserSession();
-                // Wait for agent to initialize its pipe, then retry
-                Sleep(2000);
-                ConnectToAgent();
+                for (int attempt = 0; attempt < 20; ++attempt) {
+                    Sleep(500);
+                    if (ConnectToAgent()) {
+                        break;  // Connected!
+                    }
+                }
             }
             continue;
         }
@@ -234,15 +250,30 @@ void KerberosAgentProvider::KeepaliveLoop() {
 }
 
 void KerberosAgentProvider::EnsureConnected() {
-    if (!m_connected.load(std::memory_order_acquire)) {
-        if (!ConnectToAgent()) {
-            // v1.1.1: try to launch AuthAgent in user session
-            LaunchAuthAgentInUserSession();
-            // Wait for agent to initialize its pipe, then retry
-            Sleep(2000);
-            ConnectToAgent();
+    if (m_connected.load(std::memory_order_acquire)) {
+        return;  // Already connected
+    }
+
+    StaticLog("[EnsureConnected] not connected, trying ConnectToAgent...");
+    if (ConnectToAgent()) {
+        StaticLog("[EnsureConnected] ConnectToAgent succeeded immediately");
+        return;  // Connected successfully
+    }
+
+    // Launch AuthAgent and poll for pipe readiness (up to 10 seconds)
+    StaticLog("[EnsureConnected] launching AuthAgent...");
+    LaunchAuthAgentInUserSession();
+
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        Sleep(500);
+        StaticLog("[EnsureConnected] poll attempt " + std::to_string(attempt + 1) + "/20...");
+        if (ConnectToAgent()) {
+            StaticLog("[EnsureConnected] connected on poll attempt " + std::to_string(attempt + 1));
+            return;  // Connected!
         }
     }
+    // After 10 seconds of retries, give up — m_connected stays false
+    StaticLog("[EnsureConnected] FAILED after 20 poll attempts (10 seconds)");
 }
 
 // ============================================================================
@@ -250,11 +281,20 @@ void KerberosAgentProvider::EnsureConnected() {
 // ============================================================================
 
 bool KerberosAgentProvider::LaunchAuthAgentInUserSession() {
+    // Cooldown: don't launch more than once every 10 seconds
+    {
+        auto now = std::chrono::steady_clock::now();
+        int64_t nowNs = now.time_since_epoch().count();
+        int64_t lastNs = s_lastLaunchTime.load(std::memory_order_relaxed);
+        if (lastNs > 0 && (nowNs - lastNs) < 10'000'000'000LL) {  // 10 seconds in ns
+            return false;  // Cooldown active — skip silently
+        }
+    }
+
     // Rate-limit: only one launch attempt at a time
     bool expected = false;
     if (!s_launchInProgress.compare_exchange_strong(expected, true,
                                                      std::memory_order_acquire)) {
-        StaticLog("[AuthAgent] launch already in progress, skipping");
         return false;
     }
 
@@ -354,6 +394,11 @@ cleanup:
     }
 
     s_launchInProgress.store(false, std::memory_order_release);
+    if (result) {
+        s_lastLaunchTime.store(
+            std::chrono::steady_clock::now().time_since_epoch().count(),
+            std::memory_order_relaxed);
+    }
     return result;
 }
 
@@ -364,6 +409,12 @@ cleanup:
 nlohmann::json KerberosAgentProvider::Call(
     const std::string& method,
     const nlohmann::json& params) {
+
+    // Serialize all pipe I/O: multiple ConnectionHandler threads may call
+    // CreateContext/ContinueContext concurrently, and without this lock their
+    // SendMessage/ReadMessage pairs would interleave on the shared pipe,
+    // causing JSON parse errors and hung threads.
+    std::lock_guard<std::recursive_mutex> lock(m_pipeMutex);
 
     nlohmann::json req;
     req["jsonrpc"] = "2.0";
@@ -388,8 +439,8 @@ void KerberosAgentProvider::SendMessage(HANDLE pipe, const std::string& msg) {
         throw std::runtime_error("WriteFile failed: " +
                                  std::to_string(GetLastError()));
     }
-    // Flush to ensure message boundary
-    FlushFileBuffers(pipe);
+    // Message-mode pipe ensures message boundary; FlushFileBuffers is unnecessary
+    // and adds latency to every IPC call (create_context, continue_context).
 }
 
 std::string KerberosAgentProvider::ReadMessage(HANDLE pipe) {
@@ -397,8 +448,11 @@ std::string KerberosAgentProvider::ReadMessage(HANDLE pipe) {
     DWORD bytesRead = 0;
     if (!ReadFile(pipe, buf, sizeof(buf) - 1, &bytesRead, nullptr)) {
         DWORD err = GetLastError();
+        // NOTE: Do NOT call DisconnectFromAgent() here — it takes m_pipeMutex
+        // which may already be held by ConnectToAgent(). The caller is
+        // responsible for cleanup (ConnectToAgent closes m_pipe on failure).
         if (err == ERROR_BROKEN_PIPE || err == ERROR_PIPE_NOT_CONNECTED) {
-            DisconnectFromAgent();
+            m_connected.store(false, std::memory_order_release);
         }
         throw std::runtime_error("ReadFile failed: " + std::to_string(err));
     }

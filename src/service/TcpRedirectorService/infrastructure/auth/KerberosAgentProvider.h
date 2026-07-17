@@ -53,6 +53,12 @@ public:
         s_logFn = std::move(cb);
     }
 
+    /// Proactively launch and connect to AuthAgent (call at service startup).
+    /// Non-blocking — returns immediately; agent will be ready when first auth request arrives.
+    void WarmUp() {
+        EnsureConnected();
+    }
+
     // Exposed for StaticLog helper in .cpp
     static std::function<void(const std::string&)> s_logFn;
 
@@ -71,6 +77,7 @@ private:
     // ---- AuthAgent auto-launch ----
     static bool LaunchAuthAgentInUserSession();
     static std::atomic<bool> s_launchInProgress;
+    static std::atomic<int64_t> s_lastLaunchTime;  // nanoseconds since epoch
 
     // ---- JSON-RPC helpers ----
     nlohmann::json Call(const std::string& method,
@@ -80,7 +87,7 @@ private:
 
     // ---- State ----
     HANDLE m_pipe = INVALID_HANDLE_VALUE;
-    std::mutex m_pipeMutex;
+    std::recursive_mutex m_pipeMutex;
     std::atomic<bool> m_connected{false};
     std::atomic<bool> m_running{true};
     std::atomic<int> m_version{0};  // согласованная версия протокола

@@ -116,6 +116,8 @@ public:
                         [this](const std::string& msg) {
                             m_logger->Info("auth-agent", msg);
                         });
+                    // Proactively launch AuthAgent so it's ready before first connection
+                    kerberosProvider->WarmUp();
                     m_authProvider = std::move(kerberosProvider);
                     m_logger->Info("service", "Authentication: KerberosAgent (mode=" +
                         std::to_string(static_cast<int>(authMode)) + ")");
@@ -157,16 +159,12 @@ public:
         // Initialize WinDivert capture (DST-modification mode)
         {
             auto capture = std::make_unique<infrastructure::WinDivertCapture>();
-            auto appCfg = m_configManager->GetConfig();
-            capture->SetTargetProcess(appCfg.app.exePath);
             capture->SetConnectionTable(m_connTable.get());
             capture->SetRelayPort(relayPort);
             capture->SetProxyConfig(
                 infrastructure::WideToUtf8(proxyCfg.host),
                 proxyCfg.port);
-            std::wstring exeName = appCfg.GetExeName();
-            std::string exeNameUtf8 = infrastructure::WideToUtf8(exeName);
-            m_logger->Info("service", "Target process: " + exeNameUtf8);
+            m_logger->Info("service", "Target processes configured via rules");
             capture->SetLogSink(m_logger.get());
             capture->SetConnectionMonitor(m_connectionTracker.get());
             capture->SetRuleEngine(m_ruleEngine.get());
@@ -262,6 +260,30 @@ public:
                 }
                 if (m_relayServer) {
                     m_relayServer->SetProxyConfig(proxyCfg, 1);
+                }
+                // Re-initialize auth provider if auth settings changed
+                {
+                    auto cfg = m_configManager->GetConfig();
+                    if (cfg.auth.enabled) {
+                        auto authMode = cfg.auth.authMode;
+                        if (authMode == infrastructure::AuthenticationMode::KerberosOnly ||
+                            authMode == infrastructure::AuthenticationMode::KerberosPreferred) {
+                            // Only create if not already set, or if mode changed
+                            if (!m_authProvider || m_authProvider->GetType() != domain::ports::AuthProviderType::KerberosAgent) {
+                                auto kerberosProvider = std::make_unique<infrastructure::KerberosAgentProvider>();
+                                infrastructure::KerberosAgentProvider::SetLogCallback(
+                                    [this](const std::string& msg) {
+                                        m_logger->Info("auth-agent", msg);
+                                    });
+                                kerberosProvider->WarmUp();
+                                m_authProvider = std::move(kerberosProvider);
+                                static_cast<infrastructure::TcpRelayServer*>(m_relayServer.get())
+                                    ->SetAuthenticationProvider(m_authProvider.get());
+                                m_logger->Info("service", "Authentication: KerberosAgent (mode=" +
+                                    std::to_string(static_cast<int>(authMode)) + ") [reload]");
+                            }
+                        }
+                    }
                 }
                 m_logger->Info("service", "Configuration reloaded");
                 return true;

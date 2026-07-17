@@ -264,8 +264,10 @@ private:
         delete ctx;
 
         // DEBUG: проверим, какие флаги реально приходят
-        Log(domain::LogLevel::Debug, "m_proxyAuthRequired=" + std::to_string(m_proxyAuthRequired) +
-            " m_kerberosAuth=" + std::to_string(m_kerberosAuth));
+        Log(domain::LogLevel::Info, "[RELAY] ConnectionHandler: auth_required=" + std::to_string(m_proxyAuthRequired) +
+            " kerberos=" + std::to_string(m_kerberosAuth) +
+            " auth_provider=" + std::to_string(m_authProvider != nullptr) +
+            " dest=" + std::to_string(dest_ip) + ":" + std::to_string(dest_port));
 
         // Resolve proxy host once (reused across retries)
         struct addrinfo hints;
@@ -311,6 +313,12 @@ private:
         setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, (const char*)&bufsize, sizeof(bufsize));
         setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, (const char*)&bufsize, sizeof(bufsize));
 
+        // TCP_NODELAY: отключаем алгоритм Нейгла для минимальной задержки
+        // (иначе мелкие пакеты TLS handshake и HTTP запросов задерживаются до 200 мс)
+        int nodelay = 1;
+        setsockopt(proxy_sock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+        setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
+
         auto t_connect_start = std::chrono::steady_clock::now();
         if (connect(proxy_sock, (sockaddr*)&proxy_addr, sizeof(proxy_addr)) != 0) {
             Log(domain::LogLevel::Error, "connect to proxy failed: " + std::to_string(WSAGetLastError()));
@@ -345,21 +353,25 @@ private:
             if (!authContextActive) {
                 // Create new context for this CONNECT (preemptive authentication)
                 std::string spn = "HTTP/" + m_proxyHost;
+                Log(domain::LogLevel::Info, "[RELAY] Creating auth context for SPN=" + spn);
                 auto ctxResult = m_authProvider->CreateContext(spn);
                 if (ctxResult.success) {
                     authContextId = ctxResult.context_id;
                     authContextActive = true;
+                    Log(domain::LogLevel::Info, "[RELAY] Auth context created: id=" + std::to_string(authContextId) +
+                        " needs_continue=" + std::to_string(ctxResult.needs_continue) +
+                        " token_size=" + std::to_string(ctxResult.token.size()));
                     if (m_authProvider->GetType() == domain::ports::AuthProviderType::Basic) {
                         connect_req += "Proxy-Authorization: Basic " + ctxResult.token + "\r\n";
                     } else {
                         connect_req += "Proxy-Authorization: Negotiate " + ctxResult.token + "\r\n";
                     }
                 } else {
+                    Log(domain::LogLevel::Warn, "[RELAY] Auth provider failed: " + ctxResult.error_message);
                     // v1.1.1: rate-limit warning to 1 per 30 seconds
                     auto now = std::chrono::steady_clock::now();
                     if (now - m_lastAuthWarnTime > std::chrono::seconds(30)) {
                         m_lastAuthWarnTime = now;
-                        Log(domain::LogLevel::Warn, "Auth provider failed: " + ctxResult.error_message);
                     }
                 }
             } else {
@@ -374,8 +386,9 @@ private:
 
         connect_req += "Proxy-Connection: Keep-Alive\r\n\r\n";
 
+        Log(domain::LogLevel::Info, "[RELAY] Sending CONNECT to proxy (" + std::to_string(connect_req.length()) + " bytes)...");
         if (send(proxy_sock, connect_req.c_str(), (int)connect_req.length(), 0) == SOCKET_ERROR) {
-            Log(domain::LogLevel::Error, "send CONNECT failed");
+            Log(domain::LogLevel::Error, "[RELAY] send CONNECT failed: " + std::to_string(WSAGetLastError()));
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
@@ -386,8 +399,9 @@ private:
 
         char resp_buf[4096];
         int bytes = recv(proxy_sock, resp_buf, sizeof(resp_buf) - 1, 0);
+        Log(domain::LogLevel::Info, "[RELAY] CONNECT response: " + std::to_string(bytes) + " bytes: " + std::string(resp_buf, bytes));
         if (bytes <= 0) {
-            Log(domain::LogLevel::Error, "no CONNECT response");
+            Log(domain::LogLevel::Error, "[RELAY] no CONNECT response, bytes=" + std::to_string(bytes));
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             if (authContextActive && m_authProvider) m_authProvider->CloseContext(authContextId);
             closesocket(client_sock);
@@ -412,7 +426,7 @@ private:
             auto t_now = std::chrono::steady_clock::now();
             double latency_ms = std::chrono::duration<double, std::milli>(t_now - t_connect_start).count();
             if (m_connectionMonitor) m_connectionMonitor->RecordLatency(latency_ms);
-            Log(domain::LogLevel::Debug, "CONNECT response: 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
+            Log(domain::LogLevel::Info, "[RELAY] CONNECT 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
 
             // Context destroyed after successful CONNECT
             if (authContextActive && m_authProvider) {
@@ -434,13 +448,85 @@ private:
 
             freeaddrinfo(proxyResult);
         }
-        else if (authContextActive && m_authProvider &&
-                 m_authProvider->GetType() == domain::ports::AuthProviderType::KerberosAgent &&
-                 strstr(resp_buf, "407") != nullptr) {
-            // ---- 407 Proxy Auth Required — continue context ----
-            std::string challenge = infrastructure::Parse407Challenge(resp_buf);
-            if (challenge.empty()) {
-                Log(domain::LogLevel::Warn, "CONNECT failed: 407 без Negotiate challenge");
+        else if (strstr(resp_buf, "407") != nullptr && m_proxyAuthRequired && m_authProvider) {
+            // ---- 407 Proxy Auth Required ----
+            if (authContextActive && m_authProvider->GetType() == domain::ports::AuthProviderType::KerberosAgent) {
+                // Existing context — continue Negotiate
+                std::string challenge = infrastructure::Parse407Challenge(resp_buf);
+                if (challenge.empty()) {
+                    Log(domain::LogLevel::Warn, "CONNECT failed: 407 без Negotiate challenge");
+                    if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                    m_authProvider->CloseContext(authContextId);
+                    closesocket(client_sock);
+                    closesocket(proxy_sock);
+                    freeaddrinfo(proxyResult);
+                    return;
+                }
+                Log(domain::LogLevel::Debug, "Got 407 challenge, continuing context...");
+                auto contResult = m_authProvider->ContinueContext(authContextId, challenge);
+                if (!contResult.success) {
+                    Log(domain::LogLevel::Error, "ContinueContext failed: " + contResult.error_message);
+                    if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                    m_authProvider->CloseContext(authContextId);
+                    closesocket(client_sock);
+                    closesocket(proxy_sock);
+                    freeaddrinfo(proxyResult);
+                    return;
+                }
+                if (contResult.token.empty()) {
+                    Log(domain::LogLevel::Warn, "CONNECT failed: empty token after continue");
+                    if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                    m_authProvider->CloseContext(authContextId);
+                    closesocket(client_sock);
+                    closesocket(proxy_sock);
+                    freeaddrinfo(proxyResult);
+                    return;
+                }
+                m_lastAuthToken = contResult.token;
+                authRetries++;
+                if (authRetries > 5) {
+                    Log(domain::LogLevel::Warn, "CONNECT failed: retry limit exceeded");
+                    if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                    m_authProvider->CloseContext(authContextId);
+                    closesocket(client_sock);
+                    closesocket(proxy_sock);
+                    freeaddrinfo(proxyResult);
+                    return;
+                }
+                Log(domain::LogLevel::Debug, "Retry CONNECT with new token (attempt " + std::to_string(authRetries) + ")");
+                goto retry_connect;
+            } else if (!authContextActive) {
+                // No context yet — preemptive auth failed or wasn't attempted.
+                // Try to create context now in response to 407.
+                Log(domain::LogLevel::Debug, "Got 407, creating auth context...");
+                std::string spn = "HTTP/" + m_proxyHost;
+                auto ctxResult = m_authProvider->CreateContext(spn);
+                if (ctxResult.success) {
+                    authContextId = ctxResult.context_id;
+                    authContextActive = true;
+                    m_lastAuthToken = ctxResult.token;
+                    authRetries++;
+                    if (authRetries > 5) {
+                        Log(domain::LogLevel::Warn, "CONNECT failed: retry limit exceeded");
+                        m_authProvider->CloseContext(authContextId);
+                        closesocket(client_sock);
+                        closesocket(proxy_sock);
+                        freeaddrinfo(proxyResult);
+                        return;
+                    }
+                    Log(domain::LogLevel::Debug, "Retry CONNECT with auth token (attempt " + std::to_string(authRetries) + ")");
+                    goto retry_connect;
+                } else {
+                    Log(domain::LogLevel::Warn, "CONNECT failed: 407 but auth provider unavailable: " + ctxResult.error_message);
+                    if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                    closesocket(client_sock);
+                    closesocket(proxy_sock);
+                    freeaddrinfo(proxyResult);
+                    return;
+                }
+            } else {
+                // authContextActive but not KerberosAgent (e.g., Basic auth was rejected)
+                Log(domain::LogLevel::Warn, "CONNECT failed: 407 — authentication rejected");
                 if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
                 m_authProvider->CloseContext(authContextId);
                 closesocket(client_sock);
@@ -448,39 +534,6 @@ private:
                 freeaddrinfo(proxyResult);
                 return;
             }
-            Log(domain::LogLevel::Debug, "Got 407 challenge, continuing context...");
-            auto contResult = m_authProvider->ContinueContext(authContextId, challenge);
-            if (!contResult.success) {
-                Log(domain::LogLevel::Error, "ContinueContext failed: " + contResult.error_message);
-                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
-                m_authProvider->CloseContext(authContextId);
-                closesocket(client_sock);
-                closesocket(proxy_sock);
-                freeaddrinfo(proxyResult);
-                return;
-            }
-            if (contResult.token.empty()) {
-                Log(domain::LogLevel::Warn, "CONNECT failed: empty token after continue");
-                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
-                m_authProvider->CloseContext(authContextId);
-                closesocket(client_sock);
-                closesocket(proxy_sock);
-                freeaddrinfo(proxyResult);
-                return;
-            }
-            m_lastAuthToken = contResult.token;
-            authRetries++;
-            if (authRetries > 5) {
-                Log(domain::LogLevel::Warn, "CONNECT failed: retry limit exceeded");
-                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
-                m_authProvider->CloseContext(authContextId);
-                closesocket(client_sock);
-                closesocket(proxy_sock);
-                freeaddrinfo(proxyResult);
-                return;
-            }
-            Log(domain::LogLevel::Debug, "Retry CONNECT with new token (attempt " + std::to_string(authRetries) + ")");
-            goto retry_connect;
         }
         else {
             std::string respStr(resp_buf, bytes);
@@ -509,7 +562,7 @@ private:
             return;
         }
 
-        Log(domain::LogLevel::Debug, std::string(ip_str) + ":" +
+        Log(domain::LogLevel::Info, "[RELAY] Starting bridge: " + std::string(ip_str) + ":" +
             std::to_string(dest_port) + " -> " + m_proxyHost + ":" +
             std::to_string(m_proxyPort));
 
@@ -519,6 +572,9 @@ private:
     void StartBridge(SOCKET client_sock, SOCKET proxy_sock) {
         // H4: track active pairs so Stop() can wait for graceful drain.
         m_activePairs.fetch_add(1, std::memory_order_relaxed);
+
+        Log(domain::LogLevel::Info, "[BRIDGE] Start: client_sock=" + std::to_string((uint64_t)client_sock) +
+            " proxy_sock=" + std::to_string((uint64_t)proxy_sock));
 
         auto* pair = new RelayPair();
         pair->sock_client = client_sock;
@@ -530,16 +586,21 @@ private:
         up_cfg->from = client_sock;
         up_cfg->to = proxy_sock;
         up_cfg->counter = &m_totalRxBytes;  // client→proxy = RX
+        up_cfg->server = this;
+        up_cfg->direction = "UP";
 
         auto* dn_cfg = new OneWayConfig();
         dn_cfg->pair = pair;
         dn_cfg->from = proxy_sock;
         dn_cfg->to = client_sock;
         dn_cfg->counter = &m_totalTxBytes;  // proxy→client = TX
+        dn_cfg->server = this;
+        dn_cfg->direction = "DN";
 
         HANDLE up_thread = CreateThread(nullptr, 0, &TcpRelayServer::OneWayRelayThunk,
                                          up_cfg, 0, nullptr);
         if (!up_thread) {
+            Log(domain::LogLevel::Error, "[BRIDGE] Failed to create UP thread");
             delete up_cfg;
             delete dn_cfg;
             delete pair;
@@ -549,12 +610,18 @@ private:
             return;
         }
 
-        OneWayRelay(dn_cfg);
+        try {
+            OneWayRelay(dn_cfg);
+        } catch (...) {
+            Log(domain::LogLevel::Error, "[BRIDGE] DN relay exception, cleaning up");
+            // UP thread still holds a reference to pair; it will clean up when done.
+            // But we must wait for it and close the handle.
+        }
 
+        Log(domain::LogLevel::Info, "[BRIDGE] DN relay ended, waiting for UP thread...");
         WaitForSingleObject(up_thread, INFINITE);
         CloseHandle(up_thread);
-        // pair может быть уже удалён OneWayRelay (refs==0) —
-        // не обращаемся к нему после WaitForSingleObject
+        Log(domain::LogLevel::Info, "[BRIDGE] Both relays ended, bridge closed");
 
         m_activePairs.fetch_sub(1, std::memory_order_relaxed);
     }
@@ -564,6 +631,8 @@ private:
         SOCKET from;
         SOCKET to;
         std::atomic<uint64_t>* counter;  // куда аккумулировать байты (null = не аккумулировать)
+        TcpRelayServer* server;          // для логирования (nullable)
+        const char* direction;           // "UP" или "DN"
     };
 
     static DWORD WINAPI OneWayRelayThunk(LPVOID arg) {
@@ -576,23 +645,34 @@ private:
         SOCKET from = cfg->from;
         SOCKET to = cfg->to;
         std::atomic<uint64_t>* counter = cfg->counter;  // save before cfg deleted
+        TcpRelayServer* server = cfg->server;            // for logging
+        const char* direction = cfg->direction;
         delete cfg;
 
         uint64_t total_bytes = 0;
         char buf[131072];
 
+        auto bridgeLog = [&](const std::string& msg) {
+            if (server) {
+                server->Log(domain::LogLevel::Info,
+                    std::string("[BRIDGE-") + direction + "] " + msg);
+            }
+        };
+
         int len;
         while ((len = recv(from, buf, sizeof(buf), 0)) > 0) {
+            bridgeLog("recv " + std::to_string(len) + " bytes, forwarding...");
             int sent = 0;
             while (sent < len) {
                 int n = send(to, buf + sent, len - sent, 0);
                 if (n == SOCKET_ERROR) {
+                    int err = WSAGetLastError();
+                    bridgeLog("send error " + std::to_string(err) + " after " + std::to_string(total_bytes) + " bytes, shutting down");
                     // Accumulate bytes before pair cleanup
                     if (counter)
                         counter->fetch_add(total_bytes, std::memory_order_relaxed);
                     // M1: shutdown only the forward direction (SD_SEND),
                     // let the sibling thread finish its direction gracefully.
-                    // Data still in flight from the other direction is preserved.
                     shutdown(to, SD_SEND);
                     if (InterlockedDecrement(&pair->refs) == 0) {
                         closesocket(pair->sock_client);
@@ -604,6 +684,15 @@ private:
                 sent += n;
             }
             total_bytes += len;
+            bridgeLog("forwarded " + std::to_string(len) + " bytes, total=" + std::to_string(total_bytes));
+        }
+
+        // recv returned <= 0
+        if (len == 0) {
+            bridgeLog("recv=0 (peer closed), total bytes=" + std::to_string(total_bytes));
+        } else {
+            int err = WSAGetLastError();
+            bridgeLog("recv error " + std::to_string(err) + ", total bytes=" + std::to_string(total_bytes));
         }
 
         // Normal completion — accumulate before pair cleanup
