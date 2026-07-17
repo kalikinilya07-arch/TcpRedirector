@@ -70,14 +70,14 @@ public partial class StatsViewModel : ObservableObject
             TotalRx = FormatBytes(stats.TotalRxBytes);
             TotalTx = FormatBytes(stats.TotalTxBytes);
 
-            // Connection rate: delta active per minute (approximate from polling interval)
+            // Connection rate: new connections per minute (clamped to non-negative)
             var nowSec = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
             if (_prevConnRateTime > 0) {
                 double dt = nowSec - _prevConnRateTime;
                 if (dt > 0.1) {
                     double ratePerSec = (double)(int)(stats.ActiveConnections - _prevActive) / dt;
-                    double ratePerMin = ratePerSec * 60.0;
-                    ConnectionRate = $"{(ratePerMin >= 0 ? "+" : "")}{ratePerMin:F0}/min";
+                    double ratePerMin = Math.Max(0, ratePerSec * 60.0);
+                    ConnectionRate = $"{ratePerMin:F0}/min";
                 }
             }
             _prevActive = stats.ActiveConnections;

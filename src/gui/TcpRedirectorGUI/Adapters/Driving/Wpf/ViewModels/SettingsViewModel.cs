@@ -37,23 +37,37 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _authRequired;
 
     // ── Auth ─────────────────────────────────────────
-    // Kerberos and Basic auth are mutually exclusive:
-    //  - Enabling Kerberos auto-enables AuthRequired
-    //  - Disabling AuthRequired auto-disables Kerberos
+    // Auth mode: 0 = Basic (login/password), 1 = Kerberos (SSPI Negotiate)
+    // Basic and Kerberos are mutually exclusive via ComboBox.
+    // KerberosEnabled is kept for backward compat with config.json.
     [ObservableProperty] private string _login = "";
     [ObservableProperty] private string _password = "";
     [ObservableProperty] private bool _kerberosEnabled;
+
+    /// <summary>0 = Basic, 1 = Kerberos. Bound to ComboBox SelectedIndex.</summary>
+    [ObservableProperty] private int _authModeIndex;
+
+    /// <summary>True when Basic auth is selected (not Kerberos).</summary>
+    public bool IsBasicAuth => AuthRequired && AuthModeIndex == 0;
+
+    partial void OnAuthModeIndexChanged(int value)
+    {
+        KerberosEnabled = value == 1;
+        OnPropertyChanged(nameof(IsBasicAuth));
+    }
 
     partial void OnKerberosEnabledChanged(bool value)
     {
         if (value && !AuthRequired)
             AuthRequired = true;
+        AuthModeIndex = value ? 1 : 0;
     }
 
     partial void OnAuthRequiredChanged(bool value)
     {
         if (!value && KerberosEnabled)
             KerberosEnabled = false;
+        OnPropertyChanged(nameof(IsBasicAuth));
     }
 
     // ── Rules ────────────────────────────────────────
@@ -100,6 +114,7 @@ public partial class SettingsViewModel : ObservableObject
         Port = int.TryParse(portStr, out var p) ? p : 3128;
         AuthRequired = _config.ReadBool("auth", "enabled");
         KerberosEnabled = _config.ReadBool("auth", "kerberos");
+        AuthModeIndex = KerberosEnabled ? 1 : 0;
         Login = _config.ReadString("auth", "username");
         Password = "";
         LogLevelFilter = _config.ReadInt("log", "level", 2);

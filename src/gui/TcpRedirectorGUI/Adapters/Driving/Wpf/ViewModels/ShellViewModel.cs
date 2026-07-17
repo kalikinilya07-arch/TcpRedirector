@@ -30,12 +30,18 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         Settings = settings;
         Stats = stats;
 
-        _pollIntervalMs = Math.Max(500, config.ReadInt("stats", "updateIntervalMs", 1000));
+        _pollIntervalMs = Math.Max(250, config.ReadInt("stats", "updateIntervalMs", 500));
 
         _svc.ConnectionStateChanged += OnConnectionStateChanged;
 
         Settings.LoadFromConfig();
         StatusText = "Configured";
+
+        // Read version from assembly
+        var asm = System.Reflection.Assembly.GetExecutingAssembly();
+        var ver = asm.GetName().Version;
+        VersionText = $"TcpRedirector v{ver?.Major ?? 1}.{ver?.Minor ?? 1}.{ver?.Build ?? 5}";
+
         GuiDiagLog("ShellViewModel ctor: configured");
     }
 
@@ -71,6 +77,9 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string _totalTraffic = "0 B";
+
+    [ObservableProperty]
+    private string _versionText = "TcpRedirector v1.1.5";
 
     // ---- Child ViewModels ----
 
@@ -251,7 +260,13 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                 await Task.Delay(_pollIntervalMs, ct);
                 if (!_svc.IsConnected) continue;
 
-                var stats = await _svc.GetStatsAsync();
+                // Parallel IPC calls for lower latency
+                var statsTask = _svc.GetStatsAsync();
+                var statusTask = _svc.GetServiceStatusAsync();
+
+                await Task.WhenAll(statsTask, statusTask);
+
+                var stats = statsTask.Result;
                 if (stats is not null)
                 {
                     TotalTraffic = FormatBytes(stats.TotalRxBytes + stats.TotalTxBytes);
@@ -264,7 +279,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
                         SvcMsg = $"IPC raw: {raw}";
                 }
 
-                var status = await _svc.GetServiceStatusAsync();
+                var status = statusTask.Result;
                 if (status is not null)
                     SvcStatus = status.Running ? "Running" : "Stopped";
             }

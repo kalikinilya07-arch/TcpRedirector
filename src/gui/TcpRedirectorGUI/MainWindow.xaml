@@ -4,7 +4,7 @@
         xmlns:vm="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels"
         xmlns:ctl="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.Controls"
         Title="TcpRedirector"
-        Height="900" Width="1100" MinHeight="700" MinWidth="900"
+        Width="1100" MinHeight="700" MinWidth="900" SizeToContent="Height"
         Background="#1E1E1E"
         FontFamily="Segoe UI"
         TextElement.Foreground="#CCCCCC"
@@ -105,7 +105,7 @@
              settings + statistics, no scrollbars
              ============================================ -->
         <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
-            <Grid Width="1060" Height="720">
+            <Grid Width="1060" MinHeight="720">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="0.60*"/>
                     <RowDefinition Height="0.40*"/>
@@ -177,26 +177,33 @@
                             </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="80"/>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="80"/>
-                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="180"/>
+                                <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Login:"
+                            <!-- Auth mode selector: ComboBox is more intuitive than two checkboxes -->
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Method:"
                                        VerticalAlignment="Center" Margin="0,1" FontSize="11"/>
-                            <TextBox Grid.Row="0" Grid.Column="1"
-                                     Text="{Binding Settings.Login, Mode=TwoWay}"
-                                     Margin="0,1" FontSize="11"/>
+                            <ComboBox Grid.Row="0" Grid.Column="1"
+                                      SelectedIndex="{Binding Settings.AuthModeIndex, Mode=TwoWay}"
+                                      FontSize="11" Margin="0,1">
+                                <ComboBoxItem Content="Basic (login/pwd)"/>
+                                <ComboBoxItem Content="Kerberos (SSPI)"/>
+                            </ComboBox>
 
-                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Password:"
-                                       VerticalAlignment="Center" Margin="6,1,0,1" FontSize="11"/>
-                            <PasswordBox Grid.Row="0" Grid.Column="3"
-                                         x:Name="PwdBox" Margin="6,1,0,1" FontSize="11"/>
-
-                            <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
-                                      Content="Use Kerberos protocol"
-                                      IsChecked="{Binding Settings.KerberosEnabled, Mode=TwoWay}"
-                                      Margin="0,1" FontSize="11"/>
+                            <!-- Basic auth fields: hidden when Kerberos selected -->
+                            <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3"
+                                        Orientation="Horizontal" Margin="0,2,0,0"
+                                        Visibility="{Binding Settings.IsBasicAuth, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="Login:" VerticalAlignment="Center"
+                                           Margin="0,0,2,0" FontSize="11"/>
+                                <TextBox Text="{Binding Settings.Login, Mode=TwoWay}"
+                                         Width="150" Margin="0,0,6,0" FontSize="11"/>
+                                <TextBlock Text="Password:" VerticalAlignment="Center"
+                                           Margin="0,0,2,0" FontSize="11"/>
+                                <PasswordBox x:Name="PwdBox"
+                                             Width="120" FontSize="11"/>
+                            </StackPanel>
                         </Grid>
                     </Border>
 
@@ -222,7 +229,7 @@
                                       AutoGenerateColumns="False"
                                       CanUserAddRows="False"
                                       FontSize="11"
-                                      MinHeight="40" MaxHeight="140"
+                                      MinHeight="40"
                                       RowHeight="20">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*" IsReadOnly="True"/>
@@ -359,7 +366,7 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="TcpRedirector v1.0.0"
+                <TextBlock Grid.Column="0" Text="{Binding VersionText, Mode=OneWay}"
                            Foreground="White" FontSize="11"
                            VerticalAlignment="Center"/>
                 <TextBlock Grid.Column="1" Text="{Binding StatusText, Mode=OneWay}"
