@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\user\Desktop\TcpRedirector\src\auth-agent\TcpRedirectorAuthAgent\build_auth\CMakeFiles\23abb134b129a08773bd39cea858a6af\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{021A6A10-39C7-386B-8CCA-829E10C5557F}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
