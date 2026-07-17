@@ -106,7 +106,7 @@
         <Grid Grid.Row="1" Margin="8,4,8,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*" MinHeight="200"/>
+                <RowDefinition Height="*" MinHeight="160"/>
             </Grid.RowDefinitions>
 
                 <!-- SETTINGS (compact) -->
@@ -228,7 +228,7 @@
                                       CanUserAddRows="False"
                                       FontSize="11"
                                       MinHeight="40"
-                                      RowHeight="20">
+                                      RowHeight="26">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Pattern" Binding="{Binding Pattern}" Width="*" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="App" Binding="{Binding Description}" Width="130" IsReadOnly="True"/>
@@ -289,7 +289,7 @@
                         <!-- Graph header -->
                         <Grid Grid.Row="0" Margin="0,0,0,4">
                             <TextBlock Text="TRAFFIC (bytes/sec)" FontWeight="Bold"
-                                       Foreground="#DCDCAA" FontSize="13"/>
+                                       Foreground="#DCDCAA" FontSize="11"/>
                         </Grid>
 
                         <!-- The custom chart control -->
@@ -306,15 +306,15 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
+                            <TextBlock Grid.Column="0" Foreground="#858585" FontSize="10">
                                 <Run Text="Active connections:"/>
                                 <Run Text="{Binding Stats.ActiveConnections, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
-                            <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
+                            <TextBlock Grid.Column="1" Foreground="#858585" FontSize="10" Margin="16,0">
                                 <Run Text="RX:"/>
                                 <Run Text="{Binding Stats.TotalRx, Mode=OneWay}" FontWeight="Bold" Foreground="#4EC9B0"/>
                             </TextBlock>
-                            <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12">
+                            <TextBlock Grid.Column="2" Foreground="#858585" FontSize="10">
                                 <Run Text="TX:"/>
                                 <Run Text="{Binding Stats.TotalTx, Mode=OneWay}" FontWeight="Bold" Foreground="#CE9178"/>
                             </TextBlock>
@@ -329,23 +329,23 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
+                            <TextBlock Grid.Column="0" Foreground="#858585" FontSize="10">
                                 <Run Text="Proxy errors:"/>
                                 <Run Text="{Binding Stats.ProxyErrors, Mode=OneWay}" FontWeight="Bold" Foreground="#F44747"/>
                             </TextBlock>
-                            <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
+                            <TextBlock Grid.Column="1" Foreground="#858585" FontSize="10" Margin="16,0">
                                 <Run Text="Avg latency:"/>
                                 <Run Text="{Binding Stats.AvgLatency, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
-                            <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12" Margin="16,0">
+                            <TextBlock Grid.Column="2" Foreground="#858585" FontSize="10" Margin="16,0">
                                 <Run Text="Uptime:"/>
                                 <Run Text="{Binding Stats.Uptime, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
-                            <TextBlock Grid.Column="3" Foreground="#858585" FontSize="12" Margin="16,0">
+                            <TextBlock Grid.Column="3" Foreground="#858585" FontSize="10" Margin="16,0">
                                 <Run Text="Traffic:"/>
                                 <Run Text="{Binding TotalTraffic, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
-                            <TextBlock Grid.Column="4" Foreground="#858585" FontSize="12" Margin="16,0">
+                            <TextBlock Grid.Column="4" Foreground="#858585" FontSize="10" Margin="16,0">
                                 <Run Text="Rate:"/>
                                 <Run Text="{Binding Stats.ConnectionRate, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
