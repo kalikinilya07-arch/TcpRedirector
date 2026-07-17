@@ -244,11 +244,15 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         var r = await Call("service_status");
         if (r?.TryGetProperty("data", out var d) == true)
         {
-            return new ServiceStatus
+            try
             {
-                Running = d.GetProperty("running").GetBoolean(),
-                Initialized = d.GetProperty("initialized").GetBoolean()
-            };
+                return new ServiceStatus
+                {
+                    Running = d.TryGetProperty("running", out var rn) && rn.GetBoolean(),
+                    Initialized = d.TryGetProperty("initialized", out var ini) && ini.GetBoolean()
+                };
+            }
+            catch { return null; }
         }
         return null;
     }

@@ -101,15 +101,13 @@
         </Border>
 
         <!-- ============================================
-             CONTENT: single Viewbox wrapping both
-             settings + statistics, no scrollbars
+             CONTENT: settings + statistics
              ============================================ -->
-        <Viewbox Grid.Row="1" Stretch="Uniform" StretchDirection="Both">
-            <Grid Width="1060" MinHeight="720">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="0.60*"/>
-                    <RowDefinition Height="0.40*"/>
-                </Grid.RowDefinitions>
+        <Grid Grid.Row="1" Margin="8,4,8,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*" MinHeight="200"/>
+            </Grid.RowDefinitions>
 
                 <!-- SETTINGS (compact) -->
                 <StackPanel Grid.Row="0">
@@ -353,9 +351,8 @@
                             </TextBlock>
                         </Grid>
                     </Grid>
-                </Grid>
             </Grid>
-        </Viewbox>
+        </Grid>
 
         <!-- ============================================
              STATUS BAR
