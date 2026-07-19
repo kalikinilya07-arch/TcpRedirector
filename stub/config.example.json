@@ -1,0 +1,15 @@
+{
+  "host": "127.0.0.1",
+  "port": 8888,
+  "auth_mode": "accept-any",
+  "tls": false,
+  "cert": "",
+  "key": "",
+  "log_file": "logs/stub_proxy.log",
+  "log_format": "text",
+  "log_max_mb": 10,
+  "reveal_secrets": false,
+  "connect_timeout": 10.0,
+  "idle_timeout": 0.0,
+  "buffer_size": 65536
+}
