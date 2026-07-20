@@ -59,7 +59,41 @@ DEFAULTS = {
 FAKE_NEGOTIATE_CHALLENGE = base64.b64encode(b"STUB-KERBEROS-CHALLENGE-TOKEN").decode("ascii")
 FAKE_NEGOTIATE_FINAL = base64.b64encode(b"STUB-KERBEROS-FINAL-TOKEN").decode("ascii")
 
+# Псевдо-NTLM Type-2 (challenge) токен. Это НЕ валидный NTLM-blob — заглушка
+# лишь имитирует трёхногий цикл, а клиентский SSPI при accept-any/challenge
+# всё равно не валидирует ответ сервера. Для реального NTLM-цикла нужен
+# корректный Type-2, но цель заглушки — только прогнать обмен и залогировать.
+FAKE_NTLM_CHALLENGE = base64.b64encode(b"NTLMSSP\x00\x02STUB-CHALLENGE").decode("ascii")
+
 SERVER_NAME = "StubKerberosProxy/1.0"
+
+
+def classify_negotiate_token(payload):
+    """
+    Определяет подтип токена схемы Negotiate/Kerberos по его содержимому.
+
+    Возвращает человекочитаемую метку: 'NTLM Type1/2/3', 'Kerberos/SPNEGO'
+    или 'unknown'. Используется только для диагностического логирования —
+    валидацию заглушка не выполняет.
+    """
+    try:
+        raw = base64.b64decode(payload, validate=False)
+    except (binascii.Error, ValueError):
+        return "unknown"
+    if raw[:8] == b"NTLMSSP\x00":
+        # 9-й байт — тип сообщения NTLM (1=Negotiate, 2=Challenge, 3=Authenticate)
+        if len(raw) >= 12:
+            msg_type = raw[8]
+            names = {1: "NTLM Type1 (Negotiate)",
+                     2: "NTLM Type2 (Challenge)",
+                     3: "NTLM Type3 (Authenticate)"}
+            return names.get(msg_type, "NTLM (unknown type)")
+        return "NTLM (truncated)"
+    # SPNEGO/Kerberos обёрнут в ASN.1: GSS-API начинается с 0x60 (APPLICATION 0)
+    # или SPNEGO NegTokenInit с 0xA0/0x60; Kerberos AP-REQ — 0x6E.
+    if raw[:1] in (b"\x60", b"\x6e", b"\xa1"):
+        return "Kerberos/SPNEGO (GSS-API)"
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +203,8 @@ def parse_authorization(headers, reveal_secrets):
     elif scheme in ("negotiate", "kerberos"):
         result["auth_type"] = "Negotiate"
         result["negotiate_token_len"] = len(payload)
+        # Диагностика: определяем подтип токена (NTLM Type1/2/3 или Kerberos).
+        result["token_subtype"] = classify_negotiate_token(payload)
         if reveal_secrets:
             result["negotiate_token"] = payload
         else:
@@ -177,6 +213,7 @@ def parse_authorization(headers, reveal_secrets):
     elif scheme == "ntlm":
         result["auth_type"] = "NTLM"
         result["ntlm_token_len"] = len(payload)
+        result["token_subtype"] = classify_negotiate_token(payload)
         if reveal_secrets:
             result["ntlm_token"] = payload
         else:
@@ -355,13 +392,29 @@ class ClientHandler(threading.Thread):
         except OSError:
             return False
 
-    def _send_407(self, keepalive=True):
+    def _send_407(self, keepalive=True, ntlm_challenge=False):
+        """
+        Отправляет 407 Proxy Authentication Required с challenge.
+
+        Если ntlm_challenge=True, клиент прислал NTLM Type-1 — отвечаем
+        конкретным `Proxy-Authenticate: Negotiate <NTLM-Type2>`, чтобы прогнать
+        трёхногий NTLM-цикл (Type1 → Type2 → Type3). Иначе отдаём и «пустой»
+        Negotiate (для Kerberos/SPNEGO), и псевдо-challenge — клиентский SSPI
+        выберет подходящий вариант.
+        """
         body = b"Proxy authentication required (stub Kerberos).\n"
         headers = [
             "HTTP/1.1 407 Proxy Authentication Required",
             f"Server: {SERVER_NAME}",
-            "Proxy-Authenticate: Negotiate " + FAKE_NEGOTIATE_CHALLENGE,
-            "Proxy-Authenticate: Negotiate",
+        ]
+        if ntlm_challenge:
+            # Конкретный Type-2 challenge для продолжения NTLM-обмена.
+            headers.append("Proxy-Authenticate: Negotiate " + FAKE_NTLM_CHALLENGE)
+        else:
+            headers.append("Proxy-Authenticate: Negotiate " + FAKE_NEGOTIATE_CHALLENGE)
+            # «Голый» Negotiate позволяет клиенту начать новый SPNEGO-цикл.
+            headers.append("Proxy-Authenticate: Negotiate")
+        headers += [
             "Content-Type: text/plain; charset=utf-8",
             f"Content-Length: {len(body)}",
             ("Proxy-Connection: keep-alive" if keepalive else "Proxy-Connection: close"),
@@ -416,26 +469,54 @@ class ClientHandler(threading.Thread):
         self.logger.event("AUTH", conn=self.conn_id, client=self._client_str(),
                           method=method, target=target, **auth)
 
-        # --- Имитация Kerberos challenge (если режим challenge) ---
-        # accept-any / basic-log-only: пропускаем сразу.
-        # challenge: если токена ещё нет — отвечаем 407 один раз, затем принимаем любой токен.
-        if cfg["auth_mode"] == "challenge" and auth["auth_type"] in ("none",):
-            self.logger.event("CHALLENGE_SENT", conn=self.conn_id, client=self._client_str(),
-                              status=407, target=target)
-            self._send_407(keepalive=True)
-            # Повторно читаем запрос с токеном на том же соединении.
-            request_line, headers, leftover = read_http_headers(self.client_sock, cfg["buffer_size"])
-            if request_line is None:
-                self.logger.event("CONN_CLOSED_AFTER_407", conn=self.conn_id,
-                                  client=self._client_str())
-                return
-            method, target, version = parse_request_line(request_line)
-            if not method:
-                self._send(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
-                return
-            auth = parse_authorization(headers, cfg["reveal_secrets"])
-            self.logger.event("AUTH_RETRY", conn=self.conn_id, client=self._client_str(),
-                              method=method, target=target, **auth)
+        # --- Имитация Kerberos/NTLM challenge (если режим challenge) ---
+        # accept-any / basic-log-only: пропускаем сразу (первый запрос → 200).
+        # challenge: прогоняем ПОЛНЫЙ цикл обмена, даже если клиент уже прислал
+        # токен в первом CONNECT (K3-фикс).
+        #
+        # Корневая проблема прежней логики: условие срабатывало только при
+        # auth_type == "none", но основное приложение ВСЕГДА прикладывает
+        # начальный токен (NTLM Type-1 или Kerberos), поэтому 407 не отправлялся
+        # никогда и SSPI-цикл не прогонялся. Теперь challenge-режим:
+        #   1) на ПЕРВОМ CONNECT всегда отвечает 407 (не важно, есть ли токен),
+        #      выбирая NTLM-Type2-challenge, если пришёл NTLM Type-1;
+        #   2) читает повторный запрос с новым токеном и, если это снова
+        #      промежуточный этап NTLM (Type-1/Type-2), challenge'ит ещё раз;
+        #   3) после нескольких итераций (или получив финальный токен) пропускает.
+        if cfg["auth_mode"] == "challenge":
+            max_legs = 3   # хватает на трёхногий NTLM (Type1→Type2→Type3)
+            leg = 0
+            while leg < max_legs:
+                subtype = auth.get("token_subtype", "")
+                # Финальный этап: NTLM Type-3 или Kerberos-токен — принимаем.
+                if subtype.startswith("NTLM Type3") or subtype.startswith("Kerberos"):
+                    break
+                is_ntlm_type1 = subtype.startswith("NTLM Type1")
+                self.logger.event("CHALLENGE_SENT", conn=self.conn_id,
+                                  client=self._client_str(), status=407,
+                                  target=target, leg=leg + 1,
+                                  challenge=("NTLM-Type2" if is_ntlm_type1 else "Negotiate"))
+                if not self._send_407(keepalive=True, ntlm_challenge=is_ntlm_type1):
+                    return
+                # Повторно читаем запрос с новым токеном на том же соединении.
+                request_line, headers, leftover = read_http_headers(
+                    self.client_sock, cfg["buffer_size"])
+                if request_line is None:
+                    self.logger.event("CONN_CLOSED_AFTER_407", conn=self.conn_id,
+                                      client=self._client_str(), leg=leg + 1)
+                    return
+                method, target, version = parse_request_line(request_line)
+                if not method:
+                    self._send(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+                    return
+                auth = parse_authorization(headers, cfg["reveal_secrets"])
+                self.logger.event("AUTH_RETRY", conn=self.conn_id,
+                                  client=self._client_str(), method=method,
+                                  target=target, leg=leg + 1, **auth)
+                leg += 1
+                # Если после challenge токен исчез (клиент сдался) — пропускаем.
+                if auth["auth_type"] == "none":
+                    break
 
         # На этом этапе принимаем ЛЮБЫЕ креденшелы (или их отсутствие) без валидации.
         if method == "CONNECT":

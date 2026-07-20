@@ -97,6 +97,41 @@ int main(int argc, char* argv[]) {
                         NULL, NULL, NULL, NULL, NULL);
                     if (service) {
                         printf("Service installed successfully\n");
+
+                        // Auto-recovery: настраиваем SCM failure actions, чтобы
+                        // служба АВТОМАТИЧЕСКИ перезапускалась после любого
+                        // аварийного завершения процесса (напр. access violation).
+                        // Без этого падение оставляет службу в состоянии Stopped
+                        // (exit 1067) и она больше не поднимается сама.
+                        // Политика: 3 попытки рестарта с задержкой 5 с / 10 с / 30 с,
+                        // счётчик ошибок сбрасывается через 1 час безаварийной работы.
+                        SC_ACTION actions[3];
+                        actions[0].Type  = SC_ACTION_RESTART; actions[0].Delay =  5000;
+                        actions[1].Type  = SC_ACTION_RESTART; actions[1].Delay = 10000;
+                        actions[2].Type  = SC_ACTION_RESTART; actions[2].Delay = 30000;
+
+                        SERVICE_FAILURE_ACTIONSW fa = {};
+                        fa.dwResetPeriod = 3600;           // 1 час (секунды)
+                        fa.lpRebootMsg   = NULL;
+                        fa.lpCommand     = NULL;
+                        fa.cActions      = 3;
+                        fa.lpsaActions   = actions;
+                        if (ChangeServiceConfig2W(service,
+                                SERVICE_CONFIG_FAILURE_ACTIONS, &fa)) {
+                            printf("Auto-recovery configured (restart on crash: 5s/10s/30s)\n");
+                        } else {
+                            printf("Warning: failed to set auto-recovery: %lu\n",
+                                   GetLastError());
+                        }
+
+                        // Считать крашем и ненулевой exit code (не только аварийное
+                        // завершение процесса), чтобы failure actions срабатывали
+                        // и при SERVICE_STOPPED с ERROR_SERVICE_SPECIFIC_ERROR.
+                        SERVICE_FAILURE_ACTIONS_FLAG faFlag = {};
+                        faFlag.fFailureActionsOnNonCrashFailures = TRUE;
+                        ChangeServiceConfig2W(service,
+                            SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &faFlag);
+
                         CloseServiceHandle(service);
                     } else {
                         printf("Failed to install service: %lu\n", GetLastError());

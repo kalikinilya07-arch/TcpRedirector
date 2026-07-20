@@ -65,6 +65,10 @@ if not exist "%APP_DIR%\config.json" (
 
 echo [3/4] Installing TcpRedirector service...
 "%APP_DIR%\TcpRedirectorService.exe" --install
+:: Auto-recovery: restart the service automatically if it ever terminates
+:: unexpectedly (belt-and-suspenders; the EXE also sets this on --install).
+sc failure TcpRedirectorService reset= 3600 actions= restart/5000/restart/10000/restart/30000 >nul 2>&1
+sc failureflag TcpRedirectorService 1 >nul 2>&1
 sc start TcpRedirectorService >nul 2>&1
 
 echo [4/4] Creating shortcuts...

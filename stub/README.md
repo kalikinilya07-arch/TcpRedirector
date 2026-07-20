@@ -123,11 +123,30 @@ python3 stub_proxy.py --port 8888 --auth-mode accept-any
 | Режим | Поведение |
 |---|---|
 | `accept-any` *(по умолчанию)* | Любой `Proxy-Authorization` (или его отсутствие) принимается сразу — немедленный `200`/проксирование. Заголовки авторизации логируются. |
-| `challenge` | При первом запросе **без** токена возвращается `407 Proxy Authentication Required` с `Proxy-Authenticate: Negotiate <challenge>`. Клиент повторяет запрос уже с токеном, который принимается без валидации. Позволяет прогнать полный SSPI/Kerberos-цикл основного приложения. |
+| `challenge` | На **первом** `CONNECT` всегда возвращается `407 Proxy Authentication Required` с `Proxy-Authenticate: Negotiate <challenge>` — **даже если клиент уже приложил токен** (это важно: основное приложение всегда шлёт начальный токен, поэтому прежняя проверка «только при отсутствии токена» никогда не срабатывала). Если пришёл **NTLM Type-1**, заглушка отвечает конкретным `Proxy-Authenticate: Negotiate <NTLM-Type2>`, чтобы прогнать трёхногий NTLM-цикл (Type1 → Type2 → Type3). Заглушка challenge'ит до `max_legs=3` итераций, затем (получив NTLM Type-3 или Kerberos-токен) пропускает запрос. Позволяет реально прогнать полный SSPI-цикл основного приложения. |
 | `basic-log-only` | Как `accept-any`, но подразумевает акцент на логировании Basic-креденшелов (запрос всегда пропускается). |
 
 > Во всех режимах валидация токенов/паролей **не выполняется** — запрос всегда
-> в итоге пропускается дальше.
+> в итоге пропускается дальше. NTLM-challenge заглушки — псевдо-Type-2 (не
+> криптографически валидный); он лишь прогоняет обмен, т.к. клиентский SSPI при
+> тестировании ответ сервера не проверяет.
+
+### Подтип токена в логах (диагностика)
+
+Для событий `AUTH`/`AUTH_RETRY` со схемой Negotiate/NTLM заглушка добавляет поле
+`token_subtype`, распознаваемое по содержимому base64-токена:
+
+- `NTLM Type1 (Negotiate)` / `NTLM Type2 (Challenge)` / `NTLM Type3 (Authenticate)`
+  — по сигнатуре `NTLMSSP\0` и байту типа сообщения;
+- `Kerberos/SPNEGO (GSS-API)` — по ASN.1-обёртке (`0x60`/`0x6E`/`0xA1`);
+- `unknown` — не распознано.
+
+> **Важно (NTLM vs Kerberos).** Если тестовая машина **не в домене** (workgroup),
+> Windows SSPI Negotiate физически не может получить Kerberos-билет и **откатывается
+> на NTLM** — в логах вы увидите `token_subtype=NTLM Type1…`, а не Kerberos. Для
+> настоящего Kerberos нужны: доменная машина, прокси, заданный по **FQDN** (не по
+> IP — для IP нет Kerberos-SPN), и запуск основного приложения под доменной
+> учётной записью.
 
 ### Пример JSON-конфига
 
@@ -208,9 +227,9 @@ curl -v -x http://user:pass@127.0.0.1:8888 https://example.com
 |---|---|---|
 | `SERVER_START` | Старт сервера | `scheme`, `bind`, `auth_mode`, `log_format`, `log_file` |
 | `SERVER_STOP` | Остановка сервера | — |
-| `AUTH` | Получен запрос — **лог данных авторизации** | `conn`, `client`, `method`, `target`, `auth_type`, `auth_raw`, `basic_user`, `basic_password`, `negotiate_token_len`, `negotiate_token_preview` (или полный токен при `--reveal-secrets`) |
-| `CHALLENGE_SENT` | Отправлен `407` (режим `challenge`) | `conn`, `client`, `status=407`, `target` |
-| `AUTH_RETRY` | Повторный запрос с токеном после `407` | те же, что у `AUTH` |
+| `AUTH` | Получен запрос — **лог данных авторизации** | `conn`, `client`, `method`, `target`, `auth_type`, `auth_raw`, `basic_user`, `basic_password`, `negotiate_token_len`, `negotiate_token_preview`, `token_subtype` (или полный токен при `--reveal-secrets`) |
+| `CHALLENGE_SENT` | Отправлен `407` (режим `challenge`) | `conn`, `client`, `status=407`, `target`, `leg` (номер итерации), `challenge` (`NTLM-Type2`/`Negotiate`) |
+| `AUTH_RETRY` | Повторный запрос с токеном после `407` | те же, что у `AUTH`, плюс `leg` |
 | `REQUEST` | **Итог проксируемого запроса** | `conn`, `client`, `method`, `target`, `auth_type`, `status`, `latency_ms` |
 | `TUNNEL_CLOSED` | Закрыт CONNECT-туннель | `conn`, `target`, `bytes_client_to_target`, `bytes_target_to_client` |
 | `UPSTREAM_ERROR` | Не удалось подключиться к целевому серверу | `conn`, `target`, `error` |
@@ -246,7 +265,27 @@ stub/
 
 ---
 
-## 8. Ограничения
+## 8. Диагностика: «туннель открылся, но страница не грузится»
+
+Если в логе для КАЖДОГО соединения видно `status=200` и
+`bytes_client_to_target > 0`, но `bytes_target_to_client = 0` (туннель
+закрывается почти сразу) — значит **перенаправление и авторизация работают**
+(туннель установлен, клиент отправил TLS ClientHello), а **целевой сервер ничего
+не ответил**.
+
+Заглушка проксирует на **реальный интернет по IP** (`socket.create_connection`).
+Типичные причины пустого ответа цели:
+
+- целевой IP недоступен/сбрасывается (файрвол, гео-блокировка, GFW и т.п.) —
+  особенно заметно на IP Google/Cloudflare;
+- цель требует SNI/hostname, которого нет (для `CONNECT` по IP SNI всё же
+  передаётся клиентом внутри TLS — обычно не проблема).
+
+Как проверить, что дело не в редиректе, а в доступности цели: откройте в
+браузере **заведомо доступный из этой сети ресурс** (внутренний сайт/локальный
+тест-сервер). Для него в логе должно появиться `bytes_target_to_client > 0`.
+
+## 9. Ограничения
 
 - Заглушка **не валидирует** аутентификацию — это осознанное поведение для
   тестирования.

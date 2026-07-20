@@ -92,6 +92,17 @@ struct Tun2SocksEngineEmbedded::Flow {
     // ключом в ConnectionTable лежит (relay_src_port -> original-dst); relay
     // читает его при accept'е.  0 — запись не создавалась (нет таблицы/ошибка).
     uint16_t                    relay_src_port = 0;
+
+    // УНИКАЛЬНЫЙ ключ в m_flows (m_next_flow_id++ на accept'е).  Именно по нему
+    // CloseFlow извлекает владеющий unique_ptr.  НЕ pcb-указатель: pcb
+    // переиспользуются lwIP'ом и дали бы коллизию emplace → UAF (см. .h).
+    uint64_t                    id = 0;
+
+    // Выставляется socket-half ридером при выходе (EOF/ошибка на стороне
+    // relay/прокси).  engine-тред периодически (ReapFinishedReaders) закрывает
+    // такие flow'ы — устраняет утечку half-open flow'ов (ридер завершился, а
+    // CloseFlow со стороны туннеля так и не пришёл).
+    std::atomic<bool>           reader_exited{false};
 };
 
 /* ------------------------------------------------------------------------- */
@@ -371,9 +382,14 @@ struct EngineTramp {
         tcp_err (newpcb, &EngineTramp::OnErr);
 
         Tun2SocksEngineEmbedded::Flow* raw = flow.get();
+        // УНИКАЛЬНЫЙ id — ключ в m_flows (НЕ pcb-указатель, чтобы исключить
+        // коллизию при переиспользовании pcb lwIP'ом → UAF).
+        const uint64_t flow_id =
+            engine->m_next_flow_id.fetch_add(1, std::memory_order_relaxed);
+        flow->id = flow_id;
         {
             std::lock_guard<std::mutex> lk(engine->m_flows_mu);
-            engine->m_flows.emplace(newpcb, std::move(flow));
+            engine->m_flows.emplace(flow_id, std::move(flow));
         }
         engine->m_active_flows.fetch_add(1, std::memory_order_relaxed);
 
@@ -496,15 +512,20 @@ void Tun2SocksEngineEmbedded::FlowSocketReader(Flow* flow) {
     }
 done:
     // Половинное закрытие — говорим lwIP «нам больше писать нечего», FIN
-    // уедет в туннель.  Полное закрытие делает CloseFlow.
+    // уедет в туннель.  Полное закрытие делает CloseFlow (из engine-треда).
     {
         std::lock_guard<std::recursive_mutex> lk(m_core_lock);
         if (!flow->pcb_dead.load(std::memory_order_relaxed) && flow->pcb != nullptr) {
             tcp_shutdown(flow->pcb, 0, 1); // shut_tx=1
         }
     }
-    // Не удаляем flow из map'а здесь — это делает Stop() или явный CloseFlow
-    // из engine-треда, чтобы избежать гонки с OnRecv/OnErr.
+    // Ридер завершился (relay/прокси закрыли соединение).  НЕ удаляем flow из
+    // map'а и НЕ вызываем CloseFlow здесь (нельзя join'ить самого себя и нельзя
+    // трогать lwIP вне engine-треда безопасно для tcp_close).  Вместо этого ставим
+    // флаг reader_exited — engine-тред (ReapFinishedReaders) полностью закроет
+    // flow и отдаст его reaper'у на уничтожение.  Это устраняет утечку half-open
+    // flow'ов (pcb/сокеты/треды) — главную причину исчерпания пулов и краша.
+    flow->reader_exited.store(true, std::memory_order_release);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -536,28 +557,122 @@ void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread) {
         flow->sock = INVALID_SOCKET;
     }
 
-    // Закрываем pcb под lock'ом (если ещё жив).
+    // Закрываем pcb под lock'ом (если ещё жив).  ВАЖНО: сначала снимаем ВСЕ
+    // lwIP-callback'и и tcp_arg=nullptr, только потом tcp_close — так после
+    // закрытия ни один входящий сегмент/ошибка не вызовет callback с указателем
+    // на этот Flow (он вот-вот будет уничтожен reaper'ом).  Это ключ к
+    // устранению use-after-free при переиспользовании pcb из пула lwIP.
+    {
+        // recursive_mutex: безопасно и из engine-треда (уже под core-lock через
+        // nf->input), и из Stop() (отдельный тред, но engine уже остановлен).
+        std::lock_guard<std::recursive_mutex> lk(m_core_lock);
+        if (!flow->pcb_dead.load(std::memory_order_relaxed) && flow->pcb) {
+            tcp_arg (flow->pcb, nullptr);
+            tcp_recv(flow->pcb, nullptr);
+            tcp_sent(flow->pcb, nullptr);
+            tcp_err (flow->pcb, nullptr);
+            tcp_close(flow->pcb);
+            flow->pcb = nullptr;
+        }
+    }
+
+    // Утилизация Flow.
+    //  • from_engine_thread=true (штатный путь: OnRecv/OnErr/ReapFinishedReaders):
+    //    извлекаем владеющий unique_ptr из m_flows по flow->id, декрементируем
+    //    active_flows и передаём Flow reaper'у, который join'ит socket-ридер и
+    //    уничтожит объект ВНЕ engine-треда (нельзя join'ить ридер из engine-
+    //    треда под core-lock: ридер может ждать этот же lock → дедлок).
+    //  • from_engine_thread=false (путь Stop()): владение Flow уже вынесено в
+    //    Stop() (см. to_drop), поэтому здесь НЕ трогаем map/active_flows/reaper —
+    //    Stop() сам join'ит ридер и уничтожит объект.
     if (from_engine_thread) {
-        // мы уже в engine-треде — lock не нужен, но всё равно защитимся recursive
-        std::lock_guard<std::recursive_mutex> lk(m_core_lock);
-        if (!flow->pcb_dead.load(std::memory_order_relaxed) && flow->pcb) {
-            tcp_arg (flow->pcb, nullptr);
-            tcp_recv(flow->pcb, nullptr);
-            tcp_sent(flow->pcb, nullptr);
-            tcp_err (flow->pcb, nullptr);
-            tcp_close(flow->pcb);
-            flow->pcb = nullptr;
+        RetireFlow(flow);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/*  RetireFlow / Reaper — безопасное уничтожение закрытых flow'ов                 */
+/* ------------------------------------------------------------------------- */
+
+void Tun2SocksEngineEmbedded::RetireFlow(Flow* flow) {
+    // Извлекаем владеющий unique_ptr из m_flows по уникальному id.
+    std::unique_ptr<Flow> owned;
+    {
+        std::lock_guard<std::mutex> lk(m_flows_mu);
+        auto it = m_flows.find(flow->id);
+        if (it == m_flows.end()) {
+            // Уже извлечён (двойной retire не должен случаться — closing
+            // защищает — но на всякий случай не падаем).
+            return;
         }
-    } else {
-        std::lock_guard<std::recursive_mutex> lk(m_core_lock);
-        if (!flow->pcb_dead.load(std::memory_order_relaxed) && flow->pcb) {
-            tcp_arg (flow->pcb, nullptr);
-            tcp_recv(flow->pcb, nullptr);
-            tcp_sent(flow->pcb, nullptr);
-            tcp_err (flow->pcb, nullptr);
-            tcp_close(flow->pcb);
-            flow->pcb = nullptr;
+        owned = std::move(it->second);
+        m_flows.erase(it);
+    }
+    m_active_flows.fetch_sub(1, std::memory_order_relaxed);
+
+    // Передаём reaper'у: он join'ит socket-ридер (тот уже разбужен закрытием
+    // сокета выше) и уничтожит Flow.  Если reaper не запущен (теоретически —
+    // при гонке со Stop), уничтожаем прямо здесь после detach ридера, чтобы не
+    // блокировать engine-тред.
+    {
+        std::lock_guard<std::mutex> lk(m_retire_mu);
+        if (m_reaper_run.load(std::memory_order_relaxed)) {
+            m_retire.push_back(std::move(owned));
+            m_retire_cv.notify_one();
+            return;
         }
+    }
+    // Fallback без reaper'а: detach ридер, объект уничтожится по выходу owned.
+    if (owned && owned->sock_reader.joinable()) {
+        owned->sock_reader.detach();
+    }
+}
+
+void Tun2SocksEngineEmbedded::ReaperThreadMain() {
+    for (;;) {
+        std::vector<std::unique_ptr<Flow>> batch;
+        {
+            std::unique_lock<std::mutex> lk(m_retire_mu);
+            m_retire_cv.wait(lk, [this] {
+                return !m_retire.empty()
+                    || !m_reaper_run.load(std::memory_order_relaxed);
+            });
+            batch.swap(m_retire);
+            if (batch.empty() && !m_reaper_run.load(std::memory_order_relaxed)) {
+                return; // остановка и очередь пуста — выходим
+            }
+        }
+        for (auto& f : batch) {
+            if (f && f->sock_reader.joinable()) {
+                f->sock_reader.join(); // ридер уже вышел (сокет закрыт) — быстро
+            }
+            // ~Flow() здесь: сокет уже закрыт в CloseFlow, pcb обнулён,
+            // callback'и сняты — уничтожение безопасно.
+        }
+    }
+}
+
+void Tun2SocksEngineEmbedded::ReapFinishedReaders() {
+    // Вызывается ИЗ engine-треда.  Закрывает flow'ы, чей socket-ридер уже вышел
+    // (relay/прокси закрыли соединение), но со стороны туннеля FIN так и не
+    // пришёл (иначе OnRecv уже вызвал бы CloseFlow).  Без этого такие flow'ы
+    // жили бы вечно (утечка pcb/сокетов/тредов).
+    std::vector<Flow*> to_close;
+    {
+        std::lock_guard<std::mutex> lk(m_flows_mu);
+        for (auto& kv : m_flows) {
+            Flow* f = kv.second.get();
+            if (f->reader_exited.load(std::memory_order_acquire)
+                && !f->closing.load(std::memory_order_relaxed)) {
+                to_close.push_back(f);
+            }
+        }
+    }
+    // CloseFlow извлекает владение из map'а — вызываем ВНЕ блокировки m_flows_mu
+    // (RetireFlow сам берёт m_flows_mu).  from_engine_thread=true: мы в engine-
+    // треде.
+    for (Flow* f : to_close) {
+        CloseFlow(f, /*from_engine_thread=*/true);
     }
 }
 
@@ -730,6 +845,13 @@ void Tun2SocksEngineEmbedded::EngineThreadMain() {
             std::lock_guard<std::recursive_mutex> lk(m_core_lock);
             sys_check_timeouts();
         }
+
+        // Закрываем flow'ы, чей socket-ридер уже вышел (relay/прокси закрыли
+        // соединение), но FIN со стороны туннеля ещё не пришёл.  Выполняется СТРОГО
+        // в engine-треде (все tcp_* — только отсюда).  Устраняет утечку half-open
+        // flow'ов (pcb/сокеты/треды) — корневую причину исчерпания пулов lwIP
+        // и аварийного завершения службы под нагрузкой.
+        ReapFinishedReaders();
 
         // T5: периодическая (раз в ~5 c) TRACE-сводка о трафике из туннеля —
         // видно, доходят ли пакеты и в каком соотношении IPv4/IPv6.  Логируем
@@ -1005,6 +1127,10 @@ bool Tun2SocksEngineEmbedded::Start(std::string* outError) {
     tcp_accept(listen_pcb, &EngineTramp::OnAccept);
     m_listen_pcb = listen_pcb;
 
+    // Reaper-тред (уничтожение закрытых flow'ов вне engine-треда) — до engine.
+    m_reaper_run.store(true, std::memory_order_relaxed);
+    m_reaper_thread = std::thread([this]() { ReaperThreadMain(); });
+
     // engine-тред
     m_engine_thread = std::thread([this]() { EngineThreadMain(); });
 
@@ -1036,10 +1162,32 @@ void Tun2SocksEngineEmbedded::Stop() {
         m_flows.clear();
     }
     for (auto& f : to_drop) {
-        CloseFlow(f.get(), /*from_engine_thread=*/true);
+        // from_engine_thread=false: владение Flow уже у нас (to_drop), CloseFlow
+        // не должен дёргать map/reaper — мы сами join'им ридер и уничтожим объект.
+        CloseFlow(f.get(), /*from_engine_thread=*/false);
         if (f->sock_reader.joinable()) f->sock_reader.join();
     }
+    to_drop.clear();
     m_active_flows.store(0, std::memory_order_relaxed);
+
+    // Останавливаем reaper и добираем всё, что могло остаться в очереди утилизации.
+    {
+        std::lock_guard<std::mutex> lk(m_retire_mu);
+        m_reaper_run.store(false, std::memory_order_relaxed);
+        m_retire_cv.notify_all();
+    }
+    if (m_reaper_thread.joinable()) m_reaper_thread.join();
+    // Гарантированно уничтожаем остаток очереди (если reaper вышел раньше).
+    {
+        std::vector<std::unique_ptr<Flow>> leftovers;
+        {
+            std::lock_guard<std::mutex> lk(m_retire_mu);
+            leftovers.swap(m_retire);
+        }
+        for (auto& f : leftovers) {
+            if (f && f->sock_reader.joinable()) f->sock_reader.join();
+        }
+    }
 
     // Убираем netif.
     if (m_netif) {

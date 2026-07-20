@@ -51,6 +51,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -58,6 +59,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include "ITunEngine.h"
 #include "WintunSession.h"
@@ -209,6 +211,19 @@ private:
     // per-flow socket-half reader thread entry
     void FlowSocketReader(Flow* flow);
 
+    // Reaper-тред: join'ит завершившиеся per-flow ридер-треды и уничтожает
+    // Flow-объекты ВНЕ engine-треда/ридера (иначе дедлок/UAF). См. .cpp.
+    void ReaperThreadMain();
+
+    // Переносит владение Flow из m_flows в очередь на утилизацию и будит
+    // reaper.  Вызывается ТОЛЬКО из engine-треда (внутри CloseFlow).
+    void RetireFlow(Flow* flow);
+
+    // Периодически из EngineThreadMain: закрывает flow'ы, чей socket-half
+    // ридер уже завершился (EOF/ошибка relay), но которые ещё не закрыты со
+    // стороны туннеля — устраняет утечку half-open flow'ов.
+    void ReapFinishedReaders();
+
     // lwIP callback trampolines живут в анонимном namespace .cpp — их
     // сигнатуры зависят от lwIP-типов, а тянуть lwIP-headers в .h мы не хотим
     // (весь наружный API этого класса — pure C++/WinAPI).  friend-декларация
@@ -281,10 +296,30 @@ private:
     // байты и обновляет счётчики).
     mutable std::recursive_mutex   m_core_lock;
 
-    // Список активных flow'ов.  key — void* на pcb (только для быстрой
-    // диагностики; owning storage — unique_ptr в значении).
+    // Список активных flow'ов.
+    //
+    // КЛЮЧ — УНИКАЛЬНЫЙ монотонный flow-id (m_next_flow_id), А НЕ указатель
+    // на pcb.  Это критично: lwIP ПЕРЕИСПОЛЬЗУЕТ адреса tcp_pcb из пула
+    // (MEMP_TCP_PCB).  Если ключом был бы pcb-указатель, то новый OnAccept с тем же
+    // (переиспользованным) адресом вызвал бы emplace с уже существующим ключом:
+    // emplace НЕ перезаписывает → новый unique_ptr<Flow> тут же уничтожается, а
+    // raw-указатель (уже в tcp_arg и в sock_reader) остаётся висячим → use-after-free
+    // в CloseFlow/OnRecv (именно этот краш 0xC0000005 в CloseFlow был найден в
+    // дампе).  Уникальный id полностью устраняет эту коллизию.
+    // owning storage — unique_ptr в значении.
     std::mutex                     m_flows_mu;
-    std::unordered_map<void*, std::unique_ptr<Flow>> m_flows;
+    std::unordered_map<uint64_t, std::unique_ptr<Flow>> m_flows;
+    std::atomic<uint64_t>          m_next_flow_id{1};
+
+    // --- Reaper: безопасное уничтожение закрытых flow'ов ---
+    // CloseFlow (из engine-треда) переносит владение Flow сюда; reaper-тред
+    // join'ит socket-ридер и уничтожает Flow.  Так engine-тред не блокируется
+    // на join'е ридера (который может ждать m_core_lock — иначе дедлок).
+    std::mutex                     m_retire_mu;
+    std::condition_variable        m_retire_cv;
+    std::vector<std::unique_ptr<Flow>> m_retire;
+    std::thread                    m_reaper_thread;
+    std::atomic<bool>              m_reaper_run{false};
 
     // Указатели на lwIP-объекты (void*, чтобы не тянуть lwIP-headers в .h)
     void*                          m_netif = nullptr;        // struct netif*

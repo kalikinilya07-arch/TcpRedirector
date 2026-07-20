@@ -101,6 +101,18 @@ std::string Parse407Challenge(const std::string& responseBody);
 std::string MakeSpn(const std::string& proxyHost);
 
 /**
+ * @brief Грубая проверка: является ли строка IPv4-литералом (a.b.c.d).
+ *
+ * Kerberos формирует билет по SPN "HTTP/<FQDN>"; для IP-литерала настоящий
+ * Kerberos невозможен и Negotiate откатывается на NTLM. Используется для
+ * предупреждающего лога в relay.
+ *
+ * @param host  Хост прокси.
+ * @return true, если host выглядит как IPv4-литерал.
+ */
+bool IsProbablyIpv4Literal(const std::string& host);
+
+/**
  * @brief Утилита: Base64-кодирование бинарных данных.
  */
 std::string SspiBase64Encode(const std::vector<uint8_t>& data);

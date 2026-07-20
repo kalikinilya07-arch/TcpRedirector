@@ -469,6 +469,15 @@ private:
         } else if (m_kerberosAuth && sspiAvailable) {
             // Negotiate/Kerberos через SSPI
             if (!sspiInitDone) {
+                // K1: настоящий Kerberos требует SPN "HTTP/<FQDN>". Если прокси
+                // задан IP-литералом (напр. заглушка 127.0.0.1), Kerberos-билет
+                // не получить и Negotiate откатится на NTLM. Предупреждаем один раз.
+                if (infrastructure::IsProbablyIpv4Literal(m_proxyHost)) {
+                    Log(domain::LogLevel::Warn,
+                        "Kerberos: proxy host '" + m_proxyHost +
+                        "' is an IP literal — no Kerberos SPN, SSPI will fall back to NTLM. "
+                        "Use the proxy FQDN and a domain account for real Kerberos.");
+                }
                 Log(domain::LogLevel::Debug, "Acquiring credentials for " + m_proxyHost + "...");
                 auto r = infrastructure::SspiNegotiate(sspiCtx, "", sspiToken,
                     infrastructure::MakeSpn(m_proxyHost));
@@ -500,22 +509,56 @@ private:
             return;
         }
 
-        char resp_buf[4096];
-        int bytes = recv(proxy_sock, resp_buf, sizeof(resp_buf) - 1, 0);
-        if (bytes <= 0) {
+        // K5: read the full CONNECT response up to end-of-headers ("\r\n\r\n").
+        // A single recv() may return only part of the headers, or — with a real
+        // upstream proxy — the 200 headers coalesced together with the first
+        // bytes of tunnel data.  We must (a) not truncate the status/headers and
+        // (b) preserve any post-header "leftover" bytes belonging to the tunnel
+        // so they are forwarded to the client instead of being discarded.
+        std::string resp_accum;
+        std::string tunnel_leftover;   // bytes after the header terminator
+        {
+            char recv_buf[4096];
+            bool headers_done = false;
+            // Bound the header read to avoid unbounded growth on a misbehaving
+            // proxy; 64 KB is far more than any legitimate CONNECT response.
+            const size_t kMaxHeaderBytes = 65536;
+            while (!headers_done) {
+                int bytes = recv(proxy_sock, recv_buf, sizeof(recv_buf), 0);
+                if (bytes <= 0) {
+                    break;
+                }
+                resp_accum.append(recv_buf, bytes);
+                auto term = resp_accum.find("\r\n\r\n");
+                if (term != std::string::npos) {
+                    headers_done = true;
+                    size_t body_start = term + 4;
+                    if (body_start < resp_accum.size()) {
+                        tunnel_leftover = resp_accum.substr(body_start);
+                        resp_accum.resize(body_start);
+                    }
+                    break;
+                }
+                if (resp_accum.size() > kMaxHeaderBytes) {
+                    break;
+                }
+            }
+        }
+        if (resp_accum.empty()) {
             Log(domain::LogLevel::Error, "no CONNECT response");
             if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
             closesocket(client_sock);
             closesocket(proxy_sock);
             return;
         }
-        resp_buf[bytes] = '\0';
+        // Keep a NUL-terminated C-string view for legacy strstr()/substr checks.
+        const std::string& resp_str = resp_accum;
+        const char* resp_buf = resp_str.c_str();
 
         // M2: parse HTTP status line properly — look for "HTTP/1.x 200" at the start
         // instead of substring match anywhere in response.
         bool connect_ok = false;
         {
-            std::string resp_str(resp_buf, bytes);
             // Status line is "HTTP/1.x NNN ..." at the very beginning
             if (resp_str.size() >= 12 &&
                 resp_str.compare(0, 7, "HTTP/1.") == 0 &&
@@ -530,6 +573,19 @@ private:
             double latency_ms = std::chrono::duration<double, std::milli>(t_now - t_connect_start).count();
             if (m_connectionMonitor) m_connectionMonitor->RecordLatency(latency_ms);
             Log(domain::LogLevel::Debug, "CONNECT response: 200 OK (" + std::string(ip_str) + ":" + std::to_string(dest_port) + ")");
+
+            // K4: some proxies attach a final Negotiate token in the 200 response
+            // (mutual auth).  We do not request ISC_REQ_MUTUAL_AUTH, so this token
+            // is not required to complete the context; log it at DEBUG for
+            // diagnostics without failing the tunnel.
+            if (m_kerberosAuth) {
+                std::string finalTok = infrastructure::Parse407Challenge(resp_str);
+                if (!finalTok.empty()) {
+                    Log(domain::LogLevel::Debug,
+                        "Final Negotiate token in 200 response (" +
+                        std::to_string(finalTok.size()) + " bytes) — mutual-auth not requested, ignoring");
+                }
+            }
 
             // H3: reset SO_RCVTIMEO/SO_SNDTIMEO to 0 after successful CONNECT
             // so that idle tunnels (SSH, DB pools, websockets) are not torn down
@@ -595,6 +651,34 @@ private:
         Log(domain::LogLevel::Debug, std::string(ip_str) + ":" +
             std::to_string(dest_port) + " -> " + m_proxyHost + ":" +
             std::to_string(m_proxyPort));
+
+        // K5: if the proxy coalesced tunnel bytes together with the CONNECT 200
+        // headers, forward those leftover bytes to the client BEFORE starting the
+        // bidirectional bridge — otherwise they are lost and the very first
+        // server→client payload (e.g. a TLS ServerHello) never reaches the app.
+        if (!tunnel_leftover.empty()) {
+            size_t sent_total = 0;
+            bool send_ok = true;
+            while (sent_total < tunnel_leftover.size()) {
+                int n = send(client_sock,
+                             tunnel_leftover.data() + sent_total,
+                             (int)(tunnel_leftover.size() - sent_total), 0);
+                if (n == SOCKET_ERROR) { send_ok = false; break; }
+                sent_total += (size_t)n;
+            }
+            if (send_ok) {
+                m_totalTxBytes.fetch_add(tunnel_leftover.size(), std::memory_order_relaxed);
+                Log(domain::LogLevel::Debug,
+                    "Flushed " + std::to_string(tunnel_leftover.size()) +
+                    " leftover tunnel byte(s) to client before bridge");
+            } else {
+                Log(domain::LogLevel::Warn, "Failed to flush leftover tunnel bytes to client");
+                if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                closesocket(client_sock);
+                closesocket(proxy_sock);
+                return;
+            }
+        }
 
         StartBridge(client_sock, proxy_sock);
     }
