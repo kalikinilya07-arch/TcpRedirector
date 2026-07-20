@@ -26,6 +26,13 @@ public interface IConfigRepository
     bool WriteFull(ProxyConfig config, string exePath, List<Rule> rules);
     void WriteInt(string section, string key, int value);
 
+    /// <summary>
+    /// (Задача №1) Записывает строковое значение в <c>section.key</c>, сохраняя
+    /// остальные поля (merge). Используется для GUI-настроек, напр.
+    /// <c>gui.language</c>.
+    /// </summary>
+    void WriteString(string section, string key, string value);
+
     // ── WP5 v2 API ───────────────────────────────────
 
     /// <summary>Reads <c>capture_mode</c> from the top-level object. Defaults to <see cref="CaptureMode.WinDivert"/>.</summary>

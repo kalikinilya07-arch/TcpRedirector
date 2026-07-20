@@ -355,8 +355,10 @@ bool ConfigManager::LoadImpl() {
         const bool isV1 = (schema < 2);
 
         // Сброс v2-полей на дефолты — LoadImpl может вызываться повторно.
+        // Дефолт capture_mode — Wintun (embedded): применяется, если ключ
+        // отсутствует в config.json.
         m_config.config_version = 2;
-        m_config.capture_mode   = CaptureMode::WinDivert;
+        m_config.capture_mode   = CaptureMode::Wintun;
         m_config.wintun         = WintunSettings{};
         m_config.apps.clear();
         m_config.ipc            = IpcSettings{};   // (Задача №1) сброс IPC-настроек
@@ -420,9 +422,9 @@ bool ConfigManager::LoadImpl() {
                     m_config.capture_mode = cm;
                 } else {
                     std::fprintf(stderr,
-                        "[WARN] ConfigManager: unknown capture_mode '%s', coercing to 'windivert'\n",
+                        "[WARN] ConfigManager: unknown capture_mode '%s', coercing to 'wintun'\n",
                         j["capture_mode"].get<std::string>().c_str());
-                    m_config.capture_mode = CaptureMode::WinDivert;
+                    m_config.capture_mode = CaptureMode::Wintun;
                 }
             }
         }
@@ -461,9 +463,32 @@ bool ConfigManager::LoadImpl() {
     }
 }
 
+void ConfigManager::NormalizeAuthFields() {
+    // (Задача №2) Единая нормализация auth-полей перед персистом. Держим в
+    // config.json только актуальные для текущего режима значения, очищая
+    // «мусор» от деактивированных настроек (иначе при пересохранении, напр.
+    // после переключения Basic↔Kerberos или смены encryptPassword без
+    // повторного ввода пароля, старые поля оставались в файле).
+    auto& auth = m_config.auth;
+    if (!auth.enabled || auth.kerberos) {
+        // Авторизация выключена, либо Kerberos (SSPI, креды не хранятся).
+        auth.username.clear();
+        auth.encryptedPassword.clear();
+        auth.password.clear();
+    } else if (auth.encryptPassword) {
+        // Basic + шифрование: plaintext-поле неактуально.
+        auth.password.clear();
+    } else {
+        // Basic + plaintext: DPAPI-поле неактуально.
+        auth.encryptedPassword.clear();
+    }
+}
+
 bool ConfigManager::SaveImpl() {
     // WP1: не «глотать» ошибки записи молча — печатаем причину в stderr.
     // Логгер здесь недоступен (ConfigManager может быть создан до Logger).
+    // (Задача №2) Перед записью очищаем неактуальные auth-поля.
+    NormalizeAuthFields();
     try {
         std::error_code ec;
         auto parent = m_configPath.parent_path();
@@ -561,7 +586,8 @@ bool ConfigManager::CreateDefaultConfig() {
     // здесь только те, что должны отличаться от dev-нейтральных значений.
     m_config = Config();
     m_config.config_version = 2;
-    m_config.capture_mode   = CaptureMode::WinDivert;
+    // Дефолт после установки/создания конфига — Wintun (embedded).
+    m_config.capture_mode   = CaptureMode::Wintun;
     m_config.app.exePath = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
     m_config.proxy.host = "127.0.0.1";
     m_config.proxy.port = 8888;

@@ -7,8 +7,12 @@
             <local:ViewToVisConverter x:Key="ViewToVis" />
             <local:BoolToColorConverter x:Key="BoolToColor" />
             <local:BoolToVisConverter x:Key="BoolToVis" />
+            <local:LanguageNameConverter x:Key="LangName" />
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Adapters/Driving/Wpf/Styles/AppTheme.xaml" />
+                <!-- (Задача №1) Дефолтный словарь строк (RU). При старте
+                     LocalizationService заменяет его на выбранный язык. -->
+                <ResourceDictionary Source="Adapters/Driving/Wpf/Localization/Strings.ru.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

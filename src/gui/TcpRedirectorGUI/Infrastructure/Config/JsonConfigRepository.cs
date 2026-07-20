@@ -144,7 +144,8 @@ public sealed class JsonConfigRepository : IConfigRepository
         }
         catch
         {
-            return CaptureMode.WinDivert;
+            // Дефолт после установки — Wintun (embedded).
+            return CaptureMode.Wintun;
         }
     }
 
@@ -393,34 +394,59 @@ public sealed class JsonConfigRepository : IConfigRepository
 
             var auth = GetOrCreateObject(j, "auth");
             auth["enabled"]  = config.AuthRequired;
-            auth["username"] = config.Login;
             auth["kerberos"] = config.KerberosEnabled;
             // (Задача №2) Режим хранения пароля.
             auth["encryptPassword"] = config.EncryptPassword;
-            // auth.encryptedPassword / auth.password: persist the password
-            // ourselves so it survives even when the service is stopped and no
-            // live-IPC push happens. Empty password => keep whatever is on disk
-            // (do not wipe a previously-saved secret).
-            if (!string.IsNullOrEmpty(config.Password))
+
+            // (Задача №2) Нормализация auth-полей ВСЕГДА, независимо от того,
+            // ввёл ли пользователь новый пароль. Ранее очистка неактивных полей
+            // выполнялась только внутри `if (пароль введён)`, поэтому при смене
+            // encryptPassword / переключении Basic↔Kerberos / отключении auth
+            // без повторного ввода пароля «мусорные» поля оставались в файле.
+            //
+            // Правила (какие поля актуальны):
+            //   • auth выключен            → username/encryptedPassword/password = "" ;
+            //   • Kerberos                 → username/encryptedPassword/password = ""
+            //                                 (SSPI: креды не хранятся);
+            //   • Basic + encryptPassword  → password = "" (plaintext не нужен),
+            //                                 encryptedPassword — новый или прежний;
+            //   • Basic + !encryptPassword → encryptedPassword = "" (DPAPI не нужен),
+            //                                 password — новый или прежний.
+            var existingEnc   = auth["encryptedPassword"]?.GetValue<string>() ?? "";
+            var existingPlain = auth["password"]?.GetValue<string>() ?? "";
+
+            if (!config.AuthRequired || config.KerberosEnabled)
             {
-                if (config.EncryptPassword)
+                // Неактивная авторизация или Kerberos — креды не хранятся
+                // (Kerberos использует SSPI-контекст текущей учётной записи).
+                auth["username"]          = "";
+                auth["encryptedPassword"] = "";
+                auth["password"]          = "";
+            }
+            else if (config.EncryptPassword)
+            {
+                // Basic + шифрование: plaintext-поле всегда пустое.
+                auth["username"] = config.Login;
+                auth["password"] = "";
+                if (!string.IsNullOrEmpty(config.Password))
                 {
                     var enc = EncryptPasswordDpapi(config.Password);
-                    if (!string.IsNullOrEmpty(enc)) auth["encryptedPassword"] = enc;
-                    // При переключении в encrypted-режим чистим plaintext.
-                    auth["password"] = "";
+                    // Не затираем прежний секрет, если новое шифрование не удалось.
+                    auth["encryptedPassword"] = string.IsNullOrEmpty(enc) ? existingEnc : enc;
                 }
                 else
                 {
-                    // Plaintext-режим: пароль «как есть», encrypted-поле чистим.
-                    auth["password"] = config.Password;
-                    auth["encryptedPassword"] = "";
+                    // Новый пароль не введён — сохраняем прежний зашифрованный.
+                    auth["encryptedPassword"] = existingEnc;
                 }
             }
-            else if (auth["password"] is null)
+            else
             {
-                // Гарантируем присутствие ключа для консистентности схемы.
-                auth["password"] = "";
+                // Basic + plaintext: encrypted-поле всегда пустое.
+                auth["username"]          = config.Login;
+                auth["encryptedPassword"] = "";
+                // Новый пароль не введён — сохраняем прежний plaintext.
+                auth["password"] = string.IsNullOrEmpty(config.Password) ? existingPlain : config.Password;
             }
             // (Задача №1) IPC-настройки — GUI владеет флагом auth_enabled.
             var ipc = GetOrCreateObject(j, "ipc");
@@ -500,6 +526,23 @@ public sealed class JsonConfigRepository : IConfigRepository
         }
     }
 
+    // (Задача №1) Строковая запись с сохранением остальных полей (merge).
+    public void WriteString(string section, string key, string value)
+    {
+        try
+        {
+            var j = Load();
+            if (j[section] is null)
+                j[section] = new JsonObject();
+            j[section]![key] = value;
+            Save(j);
+        }
+        catch
+        {
+            // File I/O errors are non-fatal
+        }
+    }
+
     // ── Private helpers ──────────────────────────────
 
     private JsonObject Load()
@@ -547,7 +590,8 @@ public sealed class JsonConfigRepository : IConfigRepository
         return new JsonObject
         {
             ["config_version"] = 2,
-            ["capture_mode"]   = CaptureModeToString(CaptureMode.WinDivert),
+            // Дефолт после установки/создания скелета — Wintun (embedded).
+            ["capture_mode"]   = CaptureModeToString(CaptureMode.Wintun),
             ["wintun"]         = WintunToJson(wintun),
             ["app"] = new JsonObject { ["exePath"] = defaults.ExePath },
             ["proxy"] = new JsonObject
@@ -594,11 +638,13 @@ public sealed class JsonConfigRepository : IConfigRepository
 
     private static CaptureMode CaptureModeFromString(string? s)
     {
-        if (string.IsNullOrEmpty(s)) return CaptureMode.WinDivert;
+        // Пустое/отсутствующее значение → дефолт Wintun (embedded).
+        if (string.IsNullOrEmpty(s)) return CaptureMode.Wintun;
         return s.Trim().ToLowerInvariant() switch
         {
             "wintun" => CaptureMode.Wintun,
-            _ => CaptureMode.WinDivert
+            "windivert" => CaptureMode.WinDivert,
+            _ => CaptureMode.Wintun
         };
     }
 

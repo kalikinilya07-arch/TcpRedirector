@@ -289,7 +289,7 @@ struct Config {
     StatsSettings stats;   //!< Настройки статистики
 
     // WP3 v2 additions
-    CaptureMode    capture_mode = CaptureMode::WinDivert; //!< Активный движок захвата.
+    CaptureMode    capture_mode = CaptureMode::Wintun; //!< Активный движок захвата (дефолт: Wintun embedded).
     WintunSettings wintun;                                 //!< Настройки Wintun-адаптера.
     std::vector<AppRule> apps;                             //!< Пер-приложение правила v2.
 

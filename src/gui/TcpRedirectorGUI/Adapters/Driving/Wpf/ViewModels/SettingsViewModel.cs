@@ -9,6 +9,7 @@ using Microsoft.Win32;
 using TcpRedirectorGUI.Domain.Entities;
 using TcpRedirectorGUI.Domain.Ports;
 using TcpRedirectorGUI.Infrastructure.Config;
+using TcpRedirectorGUI.Infrastructure.Localization;
 
 namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 
@@ -50,7 +51,9 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         nameof(SelectedRule), nameof(IsWintunSelected), nameof(IsWinDivertSelected),
         nameof(IsExternalEngine),
         // Не «контентные»: отражают лишь наличие сохранённого пароля/плейсхолдер.
-        nameof(HasStoredPassword), nameof(PasswordPlaceholder)
+        nameof(HasStoredPassword), nameof(PasswordPlaceholder),
+        // (Задача №3) Производное от AuthRequired/KerberosEnabled — не контент.
+        nameof(ShowBasicCredentials)
     };
 
     public SettingsViewModel(IConfigRepository config, ITcpRedirectorService? svc = null)
@@ -134,43 +137,43 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     {
         // Proxy
         SetError(nameof(Host),
-            string.IsNullOrWhiteSpace(Host) ? "Укажите адрес прокси"
-            : IsValidHost(Host) ? null : "Некорректный адрес (host или IP)");
+            string.IsNullOrWhiteSpace(Host) ? Loc.T("Val.HostRequired")
+            : IsValidHost(Host) ? null : Loc.T("Val.HostInvalid"));
 
         SetError(nameof(Port),
-            Port is >= 1 and <= 65535 ? null : "Порт должен быть в диапазоне 1..65535");
+            Port is >= 1 and <= 65535 ? null : Loc.T("Val.PortRange"));
 
         // Auth (Basic only): login required when auth enabled and not Kerberos.
         SetError(nameof(Login),
             (AuthRequired && !KerberosEnabled && string.IsNullOrWhiteSpace(Login))
-                ? "Укажите логин для Basic-авторизации" : null);
+                ? Loc.T("Val.LoginRequired") : null);
 
         // Wintun-only fields.
         var wintun = CaptureMode == CaptureMode.Wintun;
         SetError(nameof(WintunAdapterName),
             wintun && string.IsNullOrWhiteSpace(WintunAdapterName)
-                ? "Имя адаптера не может быть пустым" : null);
+                ? Loc.T("Val.AdapterNameRequired") : null);
 
         SetError(nameof(WintunTunnelIpv4Cidr),
             wintun && !IsValidIpv4Cidr(WintunTunnelIpv4Cidr)
-                ? "Формат: a.b.c.d/N (N в диапазоне 0..32), напр. 10.6.7.1/24" : null);
+                ? Loc.T("Val.Ipv4Cidr") : null);
 
         SetError(nameof(WintunMtu),
             wintun && WintunMtu is < 576 or > 65535
-                ? "MTU должен быть в диапазоне 576..65535" : null);
+                ? Loc.T("Val.MtuRange") : null);
 
         SetError(nameof(WintunRouteLadderPrefix),
             wintun && WintunRouteLadderPrefix is < 1 or > 8
-                ? "Глубина лестницы маршрутов должна быть в диапазоне 1..8" : null);
+                ? Loc.T("Val.RouteLadderRange") : null);
 
         var external = wintun && WintunEngine == WintunEngineKind.External;
         SetError(nameof(ExternalExecutable),
             external && string.IsNullOrWhiteSpace(ExternalExecutable)
-                ? "Укажите путь к tun2socks.exe" : null);
+                ? Loc.T("Val.ExternalExeRequired") : null);
 
         SetError(nameof(ExternalSocks5Listen),
             external && !IsValidHostPort(ExternalSocks5Listen)
-                ? "Формат: host:port (порт 1..65535), напр. 127.0.0.1:1080" : null);
+                ? Loc.T("Val.Socks5HostPort") : null);
 
         OnPropertyChanged(nameof(HasErrors));
         SaveAllCommand.NotifyCanExecuteChanged();
@@ -284,16 +287,26 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         OnPropertyChanged(nameof(PasswordPlaceholder));
     }
 
+    /// <summary>
+    /// (Задача №3) Показывать ли поля Basic-аутентификации (Login, Password,
+    /// «Шифровать пароль»). При включённом Kerberos эти поля не нужны (SSPI
+    /// использует контекст текущей учётной записи) и скрываются; чекбокс
+    /// «Use Kerberos» остаётся видимым, пока авторизация включена.
+    /// </summary>
+    public bool ShowBasicCredentials => AuthRequired && !KerberosEnabled;
+
     partial void OnKerberosEnabledChanged(bool value)
     {
         if (value && !AuthRequired)
             AuthRequired = true;
+        OnPropertyChanged(nameof(ShowBasicCredentials));
     }
 
     partial void OnAuthRequiredChanged(bool value)
     {
         if (!value && KerberosEnabled)
             KerberosEnabled = false;
+        OnPropertyChanged(nameof(ShowBasicCredentials));
     }
 
     // ── Rules (legacy — kept for IPC compat) ─────────
@@ -305,7 +318,8 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     public IReadOnlyList<CaptureMode> CaptureModes { get; } =
         [CaptureMode.WinDivert, CaptureMode.Wintun];
 
-    [ObservableProperty] private CaptureMode _captureMode = CaptureMode.WinDivert;
+    // Дефолт после установки — Wintun (embedded).
+    [ObservableProperty] private CaptureMode _captureMode = CaptureMode.Wintun;
 
     /// <summary>Drives Visibility of the Wintun sub-panel (shown only in Wintun mode).</summary>
     public bool IsWintunSelected => CaptureMode == CaptureMode.Wintun;
@@ -453,7 +467,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     {
         _config.WriteInt("log", "level", DomainToFileLogLevel(LogLevelFilter));
         try { if (_svc is { IsConnected: true }) await _svc.SetLogLevelAsync(LogLevelFilter); } catch { }
-        LogMsg = "\u2713 Saved";
+        LogMsg = Loc.T("Log.Saved");
         _ = ClearLogMsgAfterDelay();
     }
 
@@ -565,6 +579,8 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             OnPropertyChanged(nameof(ExternalSocks5Listen));
             OnPropertyChanged(nameof(ExternalRestartOnCrash));
             OnPropertyChanged(nameof(IsWintunSelected));
+            // (Задача №3) Актуализировать видимость Basic-полей после загрузки.
+            OnPropertyChanged(nameof(ShowBasicCredentials));
 
             // Apps (v2), with v1 fallback handled inside the repository.
             var loaded = _config.ReadApps();
@@ -593,7 +609,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
     {
         var dlg = new OpenFileDialog
         {
-            Title = "Выберите приложение",
+            Title = Loc.T("Dialog.SelectApp"),
             Filter = "Executables (*.exe)|*.exe|All files (*.*)|*.*",
             CheckFileExists = true
         };
@@ -660,7 +676,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             ValidateAll();
             if (HasErrors)
             {
-                Msg = "\u2717 Ошибка: исправьте подсвеченные поля перед сохранением";
+                Msg = Loc.T("Save.ErrorFix");
                 _ = ClearMsgAfterDelay();
                 return;
             }
@@ -693,7 +709,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
 
             if (!ok)
             {
-                Msg = $"\u2717 Ошибка: не удалось записать {_config.ConfigPath}";
+                Msg = $"{Loc.T("Save.ErrorWrite")} {_config.ConfigPath}";
                 _ = ClearMsgAfterDelay();
                 return;
             }
@@ -702,7 +718,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             //     in the SAME file the service reads.
             if (!VerifySavedConfig(CaptureMode, Wintun, Host, Port, domainApps.Count, out var mismatch))
             {
-                Msg = $"\u2717 Проверка не пройдена: {mismatch} (файл: {_config.ConfigPath})";
+                Msg = $"{Loc.T("Save.VerifyFailed")} {mismatch} ({_config.ConfigPath})";
                 _ = ClearMsgAfterDelay();
                 return;
             }
@@ -754,7 +770,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             if (!string.IsNullOrEmpty(currentPwd))
                 HasStoredPassword = true;
 
-            Msg = $"\u2713 Сохранено в {_config.ConfigPath}";
+            Msg = $"{Loc.T("Save.Ok")} {_config.ConfigPath}";
             Password = "";
             IsDirty = false;
             Saved?.Invoke();
@@ -762,7 +778,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         }
         catch (Exception ex)
         {
-            Msg = $"\u2717 Ошибка: {ex.Message}";
+            Msg = $"{Loc.T("Save.ErrorPrefix")} {ex.Message}";
             _ = ClearMsgAfterDelay();
         }
     }

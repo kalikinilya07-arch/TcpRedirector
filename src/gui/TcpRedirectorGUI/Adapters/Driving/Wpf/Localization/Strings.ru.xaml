@@ -1,0 +1,140 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- (Задача №1) Русские строки интерфейса. Ключи должны совпадать с
+         Strings.en.xaml. Используются через {DynamicResource ...} в XAML и
+         Loc.T("Key") в ViewModel. -->
+
+    <!-- Service control bar -->
+    <sys:String x:Key="Btn.Start">Старт</sys:String>
+    <sys:String x:Key="Btn.Stop">Стоп</sys:String>
+    <sys:String x:Key="Bar.Traffic">Трафик:</sys:String>
+    <sys:String x:Key="Bar.Language">Язык:</sys:String>
+
+    <!-- Proxy settings -->
+    <sys:String x:Key="Section.Proxy">НАСТРОЙКИ ПРОКСИ</sys:String>
+    <sys:String x:Key="Proxy.Host">Хост:</sys:String>
+    <sys:String x:Key="Proxy.Port">Порт:</sys:String>
+    <sys:String x:Key="Proxy.AuthRequired">Требуется авторизация</sys:String>
+
+    <!-- Authentication -->
+    <sys:String x:Key="Section.Auth">АВТОРИЗАЦИЯ (Логин / Kerberos SSPI)</sys:String>
+    <sys:String x:Key="Auth.Login">Логин:</sys:String>
+    <sys:String x:Key="Auth.Password">Пароль:</sys:String>
+    <sys:String x:Key="Auth.UseKerberos">Использовать протокол Kerberos</sys:String>
+    <sys:String x:Key="Auth.EncryptPassword">Шифровать пароль (DPAPI). Снимите — хранить/использовать пароль как есть (plaintext в config.json)</sys:String>
+
+    <!-- Capture mode -->
+    <sys:String x:Key="Section.CaptureMode">РЕЖИМ ЗАХВАТА ТРАФИКА</sys:String>
+    <sys:String x:Key="Capture.Mode">Режим:</sys:String>
+    <sys:String x:Key="Capture.WinDivertTitle">Настройки WinDivert</sys:String>
+    <sys:String x:Key="Capture.WinDivertInfo">Режим WinDivert перехватывает трафик на уровне драйвера по пути процесса. Дополнительной настройки не требуется — правила задаются в разделе «Приложения».</sys:String>
+    <sys:String x:Key="Capture.WintunTitle">Настройки Wintun</sys:String>
+    <sys:String x:Key="Wintun.AdapterName">Имя адаптера:</sys:String>
+    <sys:String x:Key="Wintun.Mtu">MTU:</sys:String>
+    <sys:String x:Key="Wintun.TunnelIpv4Cidr">IPv4 CIDR туннеля:</sys:String>
+    <sys:String x:Key="Wintun.Engine">Движок:</sys:String>
+    <sys:String x:Key="Wintun.RouteLadderPrefix">Глубина лестницы маршрутов (1..8):</sys:String>
+    <sys:String x:Key="Wintun.ProcessFilter">Фильтрация по процессу (Wintun)</sys:String>
+    <sys:String x:Key="Wintun.BlockIpv6">Блокировать IPv6 (форсировать IPv4 через туннель)</sys:String>
+    <sys:String x:Key="Wintun.ExternalTitle">Внешний (tun2socks.exe)</sys:String>
+    <sys:String x:Key="Wintun.ExternalExe">Путь к EXE:</sys:String>
+    <sys:String x:Key="Wintun.ExternalSocks5">SOCKS5 listen:</sys:String>
+    <sys:String x:Key="Wintun.ExternalRestart">Перезапускать при сбое</sys:String>
+
+    <!-- Apps -->
+    <sys:String x:Key="Section.Apps">ПРИЛОЖЕНИЯ</sys:String>
+    <sys:String x:Key="Apps.Add">+ Добавить приложение</sys:String>
+    <sys:String x:Key="Apps.SaveAll">Сохранить всё</sys:String>
+    <sys:String x:Key="Apps.Unsaved">● есть несохранённые изменения</sys:String>
+    <sys:String x:Key="Apps.Col.Pattern">Шаблон имени EXE</sys:String>
+    <sys:String x:Key="Apps.Col.FullPath">Полный путь</sys:String>
+    <sys:String x:Key="Apps.Col.ProxyId">ID прокси</sys:String>
+    <sys:String x:Key="Apps.Col.RouteAll">Весь трафик через прокси</sys:String>
+    <sys:String x:Key="Apps.Col.Ports">Порты (например: 80, 443, 8000-8100)</sys:String>
+    <sys:String x:Key="Apps.Ports.Tooltip">Формат: 80, 443, 8000-8100</sys:String>
+    <sys:String x:Key="Apps.TotalPrefix">Всего:</sys:String>
+    <sys:String x:Key="Apps.TotalSuffix">прил.</sys:String>
+
+    <!-- Trace -->
+    <sys:String x:Key="Section.Trace">ТРАССИРОВКА ПЕРЕНАПРАВЛЯЕМЫХ СОЕДИНЕНИЙ</sys:String>
+    <sys:String x:Key="Trace.Col.Process">Процесс</sys:String>
+    <sys:String x:Key="Trace.Col.Pid">PID</sys:String>
+    <sys:String x:Key="Trace.Col.Destination">Назначение</sys:String>
+    <sys:String x:Key="Trace.Col.Port">Порт</sys:String>
+    <sys:String x:Key="Trace.Col.State">Состояние</sys:String>
+    <sys:String x:Key="Trace.Col.ViaProxy">Через прокси</sys:String>
+    <sys:String x:Key="Trace.Col.Rx">RX</sys:String>
+    <sys:String x:Key="Trace.Col.Tx">TX</sys:String>
+    <sys:String x:Key="Trace.Col.Duration">Время</sys:String>
+    <sys:String x:Key="Trace.ActivePrefix">Активных соединений:</sys:String>
+    <sys:String x:Key="Trace.Note">Примечание: пер-соединённая трасса заполняется в режимах WinDivert и Wintun (embedded). В режиме Wintun (external) детализация по соединениям недоступна.</sys:String>
+
+    <!-- IPC / security -->
+    <sys:String x:Key="Section.Ipc">ДОПОЛНИТЕЛЬНО (IPC / БЕЗОПАСНОСТЬ)</sys:String>
+    <sys:String x:Key="Ipc.AuthEnabled">Требовать токен-аутентификацию на IPC-канале (рекомендуется)</sys:String>
+    <sys:String x:Key="Ipc.Note">Снимите флажок, чтобы отключить проверку токена: любой локальный клиент сможет управлять службой без .ipc_token и без привилегий. Диагностический режим — используйте только в доверенном окружении. Изменение вступает в силу после перезапуска службы.</sys:String>
+
+    <!-- Log level -->
+    <sys:String x:Key="Section.LogLevel">УРОВЕНЬ ЛОГИРОВАНИЯ</sys:String>
+    <sys:String x:Key="Log.Level">Уровень:</sys:String>
+    <sys:String x:Key="Log.Save">Сохранить</sys:String>
+
+    <!-- Statistics -->
+    <sys:String x:Key="Stats.Title">ТРАФИК (байт/сек)</sys:String>
+    <sys:String x:Key="Stats.ActiveConnections">Активные соединения:</sys:String>
+    <sys:String x:Key="Stats.Rx">RX:</sys:String>
+    <sys:String x:Key="Stats.Tx">TX:</sys:String>
+    <sys:String x:Key="Stats.ProxyErrors">Ошибки прокси:</sys:String>
+    <sys:String x:Key="Stats.AvgLatency">Ср. задержка:</sys:String>
+    <sys:String x:Key="Stats.Uptime">Аптайм:</sys:String>
+    <sys:String x:Key="Stats.Rate">Темп:</sys:String>
+
+    <!-- Status bar -->
+    <sys:String x:Key="StatusBar.Version">TcpRedirector v1.0.0</sys:String>
+
+    <!-- Dynamic (ViewModel) status/messages -->
+    <sys:String x:Key="Svc.Status.Stopped">Остановлена</sys:String>
+    <sys:String x:Key="Svc.Status.Starting">Запуск</sys:String>
+    <sys:String x:Key="Svc.Status.Running">Работает</sys:String>
+    <sys:String x:Key="Svc.Status.Stopping">Остановка</sys:String>
+    <sys:String x:Key="Svc.Status.Failed">Ошибка</sys:String>
+    <sys:String x:Key="Svc.Status.Error">Ошибка</sys:String>
+
+    <sys:String x:Key="Svc.Msg.StartFailed">✗ Не удалось запустить</sys:String>
+    <sys:String x:Key="Svc.Msg.Started">✓ Запущена</sys:String>
+    <sys:String x:Key="Svc.Msg.StartedUnsaved">✓ Запущена (есть несохранённые изменения)</sys:String>
+    <sys:String x:Key="Svc.Msg.Stopped">✓ Остановлена</sys:String>
+    <sys:String x:Key="Svc.Msg.StopFailed">✗ Не удалось остановить</sys:String>
+    <sys:String x:Key="Svc.Msg.StoppedForced">✓ Остановлена (принудительно)</sys:String>
+    <sys:String x:Key="Svc.Msg.BackendNotFound">TcpRedirectorService.exe не найден</sys:String>
+
+    <sys:String x:Key="Status.Configured">Настроено</sys:String>
+    <sys:String x:Key="Status.Loading">Загрузка...</sys:String>
+    <sys:String x:Key="Status.Connected">Подключено</sys:String>
+    <sys:String x:Key="Status.Disconnected">Отключено</sys:String>
+
+    <sys:String x:Key="Save.Ok">✓ Сохранено в</sys:String>
+    <sys:String x:Key="Save.ErrorFix">✗ Ошибка: исправьте подсвеченные поля перед сохранением</sys:String>
+    <sys:String x:Key="Save.ErrorWrite">✗ Ошибка: не удалось записать</sys:String>
+    <sys:String x:Key="Save.VerifyFailed">✗ Проверка не пройдена:</sys:String>
+    <sys:String x:Key="Save.ErrorPrefix">✗ Ошибка:</sys:String>
+    <sys:String x:Key="Log.Saved">✓ Сохранено</sys:String>
+
+    <!-- Validation messages -->
+    <sys:String x:Key="Val.HostRequired">Укажите адрес прокси</sys:String>
+    <sys:String x:Key="Val.HostInvalid">Некорректный адрес (host или IP)</sys:String>
+    <sys:String x:Key="Val.PortRange">Порт должен быть в диапазоне 1..65535</sys:String>
+    <sys:String x:Key="Val.LoginRequired">Укажите логин для Basic-авторизации</sys:String>
+    <sys:String x:Key="Val.AdapterNameRequired">Имя адаптера не может быть пустым</sys:String>
+    <sys:String x:Key="Val.Ipv4Cidr">Формат: a.b.c.d/N (N в диапазоне 0..32), напр. 10.6.7.1/24</sys:String>
+    <sys:String x:Key="Val.MtuRange">MTU должен быть в диапазоне 576..65535</sys:String>
+    <sys:String x:Key="Val.RouteLadderRange">Глубина лестницы маршрутов должна быть в диапазоне 1..8</sys:String>
+    <sys:String x:Key="Val.ExternalExeRequired">Укажите путь к tun2socks.exe</sys:String>
+    <sys:String x:Key="Val.Socks5HostPort">Формат: host:port (порт 1..65535), напр. 127.0.0.1:1080</sys:String>
+
+    <!-- File dialog -->
+    <sys:String x:Key="Dialog.SelectApp">Выберите приложение</sys:String>
+
+</ResourceDictionary>

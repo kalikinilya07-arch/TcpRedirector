@@ -248,6 +248,22 @@ private:
     bool SaveImpl();
 
     /**
+     * @brief (Задача №2) Очистить неактуальные поля секции auth перед записью.
+     *
+     * Гарантирует, что в config.json не остаются «мусорные» значения для
+     * деактивированных настроек авторизации:
+     *  • auth выключена            → username/encryptedPassword/password очищаются;
+     *  • Kerberos                  → username/encryptedPassword/password очищаются
+     *                                (SSPI использует контекст текущей учётной записи);
+     *  • Basic + encryptPassword   → password (plaintext) очищается;
+     *  • Basic + !encryptPassword  → encryptedPassword (DPAPI) очищается.
+     *
+     * Вызывается из SaveImpl() (единая точка персиста), поэтому применяется ко
+     * всем путям записи конфигурации службой.
+     */
+    void NormalizeAuthFields();
+
+    /**
      * @brief Создать конфигурацию по умолчанию.
      * @return true, если успешно.
      */

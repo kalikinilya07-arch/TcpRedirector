@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using TcpRedirectorGUI.Domain.Entities;
 using TcpRedirectorGUI.Domain.Ports;
 using TcpRedirectorGUI.Infrastructure.Ipc;
+using TcpRedirectorGUI.Infrastructure.Localization;
 
 namespace TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
 
@@ -18,10 +19,16 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     private readonly ITcpRedirectorService _svc;
     private readonly IServiceController _scm;
     private readonly IConfigRepository _config;
+    private readonly LocalizationService _loc;
     private CancellationTokenSource? _timerCts;
     private Process? _backendProcess;
     private bool _disposed;
     private readonly int _pollIntervalMs;
+
+    // (Задача №1) Семантические ключи текущего статуса/сообщения, чтобы
+    // перелокализовать их при смене языка «на лету».
+    private string _svcStatusKey = "Svc.Status.Stopped";
+    private string _statusTextKey = "Status.Configured";
 
     public ShellViewModel(
         ITcpRedirectorService svc,
@@ -29,11 +36,13 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         IConfigRepository config,
         SettingsViewModel settings,
         StatsViewModel stats,
-        TraceViewModel trace)
+        TraceViewModel trace,
+        LocalizationService loc)
     {
         _svc = svc;
         _scm = scm;
         _config = config;
+        _loc = loc;
         Settings = settings;
         Stats = stats;
         Trace = trace;
@@ -44,9 +53,48 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         // React to connection state changes
         _svc.ConnectionStateChanged += OnConnectionStateChanged;
 
+        // (Задача №1) Инициализация переключателя языка из уже применённого
+        // службой языка; подписка на смену для перелокализации статусов.
+        _language = _loc.CurrentLanguage;
+        _loc.LanguageChanged += OnServiceLanguageChanged;
+
         // Load config from disk synchronously (blocking in ctor is OK — tiny file)
         Settings.LoadFromConfig();
-        StatusText = "Configured";
+        SetSvcStatusKey("Svc.Status.Stopped");
+        SetStatusTextKey("Status.Configured");
+    }
+
+    // ── Language switch (Задача №1) ──────────────────
+    public IReadOnlyList<AppLanguage> Languages { get; } =
+        [AppLanguage.Russian, AppLanguage.English];
+
+    [ObservableProperty] private AppLanguage _language;
+
+    partial void OnLanguageChanged(AppLanguage value)
+    {
+        if (_loc.CurrentLanguage == value) return;
+        _loc.SetLanguage(value);
+        _config.WriteString("gui", "language", LocalizationService.ToCode(value));
+    }
+
+    private void OnServiceLanguageChanged(AppLanguage lang)
+    {
+        // Перелокализовать динамические статусы после смены словаря.
+        SvcStatus = Loc.T(_svcStatusKey);
+        StatusText = Loc.T(_statusTextKey);
+    }
+
+    // Устанавливает статус службы по ключу (с запоминанием для перелокализации).
+    private void SetSvcStatusKey(string key)
+    {
+        _svcStatusKey = key;
+        SvcStatus = Loc.T(key);
+    }
+
+    private void SetStatusTextKey(string key)
+    {
+        _statusTextKey = key;
+        StatusText = Loc.T(key);
     }
 
     // ── Status ───────────────────────────────────────
@@ -81,7 +129,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     {
         try
         {
-            SvcStatus = "Starting";
+            SetSvcStatusKey("Svc.Status.Starting");
             SvcMsg = "";
 
             StopTimer();
@@ -89,8 +137,8 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             var ok = await _scm.StartServiceAsync();
             if (!ok)
             {
-                SvcStatus = "Failed";
-                SvcMsg = "\u2717 Start failed";
+                SetSvcStatusKey("Svc.Status.Failed");
+                SvcMsg = Loc.T("Svc.Msg.StartFailed");
                 return;
             }
 
@@ -99,13 +147,13 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             // Reload config from disk — service loaded it at startup. Skip when
             // the user has unsaved edits so a reload doesn't discard them.
             if (!Settings.ReloadFromConfigIfClean())
-                SvcMsg = "\u2713 Started (есть несохранённые изменения)";
-            SvcStatus = "Running";
-            if (string.IsNullOrEmpty(SvcMsg)) SvcMsg = "\u2713 Started";
+                SvcMsg = Loc.T("Svc.Msg.StartedUnsaved");
+            SetSvcStatusKey("Svc.Status.Running");
+            if (string.IsNullOrEmpty(SvcMsg)) SvcMsg = Loc.T("Svc.Msg.Started");
         }
         catch (Exception ex)
         {
-            SvcStatus = "Error";
+            SetSvcStatusKey("Svc.Status.Error");
             SvcMsg = $"\u2717 {ex.Message}";
         }
         finally
@@ -119,7 +167,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     {
         try
         {
-            SvcStatus = "Stopping";
+            SetSvcStatusKey("Svc.Status.Stopping");
             SvcMsg = "";
 
             StopTimer();
@@ -130,20 +178,20 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             try
             {
                 var ok = await Task.Run(() => _scm.StopServiceAsync(), cts.Token);
-                SvcStatus = ok ? "Stopped" : "Failed";
-                SvcMsg = ok ? "\u2713 Stopped" : "\u2717 Stop failed";
+                SetSvcStatusKey(ok ? "Svc.Status.Stopped" : "Svc.Status.Failed");
+                SvcMsg = ok ? Loc.T("Svc.Msg.Stopped") : Loc.T("Svc.Msg.StopFailed");
             }
             catch (OperationCanceledException)
             {
                 // Service is stuck — force kill
                 KillServiceProcess();
-                SvcStatus = "Stopped";
-                SvcMsg = "\u2713 Stopped (forced)";
+                SetSvcStatusKey("Svc.Status.Stopped");
+                SvcMsg = Loc.T("Svc.Msg.StoppedForced");
             }
         }
         catch
         {
-            SvcStatus = "Error";
+            SetSvcStatusKey("Svc.Status.Error");
         }
         finally
         {
@@ -184,9 +232,9 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         var exePath = FindBackendExe();
         if (string.IsNullOrEmpty(exePath))
         {
-            StatusText = "Backend not found";
-            SvcStatus = "Error";
-            SvcMsg = "TcpRedirectorService.exe not found";
+            SetStatusTextKey("Svc.Status.Error");
+            SetSvcStatusKey("Svc.Status.Error");
+            SvcMsg = Loc.T("Svc.Msg.BackendNotFound");
             return;
         }
 
@@ -336,7 +384,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
                 var status = await _svc.GetServiceStatusAsync();
                 if (status is not null)
-                    SvcStatus = status.Running ? "Running" : "Stopped";
+                    SetSvcStatusKey(status.Running ? "Svc.Status.Running" : "Svc.Status.Stopped");
             }
             catch (OperationCanceledException)
             {
@@ -355,7 +403,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     private void OnConnectionStateChanged(bool connected)
     {
         IsConnected = connected;
-        StatusText = connected ? "Connected" : "Disconnected";
+        SetStatusTextKey(connected ? "Status.Connected" : "Status.Disconnected");
         if (!connected)
         {
             Trace.Clear();
@@ -398,6 +446,7 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         _disposed = true;
 
         _svc.ConnectionStateChanged -= OnConnectionStateChanged;
+        _loc.LanguageChanged -= OnServiceLanguageChanged;
         StopTimer();
         _svc.Disconnect();
 

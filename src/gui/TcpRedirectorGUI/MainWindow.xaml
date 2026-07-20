@@ -60,13 +60,13 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Start -->
-                <Button Grid.Column="0" Content="Start"
+                <Button Grid.Column="0" Content="{DynamicResource Btn.Start}"
                         Command="{Binding StartServiceCommand}"
                         Style="{StaticResource PrimaryButton}"
                         Padding="16,6" Margin="0,0,6,0"/>
 
                 <!-- Stop -->
-                <Button Grid.Column="1" Content="Stop"
+                <Button Grid.Column="1" Content="{DynamicResource Btn.Stop}"
                         Command="{Binding StopServiceCommand}"
                         Style="{StaticResource DangerButton}"
                         Padding="16,6" Margin="0,0,6,0"/>
@@ -86,10 +86,28 @@
                                Margin="8,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
 
+                <!-- Language switcher (Задача №1) -->
+                <StackPanel Grid.Column="3" Orientation="Horizontal"
+                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Margin="0,0,12,0">
+                    <TextBlock Text="{DynamicResource Bar.Language}"
+                               Foreground="#858585" FontSize="12"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <ComboBox Width="110" FontSize="12"
+                              ItemsSource="{Binding Languages}"
+                              SelectedItem="{Binding Language, Mode=TwoWay}">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Converter={StaticResource LangName}}"/>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                </StackPanel>
+
                 <!-- Connection info -->
-                <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
+                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock FontSize="12" Foreground="#858585">
-                        <Run Text="Traffic:"/>
+                        <Run Text="{DynamicResource Bar.Traffic}"/>
                         <Run Text="{Binding TotalTraffic, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                     </TextBlock>
                 </StackPanel>
@@ -118,7 +136,7 @@
                 <StackPanel Grid.Row="0">
 
                     <!-- Proxy Settings -->
-                    <TextBlock Text="PROXY SETTINGS" Style="{StaticResource SectionHeader}"/>
+                    <TextBlock Text="{DynamicResource Section.Proxy}" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -132,7 +150,7 @@
                                 <ColumnDefinition Width="150"/>
                             </Grid.ColumnDefinitions>
 
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Host:"
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource Proxy.Host}"
                                        VerticalAlignment="Center" Margin="0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="1"
                                      Style="{StaticResource ValidatedTextBox}"
@@ -142,7 +160,7 @@
                                                     NotifyOnValidationError=True}"
                                      Margin="0,2"/>
 
-                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Port:"
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="{DynamicResource Proxy.Port}"
                                        VerticalAlignment="Center" Margin="8,2,0,2"/>
                             <TextBox Grid.Row="0" Grid.Column="3"
                                      Style="{StaticResource ValidatedTextBox}"
@@ -154,75 +172,83 @@
                                      Margin="8,2,0,2"/>
 
                             <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
-                                      Content="Authentication required"
+                                      Content="{DynamicResource Proxy.AuthRequired}"
                                       IsChecked="{Binding Settings.AuthRequired, Mode=TwoWay}"
                                       Margin="0,2"/>
                         </Grid>
                     </Border>
 
                     <!-- Authentication -->
-                    <TextBlock Text="AUTHENTICATION (Login / Kerberos SSPI)"
+                    <TextBlock Text="{DynamicResource Section.Auth}"
                                Style="{StaticResource SectionHeader}"
                                Visibility="{Binding Settings.AuthRequired, Converter={StaticResource BoolToVis}}"/>
                     <Border Style="{StaticResource SectionBorder}"
                             Visibility="{Binding Settings.AuthRequired, Converter={StaticResource BoolToVis}}">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="250"/>
-                                <ColumnDefinition Width="100"/>
-                                <ColumnDefinition Width="150"/>
-                            </Grid.ColumnDefinitions>
-
-                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Login:"
-                                       VerticalAlignment="Center" Margin="0,2"/>
-                            <TextBox Grid.Row="0" Grid.Column="1"
-                                     Style="{StaticResource ValidatedTextBox}"
-                                     Text="{Binding Settings.Login, Mode=TwoWay,
-                                                    UpdateSourceTrigger=PropertyChanged,
-                                                    ValidatesOnNotifyDataErrors=True,
-                                                    NotifyOnValidationError=True}"
-                                     Margin="0,2"/>
-
-                            <TextBlock Grid.Row="0" Grid.Column="2" Text="Password:"
-                                       VerticalAlignment="Center" Margin="8,2,0,2"/>
-                            <!-- PasswordBox + overlay-плейсхолдер: если пароль уже
-                                 сохранён (в любом формате), показываем «••••••••»,
-                                 пока поле пустое; при вводе символов плейсхолдер
-                                 скрывается. Само поле остаётся пустым до ввода. -->
-                            <Grid Grid.Row="0" Grid.Column="3" Margin="8,2,0,2">
-                                <PasswordBox x:Name="PwdBox"/>
-                                <TextBlock x:Name="PwdPlaceholder"
-                                           Text="{Binding Settings.PasswordPlaceholder}"
-                                           Foreground="#7F7F7F"
-                                           VerticalAlignment="Center"
-                                           Margin="4,0,0,0"
-                                           IsHitTestVisible="False"/>
-                            </Grid>
-
-                            <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
-                                      Content="Use Kerberos protocol"
+                        <StackPanel>
+                            <!-- Kerberos toggle — всегда виден, пока авторизация
+                                 включена, чтобы можно было вернуться к Basic. -->
+                            <CheckBox Content="{DynamicResource Auth.UseKerberos}"
                                       IsChecked="{Binding Settings.KerberosEnabled, Mode=TwoWay}"
                                       Margin="0,2"/>
-                            <CheckBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
-                                      Content="Шифровать пароль (DPAPI). Снимите — хранить/использовать пароль как есть (plaintext в config.json)"
-                                      IsChecked="{Binding Settings.EncryptPassword, Mode=TwoWay}"
-                                      Margin="0,2"/>
-                        </Grid>
+
+                            <!-- (Задача №3) Поля Basic-аутентификации (Login,
+                                 Password, «Шифровать пароль») скрываются при
+                                 включённом Kerberos и снова показываются при его
+                                 отключении. -->
+                            <Grid Visibility="{Binding Settings.ShowBasicCredentials, Converter={StaticResource BoolToVis}}"
+                                  Margin="0,2,0,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="250"/>
+                                    <ColumnDefinition Width="100"/>
+                                    <ColumnDefinition Width="150"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="{DynamicResource Auth.Login}"
+                                           VerticalAlignment="Center" Margin="0,2"/>
+                                <TextBox Grid.Row="0" Grid.Column="1"
+                                         Style="{StaticResource ValidatedTextBox}"
+                                         Text="{Binding Settings.Login, Mode=TwoWay,
+                                                        UpdateSourceTrigger=PropertyChanged,
+                                                        ValidatesOnNotifyDataErrors=True,
+                                                        NotifyOnValidationError=True}"
+                                         Margin="0,2"/>
+
+                                <TextBlock Grid.Row="0" Grid.Column="2" Text="{DynamicResource Auth.Password}"
+                                           VerticalAlignment="Center" Margin="8,2,0,2"/>
+                                <!-- PasswordBox + overlay-плейсхолдер: если пароль уже
+                                     сохранён (в любом формате), показываем «••••••••»,
+                                     пока поле пустое; при вводе символов плейсхолдер
+                                     скрывается. Само поле остаётся пустым до ввода. -->
+                                <Grid Grid.Row="0" Grid.Column="3" Margin="8,2,0,2">
+                                    <PasswordBox x:Name="PwdBox"/>
+                                    <TextBlock x:Name="PwdPlaceholder"
+                                               Text="{Binding Settings.PasswordPlaceholder}"
+                                               Foreground="#7F7F7F"
+                                               VerticalAlignment="Center"
+                                               Margin="4,0,0,0"
+                                               IsHitTestVisible="False"/>
+                                </Grid>
+
+                                <CheckBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
+                                          Content="{DynamicResource Auth.EncryptPassword}"
+                                          IsChecked="{Binding Settings.EncryptPassword, Mode=TwoWay}"
+                                          Margin="0,2"/>
+                            </Grid>
+                        </StackPanel>
                     </Border>
 
                     <!-- WP5: Capture mode + Wintun settings -->
-                    <TextBlock Text="РЕЖИМ ЗАХВАТА ТРАФИКА" Style="{StaticResource SectionHeader}"/>
+                    <TextBlock Text="{DynamicResource Section.CaptureMode}" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <StackPanel>
                             <!-- Mode selector -->
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                                <TextBlock Text="Режим:" VerticalAlignment="Center"
+                                <TextBlock Text="{DynamicResource Capture.Mode}" VerticalAlignment="Center"
                                            Width="90" Margin="0,2"/>
                                 <ComboBox Width="180"
                                           ItemsSource="{Binding Settings.CaptureModes}"
@@ -235,11 +261,11 @@
                                     Margin="0,6,0,0" Padding="0,6,0,0"
                                     Visibility="{Binding Settings.IsWinDivertSelected, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
-                                    <TextBlock Text="Настройки WinDivert"
+                                    <TextBlock Text="{DynamicResource Capture.WinDivertTitle}"
                                                Foreground="#DCDCAA" FontWeight="Bold"
                                                Margin="0,0,0,4"/>
                                     <TextBlock TextWrapping="Wrap" Foreground="#9CDCFE"
-                                               Text="Режим WinDivert перехватывает трафик на уровне драйвера по пути процесса. Дополнительной настройки не требуется — правила задаются в разделе «Приложения»."/>
+                                               Text="{DynamicResource Capture.WinDivertInfo}"/>
                                 </StackPanel>
                             </Border>
 
@@ -248,7 +274,7 @@
                                     Margin="0,6,0,0" Padding="0,6,0,0"
                                     Visibility="{Binding Settings.IsWintunSelected, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
-                                    <TextBlock Text="Настройки Wintun"
+                                    <TextBlock Text="{DynamicResource Capture.WintunTitle}"
                                                Foreground="#DCDCAA" FontWeight="Bold"
                                                Margin="0,0,0,4"/>
                                     <Grid>
@@ -266,7 +292,7 @@
                                         </Grid.ColumnDefinitions>
 
                                         <TextBlock Grid.Row="0" Grid.Column="0"
-                                                   Text="Имя адаптера:"
+                                                   Text="{DynamicResource Wintun.AdapterName}"
                                                    VerticalAlignment="Center" Margin="0,2"/>
                                         <TextBox Grid.Row="0" Grid.Column="1"
                                                  Style="{StaticResource ValidatedTextBox}"
@@ -277,7 +303,7 @@
                                                  Margin="0,2"/>
 
                                         <TextBlock Grid.Row="0" Grid.Column="2"
-                                                   Text="MTU:"
+                                                   Text="{DynamicResource Wintun.Mtu}"
                                                    VerticalAlignment="Center" Margin="8,2,0,2"/>
                                         <TextBox Grid.Row="0" Grid.Column="3"
                                                  Style="{StaticResource ValidatedTextBox}"
@@ -289,7 +315,7 @@
                                                  Margin="8,2,0,2"/>
 
                                         <TextBlock Grid.Row="1" Grid.Column="0"
-                                                   Text="IPv4 CIDR туннеля:"
+                                                   Text="{DynamicResource Wintun.TunnelIpv4Cidr}"
                                                    VerticalAlignment="Center" Margin="0,2"/>
                                         <TextBox Grid.Row="1" Grid.Column="1"
                                                  Style="{StaticResource ValidatedTextBox}"
@@ -300,7 +326,7 @@
                                                  Margin="0,2"/>
 
                                         <TextBlock Grid.Row="2" Grid.Column="0"
-                                                   Text="Движок:"
+                                                   Text="{DynamicResource Wintun.Engine}"
                                                    VerticalAlignment="Center" Margin="0,2"/>
                                         <ComboBox Grid.Row="2" Grid.Column="1"
                                                   ItemsSource="{Binding Settings.WintunEngines}"
@@ -308,7 +334,7 @@
                                                   Margin="0,2"/>
 
                                         <TextBlock Grid.Row="3" Grid.Column="0"
-                                                   Text="Глубина лестницы маршрутов (1..8):"
+                                                   Text="{DynamicResource Wintun.RouteLadderPrefix}"
                                                    TextWrapping="Wrap"
                                                    VerticalAlignment="Center" Margin="0,2"/>
                                         <TextBox Grid.Row="3" Grid.Column="1"
@@ -321,18 +347,18 @@
                                                  Margin="0,2"/>
                                     </Grid>
 
-                                    <CheckBox Content="Фильтрация по процессу (Wintun)"
+                                    <CheckBox Content="{DynamicResource Wintun.ProcessFilter}"
                                               IsChecked="{Binding Settings.WintunProcessFilterEnabled, Mode=TwoWay}"
                                               Margin="0,6,0,0"/>
 
-                                    <CheckBox Content="Блокировать IPv6 (форсировать IPv4 через туннель)"
+                                    <CheckBox Content="{DynamicResource Wintun.BlockIpv6}"
                                               IsChecked="{Binding Settings.WintunBlockIpv6, Mode=TwoWay}"
                                               Margin="0,6,0,0"/>
 
                                     <!-- External engine sub-panel — visible only when engine==External -->
                                     <StackPanel Margin="0,6,0,0"
                                                 Visibility="{Binding Settings.IsExternalEngine, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="Внешний (tun2socks.exe)"
+                                        <TextBlock Text="{DynamicResource Wintun.ExternalTitle}"
                                                    Foreground="#DCDCAA" FontWeight="Bold"
                                                    Margin="0,0,0,4"/>
                                         <Grid>
@@ -347,7 +373,7 @@
                                             </Grid.ColumnDefinitions>
 
                                             <TextBlock Grid.Row="0" Grid.Column="0"
-                                                       Text="Путь к EXE:"
+                                                       Text="{DynamicResource Wintun.ExternalExe}"
                                                        VerticalAlignment="Center" Margin="0,2"/>
                                             <TextBox Grid.Row="0" Grid.Column="1"
                                                      Style="{StaticResource ValidatedTextBox}"
@@ -358,7 +384,7 @@
                                                      Margin="0,2"/>
 
                                             <TextBlock Grid.Row="1" Grid.Column="0"
-                                                       Text="SOCKS5 listen:"
+                                                       Text="{DynamicResource Wintun.ExternalSocks5}"
                                                        VerticalAlignment="Center" Margin="0,2"/>
                                             <TextBox Grid.Row="1" Grid.Column="1"
                                                      Style="{StaticResource ValidatedTextBox}"
@@ -369,7 +395,7 @@
                                                      Margin="0,2"/>
 
                                             <CheckBox Grid.Row="2" Grid.Column="1"
-                                                      Content="Перезапускать при сбое"
+                                                      Content="{DynamicResource Wintun.ExternalRestart}"
                                                       IsChecked="{Binding Settings.ExternalRestartOnCrash, Mode=TwoWay}"
                                                       Margin="0,2"/>
                                         </Grid>
@@ -380,7 +406,7 @@
                     </Border>
 
                     <!-- WP5: Apps (multi-port per-app rules) -->
-                    <TextBlock Text="ПРИЛОЖЕНИЯ" Style="{StaticResource SectionHeader}"/>
+                    <TextBlock Text="{DynamicResource Section.Apps}" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -390,14 +416,14 @@
                             </Grid.RowDefinitions>
 
                             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,4">
-                                <Button Content="+ Добавить приложение"
+                                <Button Content="{DynamicResource Apps.Add}"
                                         Command="{Binding Settings.AddRuleCommand}"
                                         Padding="12,6" Margin="0,0,8,0"/>
-                                <Button Content="Сохранить всё (Save all)"
+                                <Button Content="{DynamicResource Apps.SaveAll}"
                                         Command="{Binding Settings.SaveAllCommand}"
                                         Style="{StaticResource PrimaryButton}"
                                         Padding="12,6"/>
-                                <TextBlock Text="● есть несохранённые изменения"
+                                <TextBlock Text="{DynamicResource Apps.Unsaved}"
                                            Foreground="#DCDCAA" FontWeight="Bold"
                                            VerticalAlignment="Center" Margin="12,0,0,0"
                                            Visibility="{Binding Settings.IsDirty, Converter={StaticResource BoolToVis}}"/>
@@ -414,19 +440,19 @@
                                       FontSize="12"
                                       MinHeight="60" MaxHeight="400">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Шаблон имени EXE"
+                                    <DataGridTextColumn Header="{DynamicResource Apps.Col.Pattern}"
                                                         Binding="{Binding Pattern}"
                                                         Width="180"/>
-                                    <DataGridTextColumn Header="Полный путь"
+                                    <DataGridTextColumn Header="{DynamicResource Apps.Col.FullPath}"
                                                         Binding="{Binding ExePath}"
                                                         Width="*"/>
-                                    <DataGridTextColumn Header="ID прокси"
+                                    <DataGridTextColumn Header="{DynamicResource Apps.Col.ProxyId}"
                                                         Binding="{Binding ProxyId}"
                                                         Width="90"/>
-                                    <DataGridCheckBoxColumn Header="Весь трафик через прокси"
+                                    <DataGridCheckBoxColumn Header="{DynamicResource Apps.Col.RouteAll}"
                                                             Binding="{Binding RouteAllTraffic, UpdateSourceTrigger=PropertyChanged}"
                                                             Width="90"/>
-                                    <DataGridTemplateColumn Header="Порты (например: 80, 443, 8000-8100)"
+                                    <DataGridTemplateColumn Header="{DynamicResource Apps.Col.Ports}"
                                                             Width="260">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
@@ -436,7 +462,7 @@
                                                                         ValidatesOnNotifyDataErrors=True,
                                                                         NotifyOnValidationError=True}"
                                                          IsEnabled="{Binding PortsEditable}"
-                                                         ToolTip="Формат: 80, 443, 8000-8100"/>
+                                                         ToolTip="{DynamicResource Apps.Ports.Tooltip}"/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
@@ -455,13 +481,13 @@
                             </DataGrid>
 
                             <TextBlock Grid.Row="2" Foreground="#858585" Margin="0,4,0,0" FontSize="12">
-                                Всего: <Run Text="{Binding Settings.Apps.Count, Mode=OneWay}" FontWeight="Bold"/> прил.
+                                <Run Text="{DynamicResource Apps.TotalPrefix}"/> <Run Text="{Binding Settings.Apps.Count, Mode=OneWay}" FontWeight="Bold"/> <Run Text="{DynamicResource Apps.TotalSuffix}"/>
                             </TextBlock>
                         </Grid>
                     </Border>
 
                     <!-- Task 4: Packet / connection trace -->
-                    <TextBlock Text="ТРАССИРОВКА ПЕРЕНАПРАВЛЯЕМЫХ СОЕДИНЕНИЙ"
+                    <TextBlock Text="{DynamicResource Section.Trace}"
                                Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <Grid>
@@ -479,56 +505,56 @@
                                       FontSize="12"
                                       MinHeight="60" MaxHeight="220">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Процесс"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Process}"
                                                         Binding="{Binding ProcessName}" Width="150"/>
-                                    <DataGridTextColumn Header="PID"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Pid}"
                                                         Binding="{Binding Pid}" Width="60"/>
-                                    <DataGridTextColumn Header="Назначение"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Destination}"
                                                         Binding="{Binding DisplayDestination}" Width="*"/>
-                                    <DataGridTextColumn Header="Порт"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Port}"
                                                         Binding="{Binding DestinationPort}" Width="60"/>
-                                    <DataGridTextColumn Header="Состояние"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.State}"
                                                         Binding="{Binding State}" Width="120"/>
-                                    <DataGridCheckBoxColumn Header="Через прокси"
+                                    <DataGridCheckBoxColumn Header="{DynamicResource Trace.Col.ViaProxy}"
                                                             Binding="{Binding ProxyEnabled}" Width="90"/>
-                                    <DataGridTextColumn Header="RX"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Rx}"
                                                         Binding="{Binding RxDisplay}" Width="80"/>
-                                    <DataGridTextColumn Header="TX"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Tx}"
                                                         Binding="{Binding TxDisplay}" Width="80"/>
-                                    <DataGridTextColumn Header="Время"
+                                    <DataGridTextColumn Header="{DynamicResource Trace.Col.Duration}"
                                                         Binding="{Binding DurationDisplay}" Width="80"/>
                                 </DataGrid.Columns>
                             </DataGrid>
 
                             <TextBlock Grid.Row="1" Foreground="#858585" Margin="0,4,0,0" FontSize="12">
-                                Активных соединений: <Run Text="{Binding Trace.Count, Mode=OneWay}" FontWeight="Bold"/>
+                                <Run Text="{DynamicResource Trace.ActivePrefix}"/> <Run Text="{Binding Trace.Count, Mode=OneWay}" FontWeight="Bold"/>
                             </TextBlock>
 
                             <TextBlock Grid.Row="2" Foreground="#DCDCAA" Margin="0,2,0,0" FontSize="11"
                                        TextWrapping="Wrap"
-                                       Text="Примечание: пер-соединённая трасса заполняется в режимах WinDivert и Wintun (embedded). В режиме Wintun (external) детализация по соединениям недоступна."/>
+                                       Text="{DynamicResource Trace.Note}"/>
                         </Grid>
                     </Border>
 
                     <!-- Дополнительно: IPC / безопасность -->
-                    <TextBlock Text="ДОПОЛНИТЕЛЬНО (IPC / БЕЗОПАСНОСТЬ)"
+                    <TextBlock Text="{DynamicResource Section.Ipc}"
                                Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <StackPanel>
-                            <CheckBox Content="Требовать токен-аутентификацию на IPC-канале (рекомендуется)"
+                            <CheckBox Content="{DynamicResource Ipc.AuthEnabled}"
                                       IsChecked="{Binding Settings.IpcAuthEnabled, Mode=TwoWay}"
                                       Margin="0,2"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#DCDCAA" FontSize="11"
                                        Margin="0,2,0,0"
-                                       Text="Снимите флажок, чтобы отключить проверку токена: любой локальный клиент сможет управлять службой без .ipc_token и без привилегий. Диагностический режим — используйте только в доверенном окружении. Изменение вступает в силу после перезапуска службы."/>
+                                       Text="{DynamicResource Ipc.Note}"/>
                         </StackPanel>
                     </Border>
 
                     <!-- Log Level -->
-                    <TextBlock Text="LOG LEVEL" Style="{StaticResource SectionHeader}"/>
+                    <TextBlock Text="{DynamicResource Section.LogLevel}" Style="{StaticResource SectionHeader}"/>
                     <Border Style="{StaticResource SectionBorder}">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="Level:" Foreground="#858585"
+                            <TextBlock Text="{DynamicResource Log.Level}" Foreground="#858585"
                                        FontSize="12" VerticalAlignment="Center"
                                        Margin="0,0,6,0"/>
                             <ComboBox SelectedIndex="{Binding Settings.LogLevelFilter, Mode=TwoWay}"
@@ -539,7 +565,7 @@
                                 <ComboBoxItem Content="WARN+"/>
                                 <ComboBoxItem Content="ERROR+"/>
                             </ComboBox>
-                            <Button Content="Save"
+                            <Button Content="{DynamicResource Log.Save}"
                                     Command="{Binding Settings.SaveLogLevelCommand}"
                                     Padding="12,4" Margin="8,0,0,0"
                                     FontSize="12"/>
@@ -566,7 +592,7 @@
 
                         <!-- Graph header -->
                         <Grid Grid.Row="0" Margin="0,0,0,4">
-                            <TextBlock Text="TRAFFIC (bytes/sec)" FontWeight="Bold"
+                            <TextBlock Text="{DynamicResource Stats.Title}" FontWeight="Bold"
                                        Foreground="#DCDCAA" FontSize="13"/>
                         </Grid>
 
@@ -585,15 +611,15 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
-                                <Run Text="Active connections:"/>
+                                <Run Text="{DynamicResource Stats.ActiveConnections}"/>
                                 <Run Text="{Binding Stats.ActiveConnections, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                             <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
-                                <Run Text="RX:"/>
+                                <Run Text="{DynamicResource Stats.Rx}"/>
                                 <Run Text="{Binding Stats.TotalRx, Mode=OneWay}" FontWeight="Bold" Foreground="#4EC9B0"/>
                             </TextBlock>
                             <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12">
-                                <Run Text="TX:"/>
+                                <Run Text="{DynamicResource Stats.Tx}"/>
                                 <Run Text="{Binding Stats.TotalTx, Mode=OneWay}" FontWeight="Bold" Foreground="#CE9178"/>
                             </TextBlock>
                         </Grid>
@@ -608,19 +634,19 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Foreground="#858585" FontSize="12">
-                                <Run Text="Proxy errors:"/>
+                                <Run Text="{DynamicResource Stats.ProxyErrors}"/>
                                 <Run Text="{Binding Stats.ProxyErrors, Mode=OneWay}" FontWeight="Bold" Foreground="#F44747"/>
                             </TextBlock>
                             <TextBlock Grid.Column="1" Foreground="#858585" FontSize="12" Margin="16,0">
-                                <Run Text="Avg latency:"/>
+                                <Run Text="{DynamicResource Stats.AvgLatency}"/>
                                 <Run Text="{Binding Stats.AvgLatency, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                             <TextBlock Grid.Column="2" Foreground="#858585" FontSize="12" Margin="16,0">
-                                <Run Text="Uptime:"/>
+                                <Run Text="{DynamicResource Stats.Uptime}"/>
                                 <Run Text="{Binding Stats.Uptime, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                             <TextBlock Grid.Column="4" Foreground="#858585" FontSize="12" Margin="16,0">
-                                <Run Text="Rate:"/>
+                                <Run Text="{DynamicResource Stats.Rate}"/>
                                 <Run Text="{Binding Stats.ConnectionRate, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                         </Grid>

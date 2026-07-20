@@ -145,7 +145,8 @@ public sealed class AppRule
 public sealed class AppConfig
 {
     public int ConfigVersion { get; set; } = 2;
-    public CaptureMode CaptureMode { get; set; } = CaptureMode.WinDivert;
+    // Дефолт после установки — Wintun (embedded).
+    public CaptureMode CaptureMode { get; set; } = CaptureMode.Wintun;
     public WintunSettings Wintun { get; set; } = new();
     public List<AppRule> Apps { get; set; } = new();
 }

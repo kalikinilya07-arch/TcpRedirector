@@ -1,0 +1,138 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!-- (Task #1) English UI strings. Keys must match Strings.ru.xaml. -->
+
+    <!-- Service control bar -->
+    <sys:String x:Key="Btn.Start">Start</sys:String>
+    <sys:String x:Key="Btn.Stop">Stop</sys:String>
+    <sys:String x:Key="Bar.Traffic">Traffic:</sys:String>
+    <sys:String x:Key="Bar.Language">Language:</sys:String>
+
+    <!-- Proxy settings -->
+    <sys:String x:Key="Section.Proxy">PROXY SETTINGS</sys:String>
+    <sys:String x:Key="Proxy.Host">Host:</sys:String>
+    <sys:String x:Key="Proxy.Port">Port:</sys:String>
+    <sys:String x:Key="Proxy.AuthRequired">Authentication required</sys:String>
+
+    <!-- Authentication -->
+    <sys:String x:Key="Section.Auth">AUTHENTICATION (Login / Kerberos SSPI)</sys:String>
+    <sys:String x:Key="Auth.Login">Login:</sys:String>
+    <sys:String x:Key="Auth.Password">Password:</sys:String>
+    <sys:String x:Key="Auth.UseKerberos">Use Kerberos protocol</sys:String>
+    <sys:String x:Key="Auth.EncryptPassword">Encrypt password (DPAPI). Uncheck to store/use the password as-is (plaintext in config.json)</sys:String>
+
+    <!-- Capture mode -->
+    <sys:String x:Key="Section.CaptureMode">TRAFFIC CAPTURE MODE</sys:String>
+    <sys:String x:Key="Capture.Mode">Mode:</sys:String>
+    <sys:String x:Key="Capture.WinDivertTitle">WinDivert settings</sys:String>
+    <sys:String x:Key="Capture.WinDivertInfo">WinDivert mode intercepts traffic at the driver level by process path. No extra configuration is required — rules are defined in the "Applications" section.</sys:String>
+    <sys:String x:Key="Capture.WintunTitle">Wintun settings</sys:String>
+    <sys:String x:Key="Wintun.AdapterName">Adapter name:</sys:String>
+    <sys:String x:Key="Wintun.Mtu">MTU:</sys:String>
+    <sys:String x:Key="Wintun.TunnelIpv4Cidr">Tunnel IPv4 CIDR:</sys:String>
+    <sys:String x:Key="Wintun.Engine">Engine:</sys:String>
+    <sys:String x:Key="Wintun.RouteLadderPrefix">Route ladder depth (1..8):</sys:String>
+    <sys:String x:Key="Wintun.ProcessFilter">Per-process filtering (Wintun)</sys:String>
+    <sys:String x:Key="Wintun.BlockIpv6">Block IPv6 (force IPv4 through the tunnel)</sys:String>
+    <sys:String x:Key="Wintun.ExternalTitle">External (tun2socks.exe)</sys:String>
+    <sys:String x:Key="Wintun.ExternalExe">EXE path:</sys:String>
+    <sys:String x:Key="Wintun.ExternalSocks5">SOCKS5 listen:</sys:String>
+    <sys:String x:Key="Wintun.ExternalRestart">Restart on crash</sys:String>
+
+    <!-- Apps -->
+    <sys:String x:Key="Section.Apps">APPLICATIONS</sys:String>
+    <sys:String x:Key="Apps.Add">+ Add application</sys:String>
+    <sys:String x:Key="Apps.SaveAll">Save all</sys:String>
+    <sys:String x:Key="Apps.Unsaved">● unsaved changes</sys:String>
+    <sys:String x:Key="Apps.Col.Pattern">EXE name pattern</sys:String>
+    <sys:String x:Key="Apps.Col.FullPath">Full path</sys:String>
+    <sys:String x:Key="Apps.Col.ProxyId">Proxy ID</sys:String>
+    <sys:String x:Key="Apps.Col.RouteAll">All traffic via proxy</sys:String>
+    <sys:String x:Key="Apps.Col.Ports">Ports (e.g. 80, 443, 8000-8100)</sys:String>
+    <sys:String x:Key="Apps.Ports.Tooltip">Format: 80, 443, 8000-8100</sys:String>
+    <sys:String x:Key="Apps.TotalPrefix">Total:</sys:String>
+    <sys:String x:Key="Apps.TotalSuffix">app(s)</sys:String>
+
+    <!-- Trace -->
+    <sys:String x:Key="Section.Trace">REDIRECTED CONNECTIONS TRACE</sys:String>
+    <sys:String x:Key="Trace.Col.Process">Process</sys:String>
+    <sys:String x:Key="Trace.Col.Pid">PID</sys:String>
+    <sys:String x:Key="Trace.Col.Destination">Destination</sys:String>
+    <sys:String x:Key="Trace.Col.Port">Port</sys:String>
+    <sys:String x:Key="Trace.Col.State">State</sys:String>
+    <sys:String x:Key="Trace.Col.ViaProxy">Via proxy</sys:String>
+    <sys:String x:Key="Trace.Col.Rx">RX</sys:String>
+    <sys:String x:Key="Trace.Col.Tx">TX</sys:String>
+    <sys:String x:Key="Trace.Col.Duration">Duration</sys:String>
+    <sys:String x:Key="Trace.ActivePrefix">Active connections:</sys:String>
+    <sys:String x:Key="Trace.Note">Note: per-connection trace is populated in WinDivert and Wintun (embedded) modes. In Wintun (external) mode per-connection detail is unavailable.</sys:String>
+
+    <!-- IPC / security -->
+    <sys:String x:Key="Section.Ipc">ADVANCED (IPC / SECURITY)</sys:String>
+    <sys:String x:Key="Ipc.AuthEnabled">Require token authentication on the IPC channel (recommended)</sys:String>
+    <sys:String x:Key="Ipc.Note">Uncheck to disable token verification: any local client can control the service without .ipc_token and without privileges. Diagnostic mode — use only in a trusted environment. Takes effect after the service restarts.</sys:String>
+
+    <!-- Log level -->
+    <sys:String x:Key="Section.LogLevel">LOG LEVEL</sys:String>
+    <sys:String x:Key="Log.Level">Level:</sys:String>
+    <sys:String x:Key="Log.Save">Save</sys:String>
+
+    <!-- Statistics -->
+    <sys:String x:Key="Stats.Title">TRAFFIC (bytes/sec)</sys:String>
+    <sys:String x:Key="Stats.ActiveConnections">Active connections:</sys:String>
+    <sys:String x:Key="Stats.Rx">RX:</sys:String>
+    <sys:String x:Key="Stats.Tx">TX:</sys:String>
+    <sys:String x:Key="Stats.ProxyErrors">Proxy errors:</sys:String>
+    <sys:String x:Key="Stats.AvgLatency">Avg latency:</sys:String>
+    <sys:String x:Key="Stats.Uptime">Uptime:</sys:String>
+    <sys:String x:Key="Stats.Rate">Rate:</sys:String>
+
+    <!-- Status bar -->
+    <sys:String x:Key="StatusBar.Version">TcpRedirector v1.0.0</sys:String>
+
+    <!-- Dynamic (ViewModel) status/messages -->
+    <sys:String x:Key="Svc.Status.Stopped">Stopped</sys:String>
+    <sys:String x:Key="Svc.Status.Starting">Starting</sys:String>
+    <sys:String x:Key="Svc.Status.Running">Running</sys:String>
+    <sys:String x:Key="Svc.Status.Stopping">Stopping</sys:String>
+    <sys:String x:Key="Svc.Status.Failed">Failed</sys:String>
+    <sys:String x:Key="Svc.Status.Error">Error</sys:String>
+
+    <sys:String x:Key="Svc.Msg.StartFailed">✗ Start failed</sys:String>
+    <sys:String x:Key="Svc.Msg.Started">✓ Started</sys:String>
+    <sys:String x:Key="Svc.Msg.StartedUnsaved">✓ Started (unsaved changes present)</sys:String>
+    <sys:String x:Key="Svc.Msg.Stopped">✓ Stopped</sys:String>
+    <sys:String x:Key="Svc.Msg.StopFailed">✗ Stop failed</sys:String>
+    <sys:String x:Key="Svc.Msg.StoppedForced">✓ Stopped (forced)</sys:String>
+    <sys:String x:Key="Svc.Msg.BackendNotFound">TcpRedirectorService.exe not found</sys:String>
+
+    <sys:String x:Key="Status.Configured">Configured</sys:String>
+    <sys:String x:Key="Status.Loading">Loading...</sys:String>
+    <sys:String x:Key="Status.Connected">Connected</sys:String>
+    <sys:String x:Key="Status.Disconnected">Disconnected</sys:String>
+
+    <sys:String x:Key="Save.Ok">✓ Saved to</sys:String>
+    <sys:String x:Key="Save.ErrorFix">✗ Error: fix the highlighted fields before saving</sys:String>
+    <sys:String x:Key="Save.ErrorWrite">✗ Error: failed to write</sys:String>
+    <sys:String x:Key="Save.VerifyFailed">✗ Verification failed:</sys:String>
+    <sys:String x:Key="Save.ErrorPrefix">✗ Error:</sys:String>
+    <sys:String x:Key="Log.Saved">✓ Saved</sys:String>
+
+    <!-- Validation messages -->
+    <sys:String x:Key="Val.HostRequired">Enter the proxy address</sys:String>
+    <sys:String x:Key="Val.HostInvalid">Invalid address (host or IP)</sys:String>
+    <sys:String x:Key="Val.PortRange">Port must be in the range 1..65535</sys:String>
+    <sys:String x:Key="Val.LoginRequired">Enter a login for Basic authentication</sys:String>
+    <sys:String x:Key="Val.AdapterNameRequired">Adapter name cannot be empty</sys:String>
+    <sys:String x:Key="Val.Ipv4Cidr">Format: a.b.c.d/N (N in range 0..32), e.g. 10.6.7.1/24</sys:String>
+    <sys:String x:Key="Val.MtuRange">MTU must be in the range 576..65535</sys:String>
+    <sys:String x:Key="Val.RouteLadderRange">Route ladder depth must be in the range 1..8</sys:String>
+    <sys:String x:Key="Val.ExternalExeRequired">Enter the path to tun2socks.exe</sys:String>
+    <sys:String x:Key="Val.Socks5HostPort">Format: host:port (port 1..65535), e.g. 127.0.0.1:1080</sys:String>
+
+    <!-- File dialog -->
+    <sys:String x:Key="Dialog.SelectApp">Select an application</sys:String>
+
+</ResourceDictionary>

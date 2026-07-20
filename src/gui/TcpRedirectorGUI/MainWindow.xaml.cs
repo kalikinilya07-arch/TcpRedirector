@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels;
+using TcpRedirectorGUI.Infrastructure.Localization;
 
 namespace TcpRedirectorGUI;
 
@@ -91,6 +92,23 @@ public class BoolToVisConverter : IValueConverter
     public object Convert(object value, Type t, object p, CultureInfo c)
     {
         return (value is bool b && b) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public object ConvertBack(object value, Type t, object p, CultureInfo c)
+        => throw new NotImplementedException();
+}
+
+/// <summary>
+/// (Задача №1) Отображает <see cref="AppLanguage"/> нативным названием языка
+/// (Русский / English) в выпадающем списке переключателя.
+/// </summary>
+public class LanguageNameConverter : IValueConverter
+{
+    public object Convert(object value, Type t, object p, CultureInfo c)
+    {
+        return value is AppLanguage lang && lang == AppLanguage.English
+            ? "English"
+            : "Русский";
     }
 
     public object ConvertBack(object value, Type t, object p, CultureInfo c)
