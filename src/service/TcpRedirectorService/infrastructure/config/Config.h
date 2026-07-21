@@ -240,6 +240,43 @@ inline bool WintunEngineKindFromString(const std::string& s, WintunEngineKind& o
 }
 
 /**
+ * @brief (Задача 3) Поведение при невозможности установить физический
+ *        egress для DIRECT-flow'а в embedded-режиме (не удалось определить
+ *        физический интерфейс/source-IP или connect провалился на этапе
+ *        настройки сокета).
+ *
+ * Строковые формы в JSON — строго нижним регистром: "drop" | "proxy".
+ *   • Drop  — старое безопасное поведение: соединение отклоняется (tcp_abort).
+ *   • Proxy — откат на форвардинг через relay/прокси (как PROXY-flow).
+ */
+enum class DirectFallback {
+    Drop,   //!< tcp_abort (default, сохраняет текущее fail-fast поведение).
+    Proxy   //!< Отправить flow через relay/прокси.
+};
+
+inline const char* DirectFallbackToString(DirectFallback f) {
+    switch (f) {
+        case DirectFallback::Proxy: return "proxy";
+        case DirectFallback::Drop:  // fallthrough
+        default:                    return "drop";
+    }
+}
+
+/**
+ * @brief Разбор строки в DirectFallback.
+ * @param s Строковое значение из JSON (регистр-независимо).
+ * @param out Результат (устанавливается только при валидном значении).
+ * @return true, если строка распознана; false — иначе (out не тронут).
+ */
+inline bool DirectFallbackFromString(const std::string& s, DirectFallback& out) {
+    std::string lc; lc.reserve(s.size());
+    for (char c : s) lc.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c));
+    if (lc == "drop")  { out = DirectFallback::Drop;  return true; }
+    if (lc == "proxy") { out = DirectFallback::Proxy; return true; }
+    return false;
+}
+
+/**
  * @brief Диапазон портов [from; to] (включительный).
  *
  * Валидируется на этапе загрузки конфига: 1 ≤ from ≤ to ≤ 65535.
@@ -318,6 +355,44 @@ struct WintunSettings {
     //!< проксируется).  Не-TCP IPv6 дропается.  Всё снимается на Close.  При
     //!< false IPv6 не трогается (возможна утечка мимо прокси).
     bool block_ipv6 = true;
+
+    // ------------------------------------------------------------------------
+    // Задача 3: DIRECT-passthrough в embedded-режиме (Option 1 + Option 2a).
+    // ------------------------------------------------------------------------
+
+    //!< Пропускать трафик приложений НЕ из списка перенаправления (DIRECT-flow)
+    //!< наружу через физический интерфейс вместо tcp_abort.
+    //!< По умолчанию false — сохраняется прежнее fail-fast поведение (DIRECT
+    //!< дропается).  При true embedded-движок (Option 1) открывает per-flow
+    //!< outbound-сокет к оригинальному dst, пиннит его к физическому NIC через
+    //!< IP_UNICAST_IF (чтобы SYN не заворачивался обратно в TUN) и качает
+    //!< данные асинхронно тем же механизмом, что и PROXY-flow.
+    //!< IPv4-only; IPv6 по-прежнему блокируется (block_ipv6).
+    //!< В external-движке поле не влияет.
+    bool direct_passthrough = false;
+
+    //!< Поведение, когда физический egress для DIRECT-flow'а установить не
+    //!< удалось (не резолвится физ. интерфейс/source-IP или connect провалился
+    //!< при настройке сокета).  "drop" (default) = tcp_abort (безопасно, как
+    //!< сегодня); "proxy" = откат на форвардинг через relay/прокси.
+    //!< Действует только при direct_passthrough=true.
+    DirectFallback direct_fallback = DirectFallback::Drop;
+
+    //!< Ручное переопределение физического интерфейса egress для DIRECT-flow'ов.
+    //!< Пусто (default) = авто-определение через GetBestRoute2 на dst каждого
+    //!< flow'а.  Может быть: имя интерфейса ("Ethernet"), числовой ifIndex
+    //!< ("12") или IPv4-адрес интерфейса ("192.168.1.5").  Действует только при
+    //!< direct_passthrough=true.
+    std::string direct_egress_interface;
+
+    //!< (Option 2a) Оптимизация: устанавливать динамический <dst>/32 bypass-
+    //!< маршрут через физический шлюз для установленных DIRECT-назначений, чтобы
+    //!< последующий трафик к тому же IP уходил мимо TUN на уровне ОС (снижает
+    //!< нагрузку software-роутинга Option 1).  По умолчанию true — активна
+    //!< только при direct_passthrough=true.  /32 НИКОГДА не ставится для dst,
+    //!< используемого PROXY-приложением (иначе сломает проксирование), и все
+    //!< такие маршруты снимаются на Close/shutdown.
+    bool direct_route_optimization = true;
 };
 
 /**

@@ -166,6 +166,14 @@ public class ServiceStatus
 {
     public bool Running { get; set; }
     public bool Initialized { get; set; }
+
+    /// <summary>
+    /// Task 2: per-user Kerberos auth-component health, reported by the service
+    /// in the <c>service_status</c> IPC response field <c>auth_status</c>.
+    /// One of: "disabled", "active", "no_helper", "error". "disabled" means the
+    /// feature is off and the GUI hides the Kerberos indicator.
+    /// </summary>
+    public string AuthStatus { get; set; } = "disabled";
 }
 
 public enum ServiceState

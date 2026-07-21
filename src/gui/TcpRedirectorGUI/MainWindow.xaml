@@ -71,8 +71,9 @@
                         Style="{StaticResource DangerButton}"
                         Padding="16,6" Margin="0,0,6,0"/>
 
-                <!-- Status indicator -->
+                <!-- Status indicators -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Indicator 1: service status (unchanged semantics) -->
                     <Ellipse Width="10" Height="10" Margin="0,0,6,0">
                         <Ellipse.Fill>
                             <SolidColorBrush Color="{Binding IsConnected, Converter={StaticResource BoolToColor}}"/>
@@ -81,6 +82,27 @@
                     <TextBlock Text="{Binding SvcStatus, Mode=OneWay}"
                                Foreground="#CCCCCC" FontSize="12"
                                VerticalAlignment="Center"/>
+
+                    <!-- Indicator 2 (Task 2): Kerberos auth component status.
+                         Visible only when per-user Kerberos auth is enabled in
+                         config (IsKerberosIndicatorVisible). The dot is green
+                         when the component is healthy (active), red otherwise. -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                                Margin="14,0,0,0"
+                                Visibility="{Binding IsKerberosIndicatorVisible, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{DynamicResource Auth.Kerberos.Label}"
+                                   Foreground="#858585" FontSize="12"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Ellipse Width="10" Height="10" Margin="0,0,6,0">
+                            <Ellipse.Fill>
+                                <SolidColorBrush Color="{Binding IsKerberosHealthy, Converter={StaticResource BoolToColor}}"/>
+                            </Ellipse.Fill>
+                        </Ellipse>
+                        <TextBlock Text="{Binding KerberosStatus, Mode=OneWay}"
+                                   Foreground="#CCCCCC" FontSize="12"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+
                     <TextBlock Text="{Binding SvcMsg, Mode=OneWay}"
                                Foreground="#4EC9B0" FontSize="12"
                                Margin="8,0,0,0" VerticalAlignment="Center"/>

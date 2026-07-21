@@ -41,6 +41,11 @@
         "mtu": 1500,
         "engine": "embedded",
         "process_filter_enabled": true,
+        "block_ipv6": true,
+        "direct_passthrough": false,
+        "direct_fallback": "drop",
+        "direct_egress_interface": "",
+        "direct_route_optimization": true,
         "external_engine": {
             "executable": ".bin/tun2socks/tun2socks.exe",
             "extra_args": [],

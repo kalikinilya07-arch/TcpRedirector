@@ -644,10 +644,12 @@ bool AuthHelperManager::Start() {
     }
     if (m_cfg.helperExePath.empty()) {
         LogError("helperExePath is empty — cannot start AuthHelperManager");
+        m_startFailed.store(true, std::memory_order_release);  // Task 2
         return false;
     }
 
     if (!EnsureJob()) {
+        m_startFailed.store(true, std::memory_order_release);  // Task 2
         return false;
     }
 
@@ -657,6 +659,7 @@ bool AuthHelperManager::Start() {
                  std::to_string(::GetLastError()));
         ::CloseHandle(m_job);
         m_job = nullptr;
+        m_startFailed.store(true, std::memory_order_release);  // Task 2
         return false;
     }
 
@@ -669,6 +672,7 @@ bool AuthHelperManager::Start() {
     }
 
     m_started.store(true, std::memory_order_release);
+    m_startFailed.store(false, std::memory_order_release);  // Task 2: успех
     m_monitor = std::thread([this] { MonitorLoop(); });
 
     LogInfo("AuthHelperManager started with " +
@@ -782,6 +786,30 @@ std::size_t AuthHelperManager::HelperCount() const {
         if (kv.second.hProcess) ++n;
     }
     return n;
+}
+
+// ============================================================================
+// GetAuthStatus (Task 2) — здоровье per-user Kerberos auth-компонента.
+// ============================================================================
+AuthComponentStatus AuthHelperManager::GetAuthStatus() const {
+    // Start() провалился => компонент неисправен.
+    if (m_startFailed.load(std::memory_order_acquire)) {
+        return AuthComponentStatus::Error;
+    }
+    // Не запущен (ещё не стартовали / остановлен) при включённой фиче => Error:
+    // менеджер существует, но не обслуживает — GUI покажет «Error», а не
+    // молчаливый «нет helper'а».
+    if (!m_started.load(std::memory_order_acquire)) {
+        return AuthComponentStatus::Error;
+    }
+    // Запущен: есть хотя бы один живой helper => Active, иначе NoHelper.
+    std::lock_guard<std::mutex> lk(m_mutex);
+    for (const auto& kv : m_entries) {
+        if (kv.second.hProcess) {
+            return AuthComponentStatus::Active;
+        }
+    }
+    return AuthComponentStatus::NoHelper;
 }
 
 }  // namespace auth

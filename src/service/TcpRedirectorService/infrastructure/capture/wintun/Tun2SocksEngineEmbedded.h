@@ -59,6 +59,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ITunEngine.h"
@@ -114,6 +115,33 @@ struct EmbeddedProcessFilter {
     std::wstring                  target_process_path;    //!< Legacy fallback-путь.
     bool                          proxy_configured = true;//!< Есть ли валидный прокси.
     domain::ports::ILogSink*      log = nullptr;          //!< Опциональный лог (тег "wintun").
+};
+
+/**
+ * @brief (Задача 3) Конфигурация DIRECT-passthrough внутри embedded-движка.
+ *
+ * Option 1 (primary): при enabled=true DIRECT-flow'ы (трафик приложений НЕ из
+ * списка перенаправления) не дропаются (tcp_abort), а проходят наружу через
+ * per-flow outbound-сокет, пиннутый к физическому NIC через IP_UNICAST_IF
+ * (чтобы SYN не заворачивался обратно в TUN).  Асинхронный connect + качалка
+ * данных выполняются на per-flow sock_reader-треде (НИКОГДА не на engine-треде).
+ *
+ * Option 2a (optimization): при route_optimization=true для установленных
+ * DIRECT-назначений ставится динамический <dst>/32 bypass-маршрут через
+ * физический шлюз, чтобы последующий трафик к тому же IP уходил мимо TUN на
+ * уровне ОС.  /32 НИКОГДА не ставится для dst, используемого PROXY-flow'ом.
+ *
+ * fallback_proxy — что делать, когда физический egress установить не удалось:
+ *   false (drop)  → tcp_abort (безопасное поведение по умолчанию);
+ *   true  (proxy) → отправить flow через relay/прокси.
+ *
+ * IPv4-only: IPv6 по-прежнему нейтрализуется (SetBlockIpv6).
+ */
+struct EmbeddedDirectConfig {
+    bool         enabled = false;            //!< direct_passthrough.
+    bool         fallback_proxy = false;     //!< direct_fallback == "proxy".
+    bool         route_optimization = true;  //!< direct_route_optimization (Option 2a).
+    std::string  egress_interface;           //!< direct_egress_interface (имя/ifIndex/IP; "" = авто).
 };
 
 /**
@@ -186,6 +214,17 @@ public:
      */
     void SetBlockIpv6(bool enabled) { m_block_ipv6 = enabled; }
 
+    /**
+     * @brief (Задача 3) Задать конфигурацию DIRECT-passthrough (Option 1 + 2a).
+     *
+     * Должно вызываться ДО Start().  При direct.enabled=false движок работает
+     * по-старому — DIRECT-flow'ы дропаются (tcp_abort), нулевое изменение
+     * поведения.  См. EmbeddedDirectConfig.
+     */
+    void SetDirectConfig(const EmbeddedDirectConfig& direct) {
+        m_direct = direct;
+    }
+
     ~Tun2SocksEngineEmbedded() override;
 
     Tun2SocksEngineEmbedded(const Tun2SocksEngineEmbedded&) = delete;
@@ -208,8 +247,39 @@ private:
     // engine-thread entry
     void EngineThreadMain();
 
-    // per-flow socket-half reader thread entry
+    // per-flow socket-half reader thread entry (PROXY-flow: relay-сокет).
     void FlowSocketReader(Flow* flow);
+
+    // --- Задача 3: DIRECT-passthrough (Option 1 + Option 2a) ---
+
+    // per-flow тред DIRECT-flow'а: НЕблокирующий connect к оригинальному dst
+    // через физически-пиннутый сокет, затем двунаправленная качалка данных
+    // (та же схема, что FlowSocketReader, но connect + physical egress).
+    // ВСЯ блокирующая работа — здесь, НИКОГДА на engine-треде.
+    void DirectFlowThread(Flow* flow);
+
+    // Резолвит физический интерфейс egress для dst_be (network byte order):
+    // ifIndex + source-IPv4 (network byte order) через GetBestRoute2, с учётом
+    // ручного override m_direct.egress_interface.  Возвращает false, если
+    // физический путь определить нельзя (тогда применяется direct_fallback).
+    bool ResolvePhysicalEgress(uint32_t dst_be,
+                               uint32_t& out_if_index,
+                               uint32_t& out_src_be);
+
+    // Пиннит сокет s к физическому интерфейсу: IP_UNICAST_IF (primary, индекс в
+    // NETWORK byte order) + source-IP bind (fallback).  false — не удалось.
+    bool PinSocketToPhysical(SOCKET s, uint32_t if_index, uint32_t src_be);
+
+    // Option 2a: пытается поставить <dst_be>/32 bypass через физ. шлюз, если dst
+    // не используется PROXY-flow'ом.  Refcount по dst.  Вызывается из DIRECT-треда.
+    void MaybeInstallDirectBypass(uint32_t dst_be);
+    // Декремент refcount; при обнулении снимает /32-маршрут.
+    void ReleaseDirectBypass(uint32_t dst_be);
+    // Регистрирует dst как «используемый PROXY»; если для него был поставлен
+    // DIRECT /32 bypass — немедленно снимает его (guard корректности).
+    void NoteProxyDestination(uint32_t dst_be);
+    // Снимает ВСЕ оставшиеся DIRECT /32 bypass-маршруты (Stop/shutdown).
+    void RemoveAllDirectBypasses();
 
     // Reaper-тред: join'ит завершившиеся per-flow ридер-треды и уничтожает
     // Flow-объекты ВНЕ engine-треда/ридера (иначе дедлок/UAF). См. .cpp.
@@ -279,6 +349,20 @@ private:
 
     // Нейтрализация IPv6: RST на IPv6-SYN, дроп прочего IPv6 (см. SetBlockIpv6).
     bool                           m_block_ipv6 = false;
+
+    // Задача 3: конфигурация DIRECT-passthrough (Option 1 + 2a).  См.
+    // EmbeddedDirectConfig.  m_direct.enabled=false → DIRECT дропается (как было).
+    EmbeddedDirectConfig           m_direct;
+
+    // Option 2a: учёт динамических DIRECT /32 bypass-маршрутов и guard'а против
+    // проксируемых dst.  Ключи — dst IPv4 в NETWORK byte order.
+    //   • m_bypass_refcount: dst -> число активных DIRECT-flow'ов, для которых
+    //     установлен /32 bypass (refcount → снятие при обнулении);
+    //   • m_proxy_dsts: dst, замеченные на PROXY-flow'ах — для них /32 bypass
+    //     НИКОГДА не ставится (а если был — снимается).  Корректностный guard.
+    std::mutex                     m_bypass_mu;
+    std::unordered_map<uint32_t, uint32_t> m_bypass_refcount;
+    std::unordered_set<uint32_t>   m_proxy_dsts;
 
     // Разбор IPv6-пакета из туннеля: при block_ipv6 отвечает TCP RST на SYN,
     // иначе просто дропает.  Возвращает true, если пакет обработан (не должен

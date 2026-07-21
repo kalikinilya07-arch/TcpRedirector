@@ -267,7 +267,13 @@ public class IpcClient : ITcpRedirectorService, IDisposable
             return new ServiceStatus
             {
                 Running = d.GetProperty("running").GetBoolean(),
-                Initialized = d.GetProperty("initialized").GetBoolean()
+                Initialized = d.GetProperty("initialized").GetBoolean(),
+                // Task 2: per-user Kerberos auth-component status. Older services
+                // that don't emit the field default to "disabled" (indicator
+                // stays hidden), preserving backward compatibility.
+                AuthStatus = GetStr(d, "auth_status") is { Length: > 0 } s
+                    ? s
+                    : "disabled"
             };
         }
         return null;

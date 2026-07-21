@@ -104,6 +104,13 @@
     <!-- Status bar -->
     <sys:String x:Key="StatusBar.Version">TcpRedirector v1.0.0</sys:String>
 
+    <!-- Task 2: Kerberos auth component indicator (second status indicator) -->
+    <sys:String x:Key="Auth.Kerberos.Label">Kerberos auth:</sys:String>
+    <sys:String x:Key="Auth.Kerberos.Active">Active</sys:String>
+    <sys:String x:Key="Auth.Kerberos.NoHelper">No helper</sys:String>
+    <sys:String x:Key="Auth.Kerberos.Error">Error</sys:String>
+    <sys:String x:Key="Auth.Kerberos.Disabled">Disabled</sys:String>
+
     <!-- Dynamic (ViewModel) status/messages -->
     <sys:String x:Key="Svc.Status.Stopped">Stopped</sys:String>
     <sys:String x:Key="Svc.Status.Starting">Starting</sys:String>

@@ -106,6 +106,13 @@
     <!-- Status bar -->
     <sys:String x:Key="StatusBar.Version">TcpRedirector v1.0.0</sys:String>
 
+    <!-- Task 2: Kerberos auth component indicator (second status indicator) -->
+    <sys:String x:Key="Auth.Kerberos.Label">Kerberos-авторизация:</sys:String>
+    <sys:String x:Key="Auth.Kerberos.Active">Активна</sys:String>
+    <sys:String x:Key="Auth.Kerberos.NoHelper">Нет хелпера</sys:String>
+    <sys:String x:Key="Auth.Kerberos.Error">Ошибка</sys:String>
+    <sys:String x:Key="Auth.Kerberos.Disabled">Отключена</sys:String>
+
     <!-- Dynamic (ViewModel) status/messages -->
     <sys:String x:Key="Svc.Status.Stopped">Остановлена</sys:String>
     <sys:String x:Key="Svc.Status.Starting">Запуск</sys:String>

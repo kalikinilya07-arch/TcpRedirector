@@ -30,6 +30,9 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     private string _svcStatusKey = "Svc.Status.Stopped";
     private string _statusTextKey = "Status.Configured";
 
+    // Task 2: семантический ключ статуса Kerberos-компонента (для перелокализации).
+    private string _kerberosStatusKey = "Auth.Kerberos.Disabled";
+
     public ShellViewModel(
         ITcpRedirectorService svc,
         IServiceController scm,
@@ -62,6 +65,38 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         Settings.LoadFromConfig();
         SetSvcStatusKey("Svc.Status.Stopped");
         SetStatusTextKey("Status.Configured");
+
+        // Task 2: the Kerberos-auth indicator's visibility follows the config
+        // toggles (auth.kerberos + auth.per_user_enabled). Bind to the live
+        // Settings properties so the indicator appears/disappears the moment the
+        // user toggles Kerberos/per-user, and also after a settings save/reload
+        // (LoadFromConfig raises the same PropertyChanged notifications).
+        Settings.PropertyChanged += OnSettingsPropertyChanged;
+        Settings.Saved += RefreshKerberosIndicatorVisibility;
+        RefreshKerberosIndicatorVisibility();
+        SetKerberosStatusKey("Auth.Kerberos.Disabled");
+    }
+
+    // Task 2: recompute the Kerberos-indicator visibility when the relevant
+    // config toggles change on the Settings VM.
+    private void OnSettingsPropertyChanged(object? sender,
+        System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(SettingsViewModel.KerberosEnabled)
+                or nameof(SettingsViewModel.PerUserEnabled)
+                or nameof(SettingsViewModel.AuthRequired))
+        {
+            RefreshKerberosIndicatorVisibility();
+        }
+    }
+
+    // Task 2: the per-user Kerberos auth component is only wired by the service
+    // when auth is required AND Kerberos AND per-user are enabled — mirror that
+    // condition here so the indicator is shown exactly when the component exists.
+    private void RefreshKerberosIndicatorVisibility()
+    {
+        IsKerberosIndicatorVisible =
+            Settings.AuthRequired && Settings.KerberosEnabled && Settings.PerUserEnabled;
     }
 
     // ── Language switch (Задача №1) ──────────────────
@@ -82,6 +117,8 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         // Перелокализовать динамические статусы после смены словаря.
         SvcStatus = Loc.T(_svcStatusKey);
         StatusText = Loc.T(_statusTextKey);
+        // Task 2: also re-localize the Kerberos indicator label.
+        KerberosStatus = Loc.T(_kerberosStatusKey);
     }
 
     // Устанавливает статус службы по ключу (с запоминанием для перелокализации).
@@ -97,6 +134,29 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         StatusText = Loc.T(key);
     }
 
+    // Task 2: set the Kerberos-indicator label by localization key (remembered
+    // for re-localization on language switch).
+    private void SetKerberosStatusKey(string key)
+    {
+        _kerberosStatusKey = key;
+        KerberosStatus = Loc.T(key);
+    }
+
+    // Task 2: map the service-reported auth_status string to a localization key
+    // and health flag, and apply them to the indicator.
+    private void ApplyKerberosStatus(string authStatus)
+    {
+        var (key, healthy) = authStatus switch
+        {
+            "active"    => ("Auth.Kerberos.Active", true),
+            "no_helper" => ("Auth.Kerberos.NoHelper", false),
+            "error"     => ("Auth.Kerberos.Error", false),
+            _           => ("Auth.Kerberos.Disabled", false),
+        };
+        IsKerberosHealthy = healthy;
+        SetKerberosStatusKey(key);
+    }
+
     // ── Status ───────────────────────────────────────
 
     [ObservableProperty]
@@ -110,6 +170,29 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string _svcMsg = "";
+
+    // ── Kerberos auth component status (Task 2) ──────
+
+    /// <summary>
+    /// Localized text of the second (Kerberos auth) indicator, e.g. "Active",
+    /// "No helper", "Error", "Disabled".
+    /// </summary>
+    [ObservableProperty]
+    private string _kerberosStatus = "";
+
+    /// <summary>
+    /// True when the second (Kerberos auth) indicator should be shown. Driven by
+    /// config: auth required + Kerberos + per-user enabled. Hidden otherwise.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isKerberosIndicatorVisible;
+
+    /// <summary>
+    /// True when the Kerberos component is healthy (auth_status == "active"),
+    /// used to color the indicator dot green vs. red (reuses BoolToColor).
+    /// </summary>
+    [ObservableProperty]
+    private bool _isKerberosHealthy;
 
     // ── Stats ────────────────────────────────────────
 
@@ -173,8 +256,17 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             StopTimer();
             _svc.Disconnect();
 
-            // Graceful stop with timeout; force-kill if timeout exceeded
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // Task 1: STOP must be authoritative and permanent. The controller
+            // performs a clean SCM Stop when the service is installed
+            // (SERVICE_STOPPED, exit 0 → NO failure-action restart) and only
+            // Kill()s a process when the service is NOT SCM-managed.
+            //
+            // We deliberately DO NOT taskkill here on timeout: force-killing an
+            // SCM-managed, auto-start service triggers its failure actions
+            // (SC_ACTION_RESTART), which is exactly the auto-restart-after-stop
+            // bug this task fixes. The controller already bounds each SCM
+            // Stop/WaitForStatus with its own 15 s timeout.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             try
             {
                 var ok = await Task.Run(() => _scm.StopServiceAsync(), cts.Token);
@@ -183,10 +275,10 @@ public partial class ShellViewModel : ObservableObject, IDisposable
             }
             catch (OperationCanceledException)
             {
-                // Service is stuck — force kill
-                KillServiceProcess();
-                SetSvcStatusKey("Svc.Status.Stopped");
-                SvcMsg = Loc.T("Svc.Msg.StoppedForced");
+                // Stop is taking unusually long. Report failure rather than
+                // force-killing (a Kill would re-trigger SCM failure actions).
+                SetSvcStatusKey("Svc.Status.Failed");
+                SvcMsg = Loc.T("Svc.Msg.StopFailed");
             }
         }
         catch
@@ -384,7 +476,12 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
                 var status = await _svc.GetServiceStatusAsync();
                 if (status is not null)
+                {
                     SetSvcStatusKey(status.Running ? "Svc.Status.Running" : "Svc.Status.Stopped");
+                    // Task 2: update the Kerberos auth-component indicator from
+                    // the service-reported auth_status.
+                    ApplyKerberosStatus(status.AuthStatus);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -408,18 +505,6 @@ public partial class ShellViewModel : ObservableObject, IDisposable
         {
             Trace.Clear();
             Stats.ResetBaselines();
-        }
-    }
-
-    private static void KillServiceProcess()
-    {
-        try
-        {
-            Process.Start("taskkill", "/f /im TcpRedirectorService.exe");
-        }
-        catch
-        {
-            // Best-effort
         }
     }
 
@@ -447,6 +532,8 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
         _svc.ConnectionStateChanged -= OnConnectionStateChanged;
         _loc.LanguageChanged -= OnServiceLanguageChanged;
+        Settings.PropertyChanged -= OnSettingsPropertyChanged;
+        Settings.Saved -= RefreshKerberosIndicatorVisibility;
         StopTimer();
         _svc.Disconnect();
 

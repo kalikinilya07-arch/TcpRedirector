@@ -24,7 +24,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <ws2ipdef.h>        // IP_UNICAST_IF (IPPROTO_IP level option)
 #include <windows.h>
+#include <iphlpapi.h>        // GetBestRoute2, GetAdaptersAddresses
+#include <netioapi.h>        // MIB_IPFORWARD_ROW2
 // clang-format on
 
 #include "Tun2SocksEngineEmbedded.h"
@@ -34,10 +37,14 @@
 #include "../../../domain/ports/IConnectionTable.h"     // Add/Remove — relay dst recovery
 #include "../../../domain/entities/ProxyConfig.h"       // ConnectionRecord / ConnectionState
 #include "../../utf8_convert.h"
+#include "RouteInstaller.h"                             // Option 2a: <dst>/32 bypass
 
 #include <algorithm>
 #include <cstring>
 #include <sstream>
+
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 extern "C" {
 #include "lwip/init.h"
@@ -103,6 +110,17 @@ struct Tun2SocksEngineEmbedded::Flow {
     // такие flow'ы — устраняет утечку half-open flow'ов (ридер завершился, а
     // CloseFlow со стороны туннеля так и не пришёл).
     std::atomic<bool>           reader_exited{false};
+
+    // --- Задача 3: DIRECT-passthrough ---
+    // true  → это DIRECT-flow (outbound на реальный dst через физ. NIC),
+    //         НЕ зарегистрирован в ConnectionTable, socket-half тред —
+    //         DirectFlowThread (не FlowSocketReader).
+    // false → PROXY-flow (relay), как раньше.
+    bool                        is_direct = false;
+    // dst IPv4 (network byte order) DIRECT-flow'а — для Option 2a bypass-refcount
+    // и снятия /32 на закрытии.  0 = bypass для этого flow'а не ставился.
+    uint32_t                    direct_dst_be = 0;
+    bool                        direct_bypass_installed = false;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -259,35 +277,145 @@ struct EngineTramp {
             return ERR_ABRT;
         }
         if (decision == FlowDecision::Direct) {
-            // DIRECT (не-совпавший трафик) в embedded НЕ пропускается напрямую.
-            //
-            // Почему нельзя: OnAccept выполняется НА engine-треде под
-            // m_core_lock, а blocking connect() к реальному dst уходит по
-            // split-tunnel маршрутам ОБРАТНО в этот же TUN (тот же engine-тред) —
-            // SYN некому прочитать, connect висит до таймаута и замораживает
-            // весь стек (в неблокирующем варианте — шторм повторных accept'ов).
-            // Сквозной direct-проход возможен только в обход туннеля по
-            // физическому интерфейсу (нужен async-outbound + interface-bind —
-            // вне рамок v1, см. ИЗВЕСТНЫЕ_ПРОБЛЕМЫ.md).
-            //
-            // Поэтому fail-fast: соединение отклоняется (сервис стабилен, без
-            // фризов).  Практический вывод:
-            //   • «проксировать ВЕСЬ трафик» → wintun.process_filter_enabled=false
-            //     (DIRECT тогда не возникает — весь TCP идёт в PROXY);
-            //   • селективное проксирование С прямым проходом остального →
-            //     capture_mode=windivert.
-            // Понижено Trace→Debug (задача №3): это ключевая диагностика
-            // «почему трафик не идёт» — должна быть видна на DEBUG (level=3),
-            // а не только на экспертном TRACE (level=4).
-            engine->FilterLog(domain::LogLevel::Debug,
-                "[wintun][DIRECT-drop] non-matched flow dropped (embedded has no "
-                "direct pass-through) -> " + meta.original_dst_ip + ":"
-                + std::to_string(meta.original_dst_port));
-            tcp_abort(newpcb);
-            return ERR_ABRT;
+            // === Задача 3: DIRECT-passthrough (Option 1) ===
+            const uint32_t dst_be =
+                ip4_addr_get_u32(ip_2_ip4(&newpcb->local_ip)); // network byte order
+
+            if (!engine->m_direct.enabled) {
+                // direct_passthrough=false → прежнее fail-fast поведение: DIRECT
+                // дропается (сервис стабилен, нулевое изменение поведения).
+                //   • «проксировать ВЕСЬ трафик» → process_filter_enabled=false;
+                //   • селективное проксирование С прямым проходом остального →
+                //     direct_passthrough=true (эта задача) или capture_mode=windivert.
+                engine->FilterLog(domain::LogLevel::Debug,
+                    "[wintun][DIRECT-drop] non-matched flow dropped "
+                    "(direct_passthrough=false) -> " + meta.original_dst_ip + ":"
+                    + std::to_string(meta.original_dst_port));
+                tcp_abort(newpcb);
+                return ERR_ABRT;
+            }
+
+            // Резолвим физический egress (ifIndex + source-IP) через GetBestRoute2.
+            // Это БЫСТРЫЙ табличный lookup ОС (не сетевой I/O) — безопасно на
+            // engine-треде.  Сам connect + качалка данных выполняются на
+            // DirectFlowThread (НИКОГДА не на engine-треде — инвариант №1).
+            uint32_t ifIndex = 0, srcBe = 0;
+            const bool egressOk = engine->ResolvePhysicalEgress(dst_be, ifIndex, srcBe);
+            if (!egressOk) {
+                if (engine->m_direct.fallback_proxy && engine->m_conn_table
+                    && engine->m_filter.proxy_configured) {
+                    // direct_fallback=proxy → падаем в PROXY-ветку ниже.
+                    engine->FilterLog(domain::LogLevel::Debug,
+                        "[wintun][DIRECT->proxy-fallback] physical egress unresolved for "
+                        + meta.original_dst_ip + ":" + std::to_string(meta.original_dst_port)
+                        + " — routing via relay");
+                    // fall through to PROXY setup below (decision downgraded).
+                } else {
+                    engine->FilterLog(domain::LogLevel::Warn,
+                        "[wintun][DIRECT-drop] physical egress unresolved for "
+                        + meta.original_dst_ip + ":" + std::to_string(meta.original_dst_port)
+                        + " (direct_fallback=drop) — flow dropped");
+                    tcp_abort(newpcb);
+                    return ERR_ABRT;
+                }
+            } else {
+                // Открываем per-flow outbound-сокет к РЕАЛЬНОМУ dst.  НЕ биндим к
+                // loopback и НЕ регистрируем в ConnectionTable (PROXY-only шаги).
+                SOCKET ds = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if (ds == INVALID_SOCKET) {
+                    tcp_abort(newpcb);
+                    return ERR_ABRT;
+                }
+                // Пиннуем к физическому NIC (IP_UNICAST_IF + source-bind fallback),
+                // чтобы SYN не заворачивался обратно в TUN (инвариант №2).
+                if (!engine->PinSocketToPhysical(ds, ifIndex, srcBe)) {
+                    ::closesocket(ds);
+                    if (engine->m_direct.fallback_proxy && engine->m_conn_table
+                        && engine->m_filter.proxy_configured) {
+                        engine->FilterLog(domain::LogLevel::Debug,
+                            "[wintun][DIRECT->proxy-fallback] IP_UNICAST_IF pin failed for "
+                            + meta.original_dst_ip + " — routing via relay");
+                        // fall through to PROXY setup below.
+                    } else {
+                        engine->FilterLog(domain::LogLevel::Warn,
+                            "[wintun][DIRECT-drop] IP_UNICAST_IF pin failed for "
+                            + meta.original_dst_ip + " (direct_fallback=drop) — flow dropped");
+                        tcp_abort(newpcb);
+                        return ERR_ABRT;
+                    }
+                } else {
+                    BOOL nodelay = TRUE;
+                    ::setsockopt(ds, IPPROTO_TCP, TCP_NODELAY,
+                                 reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
+                    auto flow = std::make_unique<Tun2SocksEngineEmbedded::Flow>();
+                    flow->pcb           = newpcb;
+                    flow->sock          = ds;
+                    flow->owner         = engine;
+                    flow->meta          = meta;
+                    flow->is_direct     = true;
+                    flow->direct_dst_be = dst_be;
+
+                    if (engine->m_conn_monitor) {
+                        domain::ConnectionRecord rec;
+                        rec.id = engine->m_next_conn_id.fetch_add(1, std::memory_order_relaxed);
+                        rec.pid = flowPid;
+                        rec.process_name = flowProc;
+                        rec.destination_ip = meta.original_dst_ip;
+                        rec.destination_port = meta.original_dst_port;
+                        rec.state = domain::ConnectionState::TunnelEstablished;
+                        rec.start_time = std::chrono::steady_clock::now();
+                        rec.proxy_enabled = false; // DIRECT — не через прокси.
+                        flow->conn_id = rec.id;
+                        engine->m_conn_monitor->AddConnection(rec);
+                    }
+
+                    tcp_arg (newpcb, flow.get());
+                    tcp_recv(newpcb, &EngineTramp::OnRecv);
+                    tcp_sent(newpcb, &EngineTramp::OnSent);
+                    tcp_err (newpcb, &EngineTramp::OnErr);
+
+                    Tun2SocksEngineEmbedded::Flow* raw = flow.get();
+                    const uint64_t flow_id =
+                        engine->m_next_flow_id.fetch_add(1, std::memory_order_relaxed);
+                    flow->id = flow_id;
+                    {
+                        std::lock_guard<std::mutex> lk(engine->m_flows_mu);
+                        engine->m_flows.emplace(flow_id, std::move(flow));
+                    }
+                    engine->m_active_flows.fetch_add(1, std::memory_order_relaxed);
+
+                    // DirectFlowThread делает НЕблокирующий connect + двунаправленную
+                    // качалку (та же async-схема, что PROXY-flow, но к реальному dst).
+                    raw->sock_reader = std::thread(
+                        [engine, raw]() { engine->DirectFlowThread(raw); });
+
+                    engine->FilterLog(domain::LogLevel::Debug,
+                        "[wintun][flow] DIRECT pid=" + std::to_string(flowPid)
+                        + " proc=" + WideToUtf8(flowProc)
+                        + " src=" + meta.source_ip + ":" + std::to_string(meta.source_port)
+                        + " dst=" + meta.original_dst_ip + ":"
+                        + std::to_string(meta.original_dst_port)
+                        + " egress_ifindex=" + std::to_string(ifIndex));
+
+                    if (engine->m_on_flow) {
+                        try { engine->m_on_flow(meta); }
+                        catch (...) {}
+                    }
+                    return ERR_OK;
+                }
+            }
+            // Если сюда дошли — это proxy-fallback: продолжаем в PROXY-ветку ниже.
         }
 
-        // Сюда доходит только PROXY → форвард на локальный relay 127.0.0.1:relay_port.
+        // Сюда доходит PROXY (или DIRECT с proxy-fallback) → форвард на локальный
+        // relay 127.0.0.1:relay_port.
+        // Guard корректности Option 2a: dst этого flow'а идёт через ПРОКСИ — он
+        // НЕ должен иметь DIRECT /32 bypass (иначе трафик проксируемого приложения
+        // ушёл бы мимо туннеля).  Регистрируем dst как proxy-used и снимаем bypass.
+        engine->NoteProxyDestination(
+            ip4_addr_get_u32(ip_2_ip4(&newpcb->local_ip)));
+
         sockaddr_in target{};
         target.sin_family = AF_INET;
         target.sin_port = htons(engine->m_relay_port);
@@ -371,7 +499,9 @@ struct EngineTramp {
             rec.destination_port = meta.original_dst_port;
             rec.state = domain::ConnectionState::TunnelEstablished;
             rec.start_time = std::chrono::steady_clock::now();
-            rec.proxy_enabled = (decision == FlowDecision::Proxy);
+            // Сюда доходит PROXY или DIRECT-с-proxy-fallback — в обоих случаях
+            // flow фактически идёт через прокси.
+            rec.proxy_enabled = true;
             flow->conn_id = rec.id;
             engine->m_conn_monitor->AddConnection(rec);
         }
@@ -529,6 +659,297 @@ done:
 }
 
 /* ------------------------------------------------------------------------- */
+/*  Задача 3: DIRECT-passthrough (Option 1 + Option 2a)                           */
+/* ------------------------------------------------------------------------- */
+
+bool Tun2SocksEngineEmbedded::ResolvePhysicalEgress(uint32_t dst_be,
+                                                    uint32_t& out_if_index,
+                                                    uint32_t& out_src_be) {
+    out_if_index = 0;
+    out_src_be = 0;
+
+    // GetBestRoute2 — быстрый lookup таблицы маршрутов ОС (не сетевой I/O).
+    // ВАЖНО: он вернёт лучший маршрут к dst С УЧЁТОМ наших split-tunnel /1-
+    // маршрутов, то есть может указать на TUN.  Нам нужен ФИЗИЧЕСКИЙ путь.
+    // Поэтому если ручной override не задан — мы также умеем предпочесть
+    // не-TUN интерфейс: наш netif не является системным адаптером с LUID в
+    // таблице маршрутов Windows (lwIP-netif живёт в user space), поэтому
+    // GetBestRoute2 в embedded-режиме уже возвращает физический адаптер —
+    // split-tunnel /1 стоят на Wintun-адаптере (реальный NDIS), но source-IP
+    // для него — TUN-подсеть; чтобы гарантированно уйти на физику, мы задаём
+    // IP_UNICAST_IF по физическому ifIndex.  Здесь резолвим физический путь.
+
+    // Ручной override интерфейса (имя/ifIndex/IP).
+    if (!m_direct.egress_interface.empty()) {
+        const std::string& s = m_direct.egress_interface;
+        // 1) числовой ifIndex?
+        bool numeric = !s.empty();
+        for (char c : s) { if (c < '0' || c > '9') { numeric = false; break; } }
+        if (numeric) {
+            out_if_index = static_cast<uint32_t>(std::strtoul(s.c_str(), nullptr, 10));
+        } else {
+            // 2) IPv4-адрес интерфейса?
+            IN_ADDR ia{};
+            if (inet_pton(AF_INET, s.c_str(), &ia) == 1) {
+                out_src_be = ia.S_un.S_addr;
+                // Найдём ifIndex по source-IP через GetBestRoute2 (source=ia).
+            }
+            // 3) имя интерфейса — конвертируем через if_nametoindex.
+            else {
+                NET_LUID luid{};
+                std::wstring w(s.begin(), s.end());
+                if (ConvertInterfaceAliasToLuid(w.c_str(), &luid) == NO_ERROR) {
+                    NET_IFINDEX idx = 0;
+                    if (ConvertInterfaceLuidToIndex(&luid, &idx) == NO_ERROR) {
+                        out_if_index = idx;
+                    }
+                }
+            }
+        }
+    }
+
+    // Всегда прогоняем GetBestRoute2 для получения ifIndex/source, если чего-то
+    // не хватает.  Это даёт корректный source-IP физического интерфейса.
+    if (out_if_index == 0 || out_src_be == 0) {
+        SOCKADDR_INET dst{};
+        dst.si_family = AF_INET;
+        dst.Ipv4.sin_family = AF_INET;
+        dst.Ipv4.sin_addr.S_un.S_addr = dst_be;
+
+        MIB_IPFORWARD_ROW2 best{};
+        SOCKADDR_INET bestSrc{};
+        DWORD rc = GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &bestSrc);
+        if (rc != NO_ERROR) {
+            return false;
+        }
+        if (out_if_index == 0) out_if_index = best.InterfaceIndex;
+        if (out_src_be == 0 && bestSrc.si_family == AF_INET) {
+            out_src_be = bestSrc.Ipv4.sin_addr.S_un.S_addr;
+        }
+    }
+
+    return out_if_index != 0;
+}
+
+bool Tun2SocksEngineEmbedded::PinSocketToPhysical(SOCKET s,
+                                                  uint32_t if_index,
+                                                  uint32_t src_be) {
+    bool pinned = false;
+
+    // IP_UNICAST_IF — переопределяет egress-интерфейс сокета, минуя таблицу
+    // маршрутов (наши /1 в TUN больше не «притягивают» этот сокет).  КРИТИЧНО:
+    // значение — ifIndex в NETWORK byte order (в отличие от IPV6_UNICAST_IF!).
+    if (if_index != 0) {
+        DWORD ifIndexNbo = htonl(if_index);
+        if (::setsockopt(s, IPPROTO_IP, IP_UNICAST_IF,
+                         reinterpret_cast<const char*>(&ifIndexNbo),
+                         sizeof(ifIndexNbo)) == 0) {
+            pinned = true;
+        }
+    }
+
+    // Source-IP bind как «belt-and-suspenders» / fallback: если IP_UNICAST_IF
+    // не сработал, bind к физическому source-IP помогает LPM выбрать физику.
+    if (src_be != 0) {
+        sockaddr_in la{};
+        la.sin_family = AF_INET;
+        la.sin_addr.s_addr = src_be;
+        la.sin_port = 0;
+        if (::bind(s, reinterpret_cast<sockaddr*>(&la), sizeof(la)) == 0) {
+            pinned = true;
+        }
+    }
+
+    return pinned;
+}
+
+void Tun2SocksEngineEmbedded::NoteProxyDestination(uint32_t dst_be) {
+    if (!m_direct.enabled || !m_direct.route_optimization) return;
+    bool hadBypass = false;
+    {
+        std::lock_guard<std::mutex> lk(m_bypass_mu);
+        m_proxy_dsts.insert(dst_be);
+        hadBypass = (m_bypass_refcount.find(dst_be) != m_bypass_refcount.end());
+    }
+    // Если для этого dst ранее стоял DIRECT /32 bypass — снимаем немедленно:
+    // проксируемое приложение НЕ должно уходить мимо туннеля (guard).
+    if (hadBypass) {
+        std::string err;
+        (void)RouteInstaller::UninstallHostBypass(dst_be, &err);
+        std::lock_guard<std::mutex> lk(m_bypass_mu);
+        m_bypass_refcount.erase(dst_be);
+        FilterLog(domain::LogLevel::Debug,
+            "[wintun][bypass] removed DIRECT /32 bypass — dst now used by PROXY");
+    }
+}
+
+void Tun2SocksEngineEmbedded::MaybeInstallDirectBypass(uint32_t dst_be) {
+    if (!m_direct.enabled || !m_direct.route_optimization) return;
+    // Loopback не нуждается в bypass (InstallHostBypass сам это отсекает).
+    if (static_cast<uint8_t>(dst_be & 0xFF) == 127) return;
+
+    bool doInstall = false;
+    {
+        std::lock_guard<std::mutex> lk(m_bypass_mu);
+        // Guard: dst используется PROXY → НЕ ставим (иначе сломаем проксирование).
+        if (m_proxy_dsts.find(dst_be) != m_proxy_dsts.end()) return;
+        auto it = m_bypass_refcount.find(dst_be);
+        if (it == m_bypass_refcount.end()) {
+            m_bypass_refcount.emplace(dst_be, 1u);
+            doInstall = true;
+        } else {
+            ++(it->second); // уже стоит — только refcount++
+        }
+    }
+    if (doInstall) {
+        std::string err;
+        if (RouteInstaller::InstallHostBypass(dst_be, &err)) {
+            FilterLog(domain::LogLevel::Debug,
+                "[wintun][bypass] installed DIRECT /32 bypass for established dst");
+        } else {
+            // Не удалось — откатываем refcount, работаем без оптимизации (Option 1
+            // software-роутинг остаётся корректным).
+            std::lock_guard<std::mutex> lk(m_bypass_mu);
+            m_bypass_refcount.erase(dst_be);
+            FilterLog(domain::LogLevel::Debug,
+                "[wintun][bypass] InstallHostBypass failed (non-fatal): " + err);
+        }
+    }
+}
+
+void Tun2SocksEngineEmbedded::ReleaseDirectBypass(uint32_t dst_be) {
+    bool doRemove = false;
+    {
+        std::lock_guard<std::mutex> lk(m_bypass_mu);
+        auto it = m_bypass_refcount.find(dst_be);
+        if (it == m_bypass_refcount.end()) return;
+        if (--(it->second) == 0) {
+            m_bypass_refcount.erase(it);
+            doRemove = true;
+        }
+    }
+    if (doRemove) {
+        std::string err;
+        (void)RouteInstaller::UninstallHostBypass(dst_be, &err);
+    }
+}
+
+void Tun2SocksEngineEmbedded::RemoveAllDirectBypasses() {
+    std::vector<uint32_t> dsts;
+    {
+        std::lock_guard<std::mutex> lk(m_bypass_mu);
+        dsts.reserve(m_bypass_refcount.size());
+        for (const auto& kv : m_bypass_refcount) dsts.push_back(kv.first);
+        m_bypass_refcount.clear();
+        m_proxy_dsts.clear();
+    }
+    for (uint32_t d : dsts) {
+        std::string err;
+        (void)RouteInstaller::UninstallHostBypass(d, &err);
+    }
+    if (!dsts.empty()) {
+        FilterLog(domain::LogLevel::Debug,
+            "[wintun][bypass] removed " + std::to_string(dsts.size())
+            + " DIRECT /32 bypass route(s) on shutdown");
+    }
+}
+
+void Tun2SocksEngineEmbedded::DirectFlowThread(Flow* flow) {
+    // Выполняется НА per-flow треде (НЕ на engine-треде): здесь можно блокирующе
+    // connect'иться и recv'иться — engine-тред не затрагивается (инвариант №1).
+    // Сокет уже создан и запиннут к физическому NIC в OnAccept (инвариант №2).
+
+    // 1) connect к реальному dst.  Делаем НЕблокирующим с таймаутом через select,
+    //    чтобы поток не завис навечно на неответчивом хосте.
+    sockaddr_in target{};
+    target.sin_family = AF_INET;
+    target.sin_addr.s_addr = flow->direct_dst_be;
+    target.sin_port = htons(flow->meta.original_dst_port);
+
+    u_long nb = 1;
+    ::ioctlsocket(flow->sock, FIONBIO, &nb);
+    int cr = ::connect(flow->sock, reinterpret_cast<sockaddr*>(&target), sizeof(target));
+    bool connected = (cr == 0);
+    if (!connected) {
+        const int e = ::WSAGetLastError();
+        if (e == WSAEWOULDBLOCK) {
+            fd_set wfds, efds;
+            FD_ZERO(&wfds); FD_ZERO(&efds);
+            FD_SET(flow->sock, &wfds); FD_SET(flow->sock, &efds);
+            timeval tv{}; tv.tv_sec = 10; tv.tv_usec = 0; // 10 c на connect
+            int sr = ::select(0, nullptr, &wfds, &efds, &tv);
+            if (sr > 0 && FD_ISSET(flow->sock, &wfds)) {
+                int soErr = 0; int len = sizeof(soErr);
+                if (::getsockopt(flow->sock, SOL_SOCKET, SO_ERROR,
+                                 reinterpret_cast<char*>(&soErr), &len) == 0
+                    && soErr == 0) {
+                    connected = true;
+                }
+            }
+        }
+    }
+    // Возвращаем сокет в блокирующий режим для recv-качалки.
+    nb = 0;
+    ::ioctlsocket(flow->sock, FIONBIO, &nb);
+
+    if (!connected || flow->closing.load(std::memory_order_relaxed)) {
+        // connect провалился — просим engine-тред закрыть flow (FIN/RST уедет в TUN,
+        // приложение мгновенно получит отказ).  reader_exited → ReapFinishedReaders.
+        flow->reader_exited.store(true, std::memory_order_release);
+        FilterLog(domain::LogLevel::Debug,
+            "[wintun][flow] DIRECT connect FAILED -> " + flow->meta.original_dst_ip
+            + ":" + std::to_string(flow->meta.original_dst_port));
+        return;
+    }
+
+    // 2) Option 2a: соединение установлено — ставим <dst>/32 bypass (если dst не
+    //    проксируется).  Отмечаем на flow, чтобы CloseFlow декрементировал refcount.
+    MaybeInstallDirectBypass(flow->direct_dst_be);
+    {
+        std::lock_guard<std::mutex> lk(m_bypass_mu);
+        if (m_bypass_refcount.find(flow->direct_dst_be) != m_bypass_refcount.end()) {
+            flow->direct_bypass_installed = true;
+        }
+    }
+
+    // 3) Двунаправленная качалка (socket→pcb).  Идентична PROXY-half —
+    //    переиспользуем ту же схему back-pressure по tcp_sndbuf.
+    char buf[4096];
+    while (!flow->closing.load(std::memory_order_relaxed) &&
+           !flow->pcb_dead.load(std::memory_order_relaxed)) {
+        int n = ::recv(flow->sock, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        int off = 0;
+        while (off < n) {
+            if (flow->pcb_dead.load(std::memory_order_relaxed)) goto ddone;
+            std::lock_guard<std::recursive_mutex> lk(m_core_lock);
+            if (flow->pcb_dead.load(std::memory_order_relaxed) || flow->pcb == nullptr) goto ddone;
+            const u16_t space = tcp_sndbuf(flow->pcb);
+            if (space == 0) { Sleep(10); continue; }
+            const u16_t chunk = static_cast<u16_t>(std::min<int>(n - off, space));
+            const err_t e = tcp_write(flow->pcb, buf + off, chunk, TCP_WRITE_FLAG_COPY);
+            if (e == ERR_OK) {
+                tcp_output(flow->pcb);
+                flow->pcb_in_flight.fetch_add(chunk, std::memory_order_relaxed);
+                off += chunk;
+            } else if (e == ERR_MEM) {
+                Sleep(10);
+            } else {
+                goto ddone;
+            }
+        }
+    }
+ddone:
+    {
+        std::lock_guard<std::recursive_mutex> lk(m_core_lock);
+        if (!flow->pcb_dead.load(std::memory_order_relaxed) && flow->pcb != nullptr) {
+            tcp_shutdown(flow->pcb, 0, 1); // shut_tx=1 — FIN в туннель
+        }
+    }
+    flow->reader_exited.store(true, std::memory_order_release);
+}
+
+/* ------------------------------------------------------------------------- */
 /*  CloseFlow                                                                     */
 /* ------------------------------------------------------------------------- */
 
@@ -548,6 +969,13 @@ void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread) {
     if (m_conn_table && flow->relay_src_port != 0) {
         m_conn_table->Remove(flow->relay_src_port);
         flow->relay_src_port = 0;
+    }
+
+    // Задача 3 (Option 2a): для DIRECT-flow'а декрементируем refcount /32-bypass
+    // маршрута; при обнулении маршрут снимается (устраняет утечку stale-route).
+    if (flow->is_direct && flow->direct_bypass_installed && flow->direct_dst_be != 0) {
+        ReleaseDirectBypass(flow->direct_dst_be);
+        flow->direct_bypass_installed = false;
     }
 
     // Закрываем сокет — сокет-ридер вывалится.
@@ -1169,6 +1597,11 @@ void Tun2SocksEngineEmbedded::Stop() {
     }
     to_drop.clear();
     m_active_flows.store(0, std::memory_order_relaxed);
+
+    // Задача 3 (Option 2a): гарантированно снимаем ВСЕ оставшиеся DIRECT /32
+    // bypass-маршруты (на случай flow'ов, закрытых через Stop-путь без
+    // ReleaseDirectBypass) — устраняет утечку stale-route после остановки.
+    RemoveAllDirectBypasses();
 
     // Останавливаем reaper и добираем всё, что могло остаться в очереди утилизации.
     {

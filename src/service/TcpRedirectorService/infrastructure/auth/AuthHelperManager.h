@@ -163,6 +163,49 @@ struct AuthHelperManagerConfig {
     int monitorPollMs = 1000;           //!< Период опроса монитора (мс).
 };
 
+// ============================================================================
+// AuthComponentStatus — здоровье per-user Kerberos-компонента (Task 2)
+// ============================================================================
+
+/**
+ * @brief Обобщённое состояние per-user Kerberos auth-компонента для IPC/GUI.
+ *
+ * Отдаётся GetAuthStatus() и сериализуется в поле `auth_status` IPC-ответа
+ * service_status. GUI показывает отдельный индикатор «Kerberos auth» только
+ * когда состояние НЕ Disabled. Модель намеренно простая и робастная:
+ *   - Disabled — per-user Kerberos не включён в конфиге (менеджер не создан).
+ *                На уровне менеджера это значение не возвращается: сам факт
+ *                отсутствия менеджера в ServiceMain => Disabled. Оставлено для
+ *                полноты enum'а.
+ *   - Active   — менеджер запущен и есть хотя бы один живой helper
+ *                (интерактивная сессия успешно обслуживается).
+ *   - NoHelper — менеджер запущен, но ни одного живого helper'а нет
+ *                (нет интерактивной сессии / helper не удалось запустить).
+ *   - Error    — менеджер не смог подняться (Start() вернул false) либо не
+ *                запущен, хотя фича включена.
+ */
+enum class AuthComponentStatus {
+    Disabled = 0,
+    Active,
+    NoHelper,
+    Error,
+};
+
+/**
+ * @brief Строковое представление состояния для IPC JSON (`auth_status`).
+ *
+ * Значения — snake_case ASCII: "disabled" / "active" / "no_helper" / "error".
+ * Именно эти строки парсит GUI (IpcClient).
+ */
+inline const char* ToString(AuthComponentStatus s) {
+    switch (s) {
+        case AuthComponentStatus::Active:   return "active";
+        case AuthComponentStatus::NoHelper: return "no_helper";
+        case AuthComponentStatus::Error:    return "error";
+        case AuthComponentStatus::Disabled: default: return "disabled";
+    }
+}
+
 /**
  * @brief Менеджер per-user auth helper'ов (см. заголовок файла).
  */
@@ -251,6 +294,18 @@ public:
      */
     std::size_t HelperCount() const;
 
+    /**
+     * @brief Текущее здоровье per-user Kerberos auth-компонента (Task 2).
+     *
+     * Потокобезопасно. Логика:
+     *   - Start() не удался / менеджер не запущен => Error.
+     *   - Запущен и есть хотя бы один живой helper => Active.
+     *   - Запущен, но живых helper'ов нет => NoHelper.
+     * Значение Disabled этот метод НЕ возвращает: отсутствие фичи (и самого
+     * менеджера) трактует вызывающая сторона (ServiceMain) как Disabled.
+     */
+    AuthComponentStatus GetAuthStatus() const;
+
 private:
     // --- Внутреннее состояние одной записи (владеющее дескрипторами) ----------
     struct Entry {
@@ -290,6 +345,10 @@ private:
     std::thread              m_monitor;
     HANDLE                   m_stopEvent = nullptr;  // manual-reset; будит монитор.
     std::atomic<bool>        m_started{false};
+    // Task 2: Start() поднялся, но не смог создать job / стартовать монитор =>
+    // компонент неисправен (GetAuthStatus() => Error). Отдельно от m_started,
+    // т.к. m_started=false может означать «ещё не стартовали».
+    std::atomic<bool>        m_startFailed{false};
 };
 
 }  // namespace auth

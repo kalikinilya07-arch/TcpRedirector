@@ -472,14 +472,36 @@ bool WintunCapture::Open() {
             // IPv6 catch-all маршрутами, поставленными выше).
             embedded->SetBlockIpv6(m_settings.block_ipv6);
 
+            // Задача 3: DIRECT-passthrough (Option 1 + Option 2a).  При
+            // direct_passthrough=true DIRECT-flow'ы проходят наружу через
+            // физический NIC (IP_UNICAST_IF) вместо tcp_abort; при false —
+            // прежнее fail-fast drop-поведение (нулевое изменение).
+            capture::wintun::EmbeddedDirectConfig dc;
+            dc.enabled            = m_settings.direct_passthrough;
+            dc.fallback_proxy     = (m_settings.direct_fallback == DirectFallback::Proxy);
+            dc.route_optimization = m_settings.direct_route_optimization;
+            dc.egress_interface   = m_settings.direct_egress_interface;
+            embedded->SetDirectConfig(dc);
+
             if (pf.enabled && pf.rule_engine) {
-                LogInfo("Process filter ENABLED for embedded engine "
-                        "(apps[] rules applied inside tunnel). NOTE: non-matched "
-                        "(DIRECT) traffic is DROPPED in embedded mode — direct "
-                        "pass-through is not supported here (would freeze the "
-                        "engine thread). Use process_filter_enabled=false to proxy "
-                        "ALL traffic, or capture_mode=windivert for selective "
-                        "proxying with direct pass-through.");
+                if (m_settings.direct_passthrough) {
+                    LogInfo("Process filter ENABLED for embedded engine "
+                            "(apps[] rules applied inside tunnel). DIRECT "
+                            "pass-through is ENABLED (Option 1): non-matched "
+                            "traffic egresses the physical NIC via IP_UNICAST_IF; "
+                            + std::string(m_settings.direct_route_optimization
+                                ? "dynamic /32 bypass optimization ON"
+                                : "dynamic /32 bypass optimization OFF")
+                            + "; fallback="
+                            + std::string(DirectFallbackToString(m_settings.direct_fallback)) + ".");
+                } else {
+                    LogInfo("Process filter ENABLED for embedded engine "
+                            "(apps[] rules applied inside tunnel). NOTE: non-matched "
+                            "(DIRECT) traffic is DROPPED (direct_passthrough=false). "
+                            "Set wintun.direct_passthrough=true for direct "
+                            "pass-through, process_filter_enabled=false to proxy ALL "
+                            "traffic, or capture_mode=windivert.");
+                }
             } else {
                 LogInfo("Process filter DISABLED for embedded engine "
                         "(all IPv4-TCP proxied — Option 2b)");

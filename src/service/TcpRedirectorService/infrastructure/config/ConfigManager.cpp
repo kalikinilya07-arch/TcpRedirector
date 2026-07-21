@@ -946,6 +946,32 @@ WintunSettings ConfigManager::ParseWintunSettings(const nlohmann::json& jw) cons
     // block_ipv6 — по умолчанию true (нейтрализация IPv6-утечки в Wintun-режиме).
     w.block_ipv6 = jw.value("block_ipv6", w.block_ipv6);
 
+    // Задача 3: direct_passthrough — по умолчанию false (сохраняет прежнее
+    // fail-fast/drop поведение для DIRECT-flow'ов в embedded-режиме).
+    w.direct_passthrough = jw.value("direct_passthrough", w.direct_passthrough);
+
+    // direct_fallback — enum "drop" | "proxy" (default drop).  Что делать, если
+    // физический egress для DIRECT-flow'а установить не удалось.
+    if (jw.contains("direct_fallback") && jw["direct_fallback"].is_string()) {
+        DirectFallback f;
+        if (DirectFallbackFromString(jw["direct_fallback"].get<std::string>(), f)) {
+            w.direct_fallback = f;
+        } else {
+            std::fprintf(stderr,
+                "[WARN] ConfigManager: wintun.direct_fallback '%s' unknown, using 'drop'\n",
+                jw["direct_fallback"].get<std::string>().c_str());
+            w.direct_fallback = DirectFallback::Drop;
+        }
+    }
+
+    // direct_egress_interface — ручное переопределение физ. интерфейса egress
+    // (имя/ifIndex/IP).  Пусто (default) = авто через GetBestRoute2.
+    w.direct_egress_interface = jw.value("direct_egress_interface", w.direct_egress_interface);
+
+    // direct_route_optimization (Option 2a) — динамические <dst>/32 bypass-
+    // маршруты; по умолчанию true, но активна только при direct_passthrough=true.
+    w.direct_route_optimization = jw.value("direct_route_optimization", w.direct_route_optimization);
+
     return w;
 }
 
@@ -1083,6 +1109,12 @@ nlohmann::json ConfigManager::WintunSettingsToJson(const WintunSettings& w) cons
 
     // Блокировка IPv6 на время Wintun-захвата.
     j["block_ipv6"] = w.block_ipv6;
+
+    // Задача 3: DIRECT-passthrough (Option 1 + Option 2a).
+    j["direct_passthrough"]        = w.direct_passthrough;
+    j["direct_fallback"]           = DirectFallbackToString(w.direct_fallback);
+    j["direct_egress_interface"]   = w.direct_egress_interface;
+    j["direct_route_optimization"] = w.direct_route_optimization;
 
     return j;
 }

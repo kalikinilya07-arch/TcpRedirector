@@ -465,6 +465,16 @@ public:
                 return static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::steady_clock::now() - m_startTime).count());
+            },
+            // Task 2: per-user Kerberos auth-component status. If the feature is
+            // off, m_authHelperManager is null and we report "disabled" so the
+            // GUI hides the Kerberos indicator. Otherwise the manager reports
+            // active / no_helper / error.
+            [this]() -> std::string {
+                if (!m_authHelperManager)
+                    return "disabled";
+                return infrastructure::auth::ToString(
+                    m_authHelperManager->GetAuthStatus());
             });
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {

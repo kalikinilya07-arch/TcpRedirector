@@ -26,6 +26,12 @@ using GetActiveCountCallback = std::function<uint32_t()>;
 // Callback to get service uptime in seconds
 using GetUptimeCallback = std::function<uint64_t()>;
 
+// Task 2: callback to get the per-user Kerberos auth-component status as a
+// snake_case string ("disabled" / "active" / "no_helper" / "error"). When the
+// feature is off (no AuthHelperManager), this callback is left null and the IPC
+// status reports "disabled" so the GUI hides the Kerberos indicator.
+using GetAuthStatusCallback = std::function<std::string()>;
+
 class IpcHandler {
 public:
     IpcHandler(
@@ -37,7 +43,8 @@ public:
         const std::atomic<bool>* initialized,
         GetRelayBytesCallback getRelayBytes = nullptr,
         GetActiveCountCallback getActiveCount = nullptr,
-        GetUptimeCallback getUptime = nullptr)
+        GetUptimeCallback getUptime = nullptr,
+        GetAuthStatusCallback getAuthStatus = nullptr)
         : m_ruleEngine(ruleEngine)
         , m_connectionTracker(connectionTracker)
         , m_configManager(configManager)
@@ -46,7 +53,8 @@ public:
         , m_initialized(initialized)
         , m_getRelayBytes(std::move(getRelayBytes))
         , m_getActiveCount(std::move(getActiveCount))
-        , m_getUptime(std::move(getUptime)) {
+        , m_getUptime(std::move(getUptime))
+        , m_getAuthStatus(std::move(getAuthStatus)) {
     }
 
     void Handle(const std::string& method,
@@ -258,6 +266,11 @@ private:
         result["status"] = "success";
         result["data"]["running"] = m_running->load();
         result["data"]["initialized"] = m_initialized->load();
+        // Task 2: per-user Kerberos auth-component health. When the feature is
+        // disabled the callback is null => report "disabled" so the GUI hides
+        // the second (Kerberos) status indicator entirely.
+        result["data"]["auth_status"] =
+            m_getAuthStatus ? m_getAuthStatus() : std::string("disabled");
     }
 
     void SetLogLevel(const std::string& params, nlohmann::json& result) {
@@ -276,6 +289,7 @@ private:
     GetRelayBytesCallback m_getRelayBytes;
     GetActiveCountCallback m_getActiveCount;
     GetUptimeCallback m_getUptime;
+    GetAuthStatusCallback m_getAuthStatus;
 };
 
 } // namespace adapters
