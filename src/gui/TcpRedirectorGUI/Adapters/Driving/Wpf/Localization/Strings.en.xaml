@@ -23,6 +23,18 @@
     <sys:String x:Key="Auth.UseKerberos">Use Kerberos protocol</sys:String>
     <sys:String x:Key="Auth.EncryptPassword">Encrypt password (DPAPI). Uncheck to store/use the password as-is (plaintext in config.json)</sys:String>
 
+    <!-- Authentication: per-user Kerberos helper (Phase 9) -->
+    <sys:String x:Key="Auth.PerUserTitle">Per-user Kerberos (multi-user / RDP)</sys:String>
+    <sys:String x:Key="Auth.PerUserEnabled">Authenticate as the user who launched the app (per-user helper)</sys:String>
+    <sys:String x:Key="Auth.PerUserEnabled.Tooltip">When enabled, each proxied application authenticates with the Kerberos ticket of the user who launched it (via a per-user helper process), instead of the service's machine account. Recommended for multi-user / Remote Desktop hosts.</sys:String>
+    <sys:String x:Key="Auth.Spn">SPN (optional):</sys:String>
+    <sys:String x:Key="Auth.Spn.Tooltip">Explicit Service Principal Name of the proxy, e.g. HTTP/proxy.corp.example.com. Leave empty to auto-derive HTTP/&lt;proxy-host&gt;.</sys:String>
+    <sys:String x:Key="Auth.HelperTimeout">Helper timeout (ms):</sys:String>
+    <sys:String x:Key="Auth.HelperTimeout.Tooltip">Timeout in milliseconds for the service↔helper token exchange. Default 5000.</sys:String>
+    <sys:String x:Key="Auth.FallbackPolicy">Fallback policy:</sys:String>
+    <sys:String x:Key="Auth.FallbackPolicy.Tooltip">What to do when per-user authentication cannot be performed (no helper, timeout, non-domain account, etc.).</sys:String>
+    <sys:String x:Key="Auth.FallbackPolicy.Note">Fallback policy: "drop" = drop the connection (never use the machine account); "system" = fall back to the service/machine account authentication; "error" = drop and write an error to the log.</sys:String>
+
     <!-- Capture mode -->
     <sys:String x:Key="Section.CaptureMode">TRAFFIC CAPTURE MODE</sys:String>
     <sys:String x:Key="Capture.Mode">Mode:</sys:String>
@@ -131,6 +143,7 @@
     <sys:String x:Key="Val.RouteLadderRange">Route ladder depth must be in the range 1..8</sys:String>
     <sys:String x:Key="Val.ExternalExeRequired">Enter the path to tun2socks.exe</sys:String>
     <sys:String x:Key="Val.Socks5HostPort">Format: host:port (port 1..65535), e.g. 127.0.0.1:1080</sys:String>
+    <sys:String x:Key="Val.HelperTimeoutRange">Helper timeout must be in the range 100..120000 ms</sys:String>
 
     <!-- File dialog -->
     <sys:String x:Key="Dialog.SelectApp">Select an application</sys:String>

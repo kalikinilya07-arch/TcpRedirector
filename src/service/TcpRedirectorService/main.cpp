@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <wtsapi32.h>   // WTSSESSION_NOTIFICATION (Variant 4b, Phase 6)
 #include "adapters/driving/ServiceMain.h"
 
 tcp_redirector::service::TcpRedirectorService g_Service;
@@ -7,8 +8,8 @@ tcp_redirector::service::TcpRedirectorService g_Service;
 // Service Control Handler  (M10: correct LPHANDLER_FUNCTION_EX signature)
 //
 DWORD WINAPI ServiceControlHandlerEx(DWORD controlCode,
-                                      DWORD /*eventType*/,
-                                      LPVOID /*eventData*/,
+                                      DWORD eventType,
+                                      LPVOID eventData,
                                       LPVOID /*context*/) {
     switch (controlCode) {
     case SERVICE_CONTROL_STOP:
@@ -20,6 +21,17 @@ DWORD WINAPI ServiceControlHandlerEx(DWORD controlCode,
     case SERVICE_CONTROL_INTERROGATE:
         g_Service.ReportStatus(
             g_Service.IsRunning() ? SERVICE_RUNNING : SERVICE_STOPPED);
+        break;
+    case SERVICE_CONTROL_SESSIONCHANGE:
+        // Variant 4b, Phase 6: пробрасываем WTS-события входа/выхода
+        // пользователя в AuthHelperManager (через сервис). eventData указывает
+        // на WTSSESSION_NOTIFICATION; берём из него dwSessionId. Мы принимаем
+        // этот control только когда per-user auth активен (см. ReportStatus,
+        // SERVICE_ACCEPT_SESSIONCHANGE), поэтому здесь просто форвардим.
+        if (eventData) {
+            auto* notify = reinterpret_cast<WTSSESSION_NOTIFICATION*>(eventData);
+            g_Service.OnSessionChange(eventType, notify->dwSessionId);
+        }
         break;
     }
     return NO_ERROR;

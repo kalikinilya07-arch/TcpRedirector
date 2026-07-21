@@ -16,7 +16,11 @@
         "enabled": false,
         "kerberos": false,
         "username": "",
-        "encryptedPassword": ""
+        "encryptedPassword": "",
+        "per_user_enabled": false,
+        "spn": "",
+        "fallback_policy": "drop",
+        "helper_timeout_ms": 5000
     },
 
     "log": {

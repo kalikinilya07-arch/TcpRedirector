@@ -191,6 +191,78 @@
                                       IsChecked="{Binding Settings.KerberosEnabled, Mode=TwoWay}"
                                       Margin="0,2"/>
 
+                            <!-- (Phase 9) Per-user Kerberos auth helper.
+                                 Чекбокс «per-user» виден только при включённом
+                                 Kerberos (SSPI). Под-поля (SPN, fallback-политика,
+                                 таймаут) появляются, когда per-user включён. -->
+                            <StackPanel Margin="0,6,0,0"
+                                        Visibility="{Binding Settings.KerberosEnabled, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{DynamicResource Auth.PerUserTitle}"
+                                           Foreground="#DCDCAA" FontWeight="Bold"
+                                           Margin="0,0,0,4"/>
+                                <CheckBox Content="{DynamicResource Auth.PerUserEnabled}"
+                                          IsChecked="{Binding Settings.PerUserEnabled, Mode=TwoWay}"
+                                          ToolTip="{DynamicResource Auth.PerUserEnabled.Tooltip}"
+                                          Margin="0,2"/>
+
+                                <!-- Per-user sub-fields — visible only when Kerberos
+                                     AND per-user are enabled. -->
+                                <Grid Margin="0,4,0,0"
+                                      Visibility="{Binding Settings.ShowPerUserOptions, Converter={StaticResource BoolToVis}}">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="150"/>
+                                        <ColumnDefinition Width="250"/>
+                                        <ColumnDefinition Width="140"/>
+                                        <ColumnDefinition Width="150"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- SPN override (empty = auto HTTP/<proxyhost>) -->
+                                    <TextBlock Grid.Row="0" Grid.Column="0"
+                                               Text="{DynamicResource Auth.Spn}"
+                                               VerticalAlignment="Center" Margin="0,2"/>
+                                    <TextBox Grid.Row="0" Grid.Column="1"
+                                             Style="{StaticResource ValidatedTextBox}"
+                                             Text="{Binding Settings.Spn, Mode=TwoWay,
+                                                            UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="{DynamicResource Auth.Spn.Tooltip}"
+                                             Margin="0,2"/>
+
+                                    <!-- Helper timeout (ms) -->
+                                    <TextBlock Grid.Row="0" Grid.Column="2"
+                                               Text="{DynamicResource Auth.HelperTimeout}"
+                                               VerticalAlignment="Center" Margin="8,2,0,2"/>
+                                    <TextBox Grid.Row="0" Grid.Column="3"
+                                             Style="{StaticResource ValidatedTextBox}"
+                                             Text="{Binding Settings.HelperTimeoutMs, Mode=TwoWay,
+                                                            UpdateSourceTrigger=PropertyChanged,
+                                                            ValidatesOnExceptions=True,
+                                                            ValidatesOnNotifyDataErrors=True,
+                                                            NotifyOnValidationError=True}"
+                                             ToolTip="{DynamicResource Auth.HelperTimeout.Tooltip}"
+                                             Margin="8,2,0,2"/>
+
+                                    <!-- Fallback policy (drop/system/error) -->
+                                    <TextBlock Grid.Row="1" Grid.Column="0"
+                                               Text="{DynamicResource Auth.FallbackPolicy}"
+                                               VerticalAlignment="Center" Margin="0,2"/>
+                                    <ComboBox Grid.Row="1" Grid.Column="1"
+                                              ItemsSource="{Binding Settings.FallbackPolicies}"
+                                              SelectedItem="{Binding Settings.FallbackPolicy, Mode=TwoWay}"
+                                              ToolTip="{DynamicResource Auth.FallbackPolicy.Tooltip}"
+                                              Margin="0,2"/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4"
+                                               TextWrapping="Wrap" Foreground="#DCDCAA"
+                                               FontSize="11" Margin="0,4,0,0"
+                                               Text="{DynamicResource Auth.FallbackPolicy.Note}"/>
+                                </Grid>
+                            </StackPanel>
+
                             <!-- (Задача №3) Поля Basic-аутентификации (Login,
                                  Password, «Шифровать пароль») скрываются при
                                  включённом Kerberos и снова показываются при его

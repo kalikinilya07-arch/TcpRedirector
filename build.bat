@@ -106,6 +106,29 @@ if errorlevel 1 echo [FAIL] & pause & exit /b 1
 copy /Y "build\service\x64\Release\TcpRedirectorService.exe" "%ROOT%\build\" >nul 2>&1
 echo [OK]
 
+:: Step 3b: Auth Helper (Variant 4b, Phase 3) - per-user Kerberos SSPI helper.
+:: Tiny headless EXE launched later by the service inside a user's logon session.
+:: Links the SHARED auth_sspi.cpp (no copy). Full installer packaging is Phase 8;
+:: this is the minimal build+stage entry.
+echo [3b/3] Building Auth Helper...
+cd /d "%ROOT%\src\service\AuthHelper"
+:: The vcxproj OutDir is $(SolutionDir)build\authhelper\x64\Release\. When msbuild
+:: builds a .vcxproj DIRECTLY (no .sln), $(SolutionDir) resolves to the PROJECT
+:: directory, so the output tree is created UNDER this project folder, exactly like
+:: the service step above (which copies from the project-relative build\service\...).
+if exist "build\authhelper\x64\Release\obj" (
+    del /Q "build\authhelper\x64\Release\obj\*.obj"  2>nul
+    del /Q "build\authhelper\x64\Release\obj\*.iobj" 2>nul
+    del /Q "build\authhelper\x64\Release\obj\*.ipdb" 2>nul
+)
+msbuild TcpRedirectorAuthHelper.vcxproj /p:Configuration=Release /p:Platform=x64 /nologo /nodeReuse:false 2>&1
+if errorlevel 1 echo [FAIL] Auth Helper build failed! & pause & exit /b 1
+:: Co-locate the helper EXE with the service EXE in %ROOT%\build\ (the service
+:: resolves it beside its own EXE via AppPaths::GetExecutableDirectoryW()).
+copy /Y "build\authhelper\x64\Release\TcpRedirectorAuthHelper.exe" "%ROOT%\build\" >nul 2>&1
+if not exist "%ROOT%\build\TcpRedirectorAuthHelper.exe" echo [FAIL] Auth Helper EXE not staged to build\! & pause & exit /b 1
+echo [OK]
+
 :: WP13: return to workspace root before staging optional third-party binaries.
 cd /d "%ROOT%"
 
@@ -144,6 +167,11 @@ goto :eof
 :: shell truncates this best-effort build\-staging step.
 :: ====================================================================
 :stage_optional_binaries
+:: Delayed expansion is needed by the MSVC-CRT resolver below (it builds paths
+:: with !VS_STAGE_DIR! / !VCCRT_DIR! inside if-blocks). Enabled locally here so
+:: the rest of build.bat keeps its plain %VAR% semantics. The existing %ROOT%
+:: copies below contain no "!" and are unaffected.
+setlocal enabledelayedexpansion
 :: --- WinDivert.dll + WinDivert64.sys (OPTIONAL) ---
 if exist "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" (
     copy /Y "%ROOT%\external\WinDivert\WinDivert-2.2.2-A\x64\WinDivert.dll" "%ROOT%\build\" >nul 2>&1
@@ -183,5 +211,48 @@ if exist "%ROOT%\installer\config.default.json" (
     echo     [OK] config.default.json seed copied
 ) else (
     echo     [SKIP] no installer\config.default.json seed - service will self-generate on first run
+)
+
+:: --- MSVC C++ runtime (REQUIRED for the native EXEs) ---------------------
+:: TcpRedirectorService.exe and TcpRedirectorAuthHelper.exe are built with the
+:: DYNAMIC CRT (/MD, <RuntimeLibrary>MultiThreadedDLL). On a CLEAN PC without
+:: the Visual C++ 2015-2022 Redistributable they fail to start with a missing
+:: vcruntime140.dll/msvcp140.dll error. We therefore ship the three CRT DLLs
+:: BESIDE the service EXE so no redistributable install is required.
+::
+:: NOTE: this runs in the FRESH `cmd /c` __stage__ re-entry, which does NOT
+:: inherit VsDevCmd's %VCToolsRedistDir% nor the parent's VS_DIR. We therefore
+:: re-resolve the redist folder from scratch via vswhere + the redist-version
+:: marker file, then glob the newest Microsoft.VC14*.CRT\x64 folder as a last
+:: resort. Missing => [WARN] (build itself is unaffected).
+set "VCCRT_DIR="
+:: Fallback A: inherited env (harmless if the caller happened to set it).
+if defined VCToolsRedistDir if exist "%VCToolsRedistDir%\x64\Microsoft.VC143.CRT\vcruntime140.dll" set "VCCRT_DIR=%VCToolsRedistDir%\x64\Microsoft.VC143.CRT"
+:: Fallback B: locate VS via vswhere, read the default redist version, build the path.
+if not defined VCCRT_DIR (
+    set "VSWHERE_STAGE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    if not exist "!VSWHERE_STAGE!" set "VSWHERE_STAGE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+    if exist "!VSWHERE_STAGE!" (
+        for /f "usebackq tokens=*" %%i in (`"!VSWHERE_STAGE!" -latest -property installationPath 2^>nul`) do set "VS_STAGE_DIR=%%i"
+    )
+    if defined VS_STAGE_DIR if exist "!VS_STAGE_DIR!\VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt" (
+        for /f "usebackq delims=" %%v in ("!VS_STAGE_DIR!\VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt") do (
+            if exist "!VS_STAGE_DIR!\VC\Redist\MSVC\%%v\x64\Microsoft.VC143.CRT\vcruntime140.dll" set "VCCRT_DIR=!VS_STAGE_DIR!\VC\Redist\MSVC\%%v\x64\Microsoft.VC143.CRT"
+        )
+    )
+    :: Fallback C: glob the newest installed redist CRT folder under VS.
+    if not defined VCCRT_DIR if defined VS_STAGE_DIR (
+        for /f "usebackq delims=" %%d in (`dir /b /ad /o-n "!VS_STAGE_DIR!\VC\Redist\MSVC" 2^>nul`) do (
+            if not defined VCCRT_DIR if exist "!VS_STAGE_DIR!\VC\Redist\MSVC\%%d\x64\Microsoft.VC143.CRT\vcruntime140.dll" set "VCCRT_DIR=!VS_STAGE_DIR!\VC\Redist\MSVC\%%d\x64\Microsoft.VC143.CRT"
+        )
+    )
+)
+if defined VCCRT_DIR (
+    copy /Y "!VCCRT_DIR!\vcruntime140.dll"   "%ROOT%\build\" >nul 2>&1
+    copy /Y "!VCCRT_DIR!\vcruntime140_1.dll" "%ROOT%\build\" >nul 2>&1
+    copy /Y "!VCCRT_DIR!\msvcp140.dll"       "%ROOT%\build\" >nul 2>&1
+    echo     [OK] MSVC CRT ^(vcruntime140.dll + vcruntime140_1.dll + msvcp140.dll^) copied
+) else (
+    echo     [WARN] VC++ redist CRT folder not found - native EXEs may fail on a clean PC without vc_redist
 )
 goto :eof

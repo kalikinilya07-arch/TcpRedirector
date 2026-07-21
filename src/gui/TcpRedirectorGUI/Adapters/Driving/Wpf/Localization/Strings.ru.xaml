@@ -25,6 +25,18 @@
     <sys:String x:Key="Auth.UseKerberos">Использовать протокол Kerberos</sys:String>
     <sys:String x:Key="Auth.EncryptPassword">Шифровать пароль (DPAPI). Снимите — хранить/использовать пароль как есть (plaintext в config.json)</sys:String>
 
+    <!-- Авторизация: per-user Kerberos-хелпер (Phase 9) -->
+    <sys:String x:Key="Auth.PerUserTitle">Per-user Kerberos (многопользовательский режим / RDP)</sys:String>
+    <sys:String x:Key="Auth.PerUserEnabled">Аутентифицироваться от имени пользователя, запустившего приложение (per-user хелпер)</sys:String>
+    <sys:String x:Key="Auth.PerUserEnabled.Tooltip">Когда включено, каждое проксируемое приложение аутентифицируется билетом Kerberos того пользователя, который его запустил (через отдельный per-user хелпер), а не машинным аккаунтом службы. Рекомендуется для многопользовательских хостов и серверов удалённых рабочих столов (RDP).</sys:String>
+    <sys:String x:Key="Auth.Spn">SPN (необязательно):</sys:String>
+    <sys:String x:Key="Auth.Spn.Tooltip">Явное имя участника-службы (SPN) прокси, напр. HTTP/proxy.corp.example.com. Оставьте пустым для авто-вывода HTTP/&lt;хост-прокси&gt;.</sys:String>
+    <sys:String x:Key="Auth.HelperTimeout">Таймаут хелпера (мс):</sys:String>
+    <sys:String x:Key="Auth.HelperTimeout.Tooltip">Таймаут в миллисекундах для обмена токенами между службой и хелпером. По умолчанию 5000.</sys:String>
+    <sys:String x:Key="Auth.FallbackPolicy">Политика отката:</sys:String>
+    <sys:String x:Key="Auth.FallbackPolicy.Tooltip">Что делать, когда per-user аутентификацию выполнить нельзя (нет хелпера, таймаут, недоменная учётная запись и т. п.).</sys:String>
+    <sys:String x:Key="Auth.FallbackPolicy.Note">Политика отката: «drop» — разорвать соединение (никогда не использовать машинный аккаунт); «system» — откатиться к аутентификации служебным/машинным аккаунтом; «error» — разорвать и записать ошибку в лог.</sys:String>
+
     <!-- Capture mode -->
     <sys:String x:Key="Section.CaptureMode">РЕЖИМ ЗАХВАТА ТРАФИКА</sys:String>
     <sys:String x:Key="Capture.Mode">Режим:</sys:String>
@@ -133,6 +145,7 @@
     <sys:String x:Key="Val.RouteLadderRange">Глубина лестницы маршрутов должна быть в диапазоне 1..8</sys:String>
     <sys:String x:Key="Val.ExternalExeRequired">Укажите путь к tun2socks.exe</sys:String>
     <sys:String x:Key="Val.Socks5HostPort">Формат: host:port (порт 1..65535), напр. 127.0.0.1:1080</sys:String>
+    <sys:String x:Key="Val.HelperTimeoutRange">Таймаут хелпера должен быть в диапазоне 100..120000 мс</sys:String>
 
     <!-- File dialog -->
     <sys:String x:Key="Dialog.SelectApp">Выберите приложение</sys:String>

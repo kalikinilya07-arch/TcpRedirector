@@ -73,6 +73,23 @@ Source: "gui\ru\*";   DestDir: "{app}\gui\ru";    Flags: ignoreversion; Componen
 
 Source: "TcpRedirectorService.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: core
 
+; MSVC C++ runtime — REQUIRED. TcpRedirectorService.exe and the auth helper are
+; built with the DYNAMIC CRT (/MD), so they need vcruntime140.dll,
+; vcruntime140_1.dll and msvcp140.dll BESIDE the service EXE on a clean PC that
+; lacks the Visual C++ 2015-2022 Redistributable. Shipped under {app} (same dir
+; as the service) so no redistributable install is required. `skipifsourcedoesntexist`
+; keeps packaging robust if a build host did not stage them.
+Source: "vcruntime140.dll";   DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+Source: "msvcp140.dll";       DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+
+; Per-user Kerberos auth helper (Variant 4b). MUST install into {app} — the SAME
+; directory as TcpRedirectorService.exe — because the service resolves it via
+; AppPaths::GetExecutableDirectoryW() + "TcpRedirectorAuthHelper.exe". C++ EXE, so
+; it is NOT obfuscated/signed (approved). `skipifsourcedoesntexist` keeps a build
+; without the helper packageable; when present it always ships under core.
+Source: "TcpRedirectorAuthHelper.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist; Components: core
+
 ; ==============================================================
 ; WinDivert component — optional. `skipifsourcedoesntexist` means
 ; Inno Setup silently omits the entry if the file was not staged

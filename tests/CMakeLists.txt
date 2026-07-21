@@ -37,6 +37,18 @@ set(TEST_SOURCES
     test_packet_gen.cpp
     test_mock_proxy.cpp
     test_comprehensive.cpp
+    unit/service/AuthBrokerProtocolTest.cpp
+    unit/service/BrokeredAuthProviderTest.cpp
+    unit/service/AuthHelperManagerTest.cpp
+    # Phase 6/7: selecting auth-provider factory decision-table tests.
+    unit/service/SelectingAuthProviderFactoryTest.cpp
+    # Phase 5: AuthHelperManager implementation compiled into the test binary so
+    # its pure helpers (nonce/SPN/args/cmdline) and record table can be exercised.
+    ../src/service/TcpRedirectorService/infrastructure/auth/AuthHelperManager.cpp
+    # Phase 6/7: LocalSspiProvider (referenced by the selecting factory) pulls in
+    # SspiNegotiate — compile the shared SSPI TU so the vtable links (secur32 is
+    # linked via #pragma comment in auth_sspi.h).
+    ../src/service/TcpRedirectorService/infrastructure/auth/auth_sspi.cpp
 )
 
 # ============================================================
@@ -48,6 +60,11 @@ target_link_libraries(tcp_redirector_tests
     PRIVATE
         Catch2::Catch2WithMain
         ws2_32
+        advapi32
+        # Phase 5: AuthHelperManager pulls in WTS / userenv / bcrypt.
+        wtsapi32
+        userenv
+        bcrypt
 )
 
 target_include_directories(tcp_redirector_tests
@@ -56,6 +73,7 @@ target_include_directories(tcp_redirector_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/catch2
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/service/TcpRedirectorService
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/service/TcpRedirectorService/..
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src
         ${CMAKE_CURRENT_SOURCE_DIR}/../external
         ${CMAKE_CURRENT_SOURCE_DIR}/../external/boost
 )

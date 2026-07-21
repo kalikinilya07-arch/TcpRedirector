@@ -20,6 +20,22 @@ namespace tcp_redirector {
 namespace domain {
 
 /**
+ * @brief Политика отката (fallback) для per-user Kerberos auth helper.
+ *
+ * Доменное отражение infrastructure::AuthFallbackPolicy (Variant 4b, Phase 0).
+ * Определяет поведение relay, когда per-user-аутентификация не может быть
+ * выполнена. Дефолт — Drop (никогда не откатываться на машинный аккаунт молча).
+ * См. plans/kerberos_per_user_auth_helper_plan.md §5.
+ *
+ * NB (Phase 0): поле только переносится из конфига; поведение relay не меняется.
+ */
+enum class AuthFallbackPolicy {
+    Drop,    //!< Закрыть соединение (default). Никогда не использовать машинный аккаунт.
+    System,  //!< Откатиться на legacy машинную SSPI-аутентификацию (LocalSystem).
+    Error    //!< Закрыть соединение + инкремент proxy_errors + WARN.
+};
+
+/**
  * @brief Конфигурация HTTP-прокси-сервера.
  *
  * Содержит адрес, порт, флаг необходимости авторизации
@@ -35,6 +51,17 @@ struct ProxyConfig {
     std::vector<uint8_t> encrypted_password; //!< Пароль, зашифрованный через DPAPI
     bool has_password = false;              //!< Флаг наличия пароля
     std::wstring plain_password;            //!< Расшифрованный пароль (заполняется ConfigManager)
+
+    // ------------------------------------------------------------------------
+    // Per-user Kerberos auth helper (Variant 4b, Phase 0 — только конфиг).
+    // Заполняется ConfigManager::GetProxyConfig() из AuthSettings. На Phase 0
+    // эти поля никем не читаются в auth/relay-логике (проводка — в поздних фазах).
+    // ------------------------------------------------------------------------
+
+    bool per_user_auth_enabled = false;     //!< Включён per-user Kerberos helper.
+    std::wstring auth_spn;                   //!< Явный SPN; пусто = авто HTTP/<host>.
+    AuthFallbackPolicy fallback_policy = AuthFallbackPolicy::Drop; //!< Политика отката.
+    int helper_timeout_ms = 5000;           //!< Таймаут запроса к helper (мс).
 };
 
 /**

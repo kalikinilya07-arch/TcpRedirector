@@ -53,7 +53,9 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         // Не «контентные»: отражают лишь наличие сохранённого пароля/плейсхолдер.
         nameof(HasStoredPassword), nameof(PasswordPlaceholder),
         // (Задача №3) Производное от AuthRequired/KerberosEnabled — не контент.
-        nameof(ShowBasicCredentials)
+        nameof(ShowBasicCredentials),
+        // (Phase 9) Производное от KerberosEnabled/PerUserEnabled — не контент.
+        nameof(ShowPerUserOptions)
     };
 
     public SettingsViewModel(IConfigRepository config, ITcpRedirectorService? svc = null)
@@ -148,6 +150,12 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             (AuthRequired && !KerberosEnabled && string.IsNullOrWhiteSpace(Login))
                 ? Loc.T("Val.LoginRequired") : null);
 
+        // (Phase 9) Per-user helper timeout — validated only when the per-user
+        // options are actually in effect (Kerberos + per-user enabled).
+        SetError(nameof(HelperTimeoutMs),
+            (ShowPerUserOptions && HelperTimeoutMs is < 100 or > 120000)
+                ? Loc.T("Val.HelperTimeoutRange") : null);
+
         // Wintun-only fields.
         var wintun = CaptureMode == CaptureMode.Wintun;
         SetError(nameof(WintunAdapterName),
@@ -221,6 +229,19 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
 
         return true;
     }
+
+    /// <summary>
+    /// (Phase 9) Coerces a persisted <c>auth.fallback_policy</c> value to one of
+    /// the three valid wire tokens; anything else → the safe default "drop".
+    /// Kept in sync with the repository's normalisation.
+    /// </summary>
+    private static string NormalizeFallbackPolicy(string? policy) =>
+        (policy?.Trim().ToLowerInvariant()) switch
+        {
+            "system" => "system",
+            "error"  => "error",
+            _        => "drop"
+        };
 
     private static bool IsValidHostPort(string value)
     {
@@ -300,6 +321,8 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         if (value && !AuthRequired)
             AuthRequired = true;
         OnPropertyChanged(nameof(ShowBasicCredentials));
+        // (Phase 9) Видимость блока per-user-опций зависит от Kerberos.
+        OnPropertyChanged(nameof(ShowPerUserOptions));
     }
 
     partial void OnAuthRequiredChanged(bool value)
@@ -307,6 +330,51 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         if (!value && KerberosEnabled)
             KerberosEnabled = false;
         OnPropertyChanged(nameof(ShowBasicCredentials));
+        // (Phase 9) Per-user-опции доступны только при включённом Kerberos,
+        // который, в свою очередь, требует включённой авторизации.
+        OnPropertyChanged(nameof(ShowPerUserOptions));
+    }
+
+    // ── Auth: per-user Kerberos helper (Phase 9) ─────
+    // Четыре поля зеркалируют JSON-ключи auth.per_user_enabled / auth.spn /
+    // auth.fallback_policy / auth.helper_timeout_ms, которые потребляет служба.
+    // Дефолты совпадают с «фича выключена» для обратной совместимости.
+
+    /// <summary>auth.per_user_enabled — включить per-user Kerberos.</summary>
+    [ObservableProperty] private bool _perUserEnabled;
+
+    /// <summary>auth.spn — явный SPN; пусто ⇒ авто HTTP/&lt;proxyhost&gt;.</summary>
+    [ObservableProperty] private string _spn = "";
+
+    /// <summary>
+    /// auth.fallback_policy — «drop» | «system» | «error». Хранится и
+    /// передаётся ПО ПРОВОДУ этими же строками; combobox биндится напрямую к
+    /// <see cref="FallbackPolicies"/>.
+    /// </summary>
+    [ObservableProperty] private string _fallbackPolicy = "drop";
+
+    /// <summary>auth.helper_timeout_ms — таймаут обмена токенами service↔helper.</summary>
+    [ObservableProperty] private int _helperTimeoutMs = 5000;
+
+    /// <summary>
+    /// Допустимые значения fallback_policy в порядке отображения. Значения —
+    /// это ровно те строки, что уходят в config.json ("drop"/"system"/"error"),
+    /// поэтому SelectedItem можно биндить напрямую без конвертера.
+    /// </summary>
+    public IReadOnlyList<string> FallbackPolicies { get; } =
+        ["drop", "system", "error"];
+
+    /// <summary>
+    /// (Phase 9) Показывать ли под-поля per-user-аутентификации (SPN,
+    /// fallback-политика, таймаут). Они имеют смысл только при включённом
+    /// Kerberos И включённом per-user-режиме, аналогично тому, как Basic-поля
+    /// гейтятся на чекбоксе Kerberos.
+    /// </summary>
+    public bool ShowPerUserOptions => AuthRequired && KerberosEnabled && PerUserEnabled;
+
+    partial void OnPerUserEnabledChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ShowPerUserOptions));
     }
 
     // ── Rules (legacy — kept for IPC compat) ─────────
@@ -550,6 +618,13 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             // (Задача №2) Режим хранения пароля. Дефолт true — обратная
             // совместимость со старыми конфигами без этого поля.
             EncryptPassword = _config.ReadBool("auth", "encryptPassword", true);
+            // (Phase 9) Per-user Kerberos helper. Отсутствующие ключи → дефолты
+            // «фича выключена» (обратная совместимость со старыми конфигами).
+            PerUserEnabled = _config.ReadBool("auth", "per_user_enabled", false);
+            Spn = _config.ReadString("auth", "spn", "");
+            FallbackPolicy = NormalizeFallbackPolicy(
+                _config.ReadString("auth", "fallback_policy", "drop"));
+            HelperTimeoutMs = _config.ReadInt("auth", "helper_timeout_ms", 5000);
             // Поле ввода всегда пустое; наличие сохранённого пароля показываем
             // плейсхолдером. Пароль считается заданным, если непусто ЛЮБОЕ из
             // полей: encryptedPassword (DPAPI) ИЛИ password (plaintext).
@@ -581,6 +656,8 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             OnPropertyChanged(nameof(IsWintunSelected));
             // (Задача №3) Актуализировать видимость Basic-полей после загрузки.
             OnPropertyChanged(nameof(ShowBasicCredentials));
+            // (Phase 9) Актуализировать видимость per-user-опций после загрузки.
+            OnPropertyChanged(nameof(ShowPerUserOptions));
 
             // Apps (v2), with v1 fallback handled inside the repository.
             var loaded = _config.ReadApps();
@@ -701,7 +778,12 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
                     KerberosEnabled = KerberosEnabled,
                     // (Задача №2/№1) режимы хранения пароля и IPC-аутентификации.
                     EncryptPassword = EncryptPassword,
-                    IpcAuthEnabled = IpcAuthEnabled
+                    IpcAuthEnabled = IpcAuthEnabled,
+                    // (Phase 9) Per-user Kerberos helper.
+                    PerUserEnabled = PerUserEnabled,
+                    Spn = Spn,
+                    FallbackPolicy = FallbackPolicy,
+                    HelperTimeoutMs = HelperTimeoutMs
                 },
                 CaptureMode,
                 Wintun,
@@ -759,7 +841,12 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
                         AuthRequired = AuthRequired, Login = Login,
                         Password = currentPwd, KerberosEnabled = KerberosEnabled,
                         EncryptPassword = EncryptPassword,
-                        IpcAuthEnabled = IpcAuthEnabled
+                        IpcAuthEnabled = IpcAuthEnabled,
+                        // (Phase 9) Per-user Kerberos helper.
+                        PerUserEnabled = PerUserEnabled,
+                        Spn = Spn,
+                        FallbackPolicy = FallbackPolicy,
+                        HelperTimeoutMs = HelperTimeoutMs
                     });
                 }
                 catch { /* IPC failure is non-fatal */ }

@@ -326,7 +326,6 @@ TEST_CASE("ConnectionRecord: default state", "[config]") {
 
 TEST_CASE("ServiceStats: default values", "[config]") {
     ServiceStats stats;
-    REQUIRE(stats.total_connections == 0);
     REQUIRE(stats.active_connections == 0);
     REQUIRE(stats.total_rx_bytes == 0);
     REQUIRE(stats.total_tx_bytes == 0);

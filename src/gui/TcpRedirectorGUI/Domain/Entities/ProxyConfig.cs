@@ -27,6 +27,40 @@ public class ProxyConfig
 
     // Authentication (Kerberos/SSPI)
     public bool KerberosEnabled { get; set; }
+
+    // ── Per-user Kerberos auth helper (Phase 9) ──────────────────────────
+    // These mirror the JSON keys added to the "auth" block in Phase 0 and are
+    // consumed by the C++ service. All default to the backward-compatible
+    // "feature OFF" values so pre-Phase-0 configs load unchanged.
+
+    /// <summary>
+    /// JSON: <c>auth.per_user_enabled</c> (default false). Enables per-user
+    /// Kerberos auth — each proxied app authenticates as the user who launched
+    /// it, via a per-user helper process, instead of the machine account.
+    /// </summary>
+    public bool PerUserEnabled { get; set; }
+
+    /// <summary>
+    /// JSON: <c>auth.spn</c> (default ""). Optional explicit SPN override for
+    /// the proxy. Empty ⇒ the service auto-derives <c>HTTP/&lt;proxyhost&gt;</c>.
+    /// </summary>
+    public string Spn { get; set; } = string.Empty;
+
+    /// <summary>
+    /// JSON: <c>auth.fallback_policy</c> (enum "drop" | "system" | "error",
+    /// default "drop"). What to do when per-user auth cannot be performed:
+    ///   • <c>drop</c>   — drop the connection (never use the machine account);
+    ///   • <c>system</c> — fall back to the service/machine account auth;
+    ///   • <c>error</c>  — drop + emit an error log.
+    /// The value is kept verbatim on the wire (exactly one of the three).
+    /// </summary>
+    public string FallbackPolicy { get; set; } = "drop";
+
+    /// <summary>
+    /// JSON: <c>auth.helper_timeout_ms</c> (default 5000). Timeout in
+    /// milliseconds for the service↔helper token exchange.
+    /// </summary>
+    public int HelperTimeoutMs { get; set; } = 5000;
 }
 
 public enum RuleType

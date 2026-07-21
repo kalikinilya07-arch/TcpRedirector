@@ -119,6 +119,16 @@ set "ENG_TUN2SOCKS=no"
 copy /Y "%ROOT%\build\TcpRedirectorService.exe" "%STAGE%\" >nul 2>&1
 echo     [OK] TcpRedirectorService.exe
 
+:: --- Per-user Kerberos auth helper (OPTIONAL): MUST sit beside the service EXE.
+::     The service resolves it via GetExecutableDirectoryW() +
+::     "TcpRedirectorAuthHelper.exe"; missing => per-user auth falls back. ---
+if exist "%ROOT%\build\TcpRedirectorAuthHelper.exe" (
+    copy /Y "%ROOT%\build\TcpRedirectorAuthHelper.exe" "%STAGE%\" >nul 2>&1
+    echo     [OK] TcpRedirectorAuthHelper.exe ^(beside service^)
+) else (
+    echo     [SKIP] TcpRedirectorAuthHelper.exe not in build\ - per-user auth unavailable
+)
+
 :: --- GUI (with the same cleanup deploy.bat performs) ---
 if exist "%ROOT%\build\gui" (
     xcopy /Y /E /I "%ROOT%\build\gui\*" "%STAGE%\gui\" >nul 2>&1
@@ -199,6 +209,19 @@ if exist "%ROOT%\build\config.default.json" (
     echo     [OK] config.default.json ^(from installer\^)
 ) else (
     echo     [SKIP] no config.default.json seed - service self-generates on first run
+)
+
+:: --- MSVC C++ runtime (REQUIRED): the service + auth helper are built /MD
+::     (dynamic CRT) and need vcruntime140.dll / vcruntime140_1.dll /
+::     msvcp140.dll beside the EXE on a clean PC. build.bat staged them into
+::     build\; ship them verbatim so no VC++ redist install is required. ---
+if exist "%ROOT%\build\vcruntime140.dll" (
+    copy /Y "%ROOT%\build\vcruntime140.dll"   "%STAGE%\" >nul 2>&1
+    if exist "%ROOT%\build\vcruntime140_1.dll" copy /Y "%ROOT%\build\vcruntime140_1.dll" "%STAGE%\" >nul 2>&1
+    if exist "%ROOT%\build\msvcp140.dll"       copy /Y "%ROOT%\build\msvcp140.dll"       "%STAGE%\" >nul 2>&1
+    echo     [OK] MSVC CRT ^(vcruntime140*.dll + msvcp140.dll^) ^(from build\^)
+) else (
+    echo     [SKIP] MSVC CRT not in build\ - native EXEs may fail on a clean PC without vc_redist
 )
 
 :: =========================================================================

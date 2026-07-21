@@ -72,6 +72,20 @@ if not exist "%DEPLOY%\TcpRedirectorService.exe" (
 copy /Y "%DEPLOY%\TcpRedirectorService.exe" "%OBFUSCATED%\" >nul
 
 :: -------------------------------------------------------------------
+:: Per-user Kerberos auth helper (Variant 4b) — staged VERBATIM beside the
+:: service EXE. NOT run through obfuscar (that targets .NET; this is C++), and
+:: not signed (approved). The service resolves it via GetExecutableDirectoryW()
+:: + "TcpRedirectorAuthHelper.exe", so it MUST land in the same obfuscated\ dir
+:: as TcpRedirectorService.exe. Optional: absence does not fail packaging.
+:: -------------------------------------------------------------------
+if exist "%DEPLOY%\TcpRedirectorAuthHelper.exe" (
+    copy /Y "%DEPLOY%\TcpRedirectorAuthHelper.exe" "%OBFUSCATED%\" >nul
+    echo       [OK] TcpRedirectorAuthHelper.exe staged ^(beside service^)
+) else (
+    echo       [SKIP] TcpRedirectorAuthHelper.exe absent — per-user auth will be unavailable
+)
+
+:: -------------------------------------------------------------------
 :: WinDivert — OPTIONAL. WP13: wintun-only builds skip these.
 :: -------------------------------------------------------------------
 if exist "%DEPLOY%\WinDivert.dll" (
@@ -125,6 +139,21 @@ if exist "config.default.json" (
 ) else (
     echo       [SKIP] no config seed — service will self-generate on first run
 )
+
+:: -------------------------------------------------------------------
+:: MSVC C++ runtime — REQUIRED. The service + auth helper are built /MD
+:: (dynamic CRT) and need vcruntime140.dll / vcruntime140_1.dll /
+:: msvcp140.dll beside the service EXE on a clean PC. Staged verbatim so
+:: no VC++ redistributable install is required on the target machine.
+:: -------------------------------------------------------------------
+if exist "%DEPLOY%\vcruntime140.dll" (
+    copy /Y "%DEPLOY%\vcruntime140.dll" "%OBFUSCATED%\" >nul
+    if exist "%DEPLOY%\vcruntime140_1.dll" copy /Y "%DEPLOY%\vcruntime140_1.dll" "%OBFUSCATED%\" >nul
+    if exist "%DEPLOY%\msvcp140.dll"       copy /Y "%DEPLOY%\msvcp140.dll"       "%OBFUSCATED%\" >nul
+    echo       [OK] MSVC CRT ^(vcruntime140*.dll + msvcp140.dll^) staged
+) else (
+    echo       [SKIP] MSVC CRT absent — native EXEs may fail on a clean PC without vc_redist
+)
 echo       OK
 
 :: ==========================================
@@ -167,6 +196,23 @@ echo.
 echo echo [2/4] Copying files...
 echo xcopy /Y /E /Q "%%~dp0gui\*" "%%APP_DIR%%\gui\" ^>nul 2^>^&1
 echo copy /Y "%%~dp0TcpRedirectorService.exe" "%%APP_DIR%%\" ^>nul
+echo(:: --- Per-user Kerberos auth helper ^(beside the service EXE^) ---
+echo if exist "%%~dp0TcpRedirectorAuthHelper.exe" ^(
+echo     copy /Y "%%~dp0TcpRedirectorAuthHelper.exe" "%%APP_DIR%%\" ^>nul
+echo     echo     [OK] TcpRedirectorAuthHelper.exe present
+echo ^) else ^(
+echo     echo     [SKIP] TcpRedirectorAuthHelper.exe not shipped - per-user auth unavailable
+echo ^)
+echo.
+echo(:: --- MSVC C++ runtime ^(REQUIRED for the /MD-linked native EXEs^) ---
+echo if exist "%%~dp0vcruntime140.dll" ^(
+echo     copy /Y "%%~dp0vcruntime140.dll"   "%%APP_DIR%%\" ^>nul
+echo     copy /Y "%%~dp0vcruntime140_1.dll" "%%APP_DIR%%\" ^>nul 2^>^&1
+echo     copy /Y "%%~dp0msvcp140.dll"       "%%APP_DIR%%\" ^>nul 2^>^&1
+echo     echo     [OK] MSVC CRT present
+echo ^) else ^(
+echo     echo     [SKIP] MSVC CRT not shipped - service may fail without vc_redist
+echo ^)
 echo.
 echo(:: --- Optional WinDivert ---
 echo if exist "%%~dp0WinDivert.dll" ^(
@@ -249,6 +295,10 @@ echo.
 echo :: Delete binaries but PRESERVE config.json, logs\, and .bin\.
 echo if exist "%%APP_DIR%%\gui"                 rmdir /S /Q "%%APP_DIR%%\gui"
 echo del /Q "%%APP_DIR%%\TcpRedirectorService.exe" 2^>nul
+echo del /Q "%%APP_DIR%%\TcpRedirectorAuthHelper.exe" 2^>nul
+echo del /Q "%%APP_DIR%%\vcruntime140.dll"         2^>nul
+echo del /Q "%%APP_DIR%%\vcruntime140_1.dll"       2^>nul
+echo del /Q "%%APP_DIR%%\msvcp140.dll"             2^>nul
 echo del /Q "%%APP_DIR%%\WinDivert.dll"            2^>nul
 echo del /Q "%%APP_DIR%%\WinDivert64.sys"          2^>nul
 echo del /Q "%%APP_DIR%%\wintun.dll"               2^>nul
@@ -278,6 +328,8 @@ echo.
 echo Included (present only if staged in %DEPLOY%\):
 echo   - TcpRedirector GUI (self-contained, .NET 9.0 inside)
 echo   - TcpRedirector Service
+echo   - vcruntime140.dll + vcruntime140_1.dll + msvcp140.dll  [MSVC CRT, required]
+echo   - TcpRedirectorAuthHelper.exe            [optional, per-user Kerberos]
 echo   - WinDivert.dll + WinDivert64.sys        [optional]
 echo   - .bin\wintun\^<arch^>\wintun.dll           [optional]
 echo   - .bin\tun2socks\tun2socks.exe           [optional]

@@ -46,6 +46,50 @@ struct ProxySettings {
 };
 
 /**
+ * @brief Политика отката (fallback) для per-user Kerberos auth helper.
+ *
+ * Определяет поведение relay, когда per-user-аутентификация не может быть
+ * выполнена (helper не запущен/недоступен, PID→user не резолвится, таймаут
+ * IPC и т.п. — см. §5 плана kerberos_per_user_auth_helper_plan.md).
+ *
+ * Строковые формы в JSON — строго нижним регистром: "drop" | "system" | "error".
+ * ВНИМАНИЕ: дефолт — Drop (по решению безопасности: НИКОГДА не откатываться
+ * молча на машинную учётную запись).
+ *
+ * NB (Phase 0): поле только парсится/хранится; поведение relay не меняется,
+ * пока последующие фазы не задействуют его.
+ */
+enum class AuthFallbackPolicy {
+    Drop,    //!< Закрыть соединение (default). Никогда не использовать машинный аккаунт.
+    System,  //!< Откатиться на legacy машинную SSPI-аутентификацию (LocalSystem).
+    Error    //!< Закрыть соединение + инкремент proxy_errors + WARN.
+};
+
+inline const char* AuthFallbackPolicyToString(AuthFallbackPolicy p) {
+    switch (p) {
+        case AuthFallbackPolicy::System: return "system";
+        case AuthFallbackPolicy::Error:  return "error";
+        case AuthFallbackPolicy::Drop:   // fallthrough
+        default:                         return "drop";
+    }
+}
+
+/**
+ * @brief Разбор строки в AuthFallbackPolicy.
+ * @param s Строковое значение из JSON (регистр-независимо).
+ * @param out Результат (устанавливается только при валидном значении).
+ * @return true, если строка распознана; false — иначе (out не тронут).
+ */
+inline bool AuthFallbackPolicyFromString(const std::string& s, AuthFallbackPolicy& out) {
+    std::string lc; lc.reserve(s.size());
+    for (char c : s) lc.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c));
+    if (lc == "drop")   { out = AuthFallbackPolicy::Drop;   return true; }
+    if (lc == "system") { out = AuthFallbackPolicy::System; return true; }
+    if (lc == "error")  { out = AuthFallbackPolicy::Error;  return true; }
+    return false;
+}
+
+/**
  * @brief Настройки авторизации на прокси-сервере.
  */
 struct AuthSettings {
@@ -65,6 +109,30 @@ struct AuthSettings {
     bool        encryptPassword = true;
     //! Пароль в открытом виде. Используется ТОЛЬКО при encryptPassword=false.
     std::string password;
+
+    // ------------------------------------------------------------------------
+    // Per-user Kerberos auth helper (Variant 4b, Phase 0 — только конфиг).
+    // См. plans/kerberos_per_user_auth_helper_plan.md. Все поля используют
+    // snake_case (как в JSON-примере плана и остальных v2-секциях). На Phase 0
+    // поля ТОЛЬКО парсятся/сериализуются и не влияют на поведение auth/relay.
+    // ------------------------------------------------------------------------
+
+    //! Включить per-user Kerberos auth helper (маршрутизация SSPI в per-user
+    //! helper-процесс вместо машинного аккаунта LocalSystem).
+    //! Дефолт false — поведение не меняется, пока последующие фазы не подключат.
+    bool               per_user_enabled = false;
+
+    //! Явный SPN-переопределитель. Пусто (по умолчанию) = авто-деривация
+    //! HTTP/<proxy_host> в рантайме (см. MakeSpn в auth_sspi.cpp).
+    std::string        spn;
+
+    //! Политика отката, когда per-user-аутентификация невозможна.
+    //! Дефолт Drop (никогда не откатываться на машинный аккаунт молча).
+    AuthFallbackPolicy fallback_policy = AuthFallbackPolicy::Drop;
+
+    //! Таймаут запроса к helper по IPC (мс). По истечении → helper недоступен
+    //! → применяется fallback_policy. Дефолт 5000 мс.
+    int                helper_timeout_ms = 5000;
 };
 
 /**

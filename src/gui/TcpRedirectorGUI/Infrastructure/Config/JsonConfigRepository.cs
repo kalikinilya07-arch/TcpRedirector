@@ -398,6 +398,16 @@ public sealed class JsonConfigRepository : IConfigRepository
             // (Задача №2) Режим хранения пароля.
             auth["encryptPassword"] = config.EncryptPassword;
 
+            // ── Per-user Kerberos auth helper (Phase 9) ──────────────────
+            // GUI owns these four keys; merge them onto the existing "auth"
+            // object so unknown siblings are preserved. fallback_policy is kept
+            // verbatim on the wire ("drop"/"system"/"error"); an unexpected
+            // value is normalised to the safe default "drop".
+            auth["per_user_enabled"] = config.PerUserEnabled;
+            auth["spn"]              = config.Spn ?? "";
+            auth["fallback_policy"]  = NormalizeFallbackPolicy(config.FallbackPolicy);
+            auth["helper_timeout_ms"] = config.HelperTimeoutMs;
+
             // (Задача №2) Нормализация auth-полей ВСЕГДА, независимо от того,
             // ввёл ли пользователь новый пароль. Ранее очистка неактивных полей
             // выполнялась только внутри `if (пароль введён)`, поэтому при смене
@@ -498,6 +508,19 @@ public sealed class JsonConfigRepository : IConfigRepository
             return "";
         }
     }
+
+    /// <summary>
+    /// Normalises an <c>auth.fallback_policy</c> value to exactly one of the
+    /// three wire tokens. Any unrecognised/empty value collapses to the safe
+    /// default <c>"drop"</c> (never silently use the machine account).
+    /// </summary>
+    private static string NormalizeFallbackPolicy(string? policy) =>
+        (policy?.Trim().ToLowerInvariant()) switch
+        {
+            "system" => "system",
+            "error"  => "error",
+            _        => "drop"
+        };
 
     /// <summary>Returns the child object at <paramref name="key"/>, creating an
     /// empty one (and attaching it) if it is absent or not an object. Used by the
@@ -604,7 +627,12 @@ public sealed class JsonConfigRepository : IConfigRepository
             {
                 ["enabled"] = defaults.AuthRequired,
                 ["username"] = defaults.Login,
-                ["kerberos"] = defaults.KerberosEnabled
+                ["kerberos"] = defaults.KerberosEnabled,
+                // Per-user Kerberos auth helper (Phase 9) — feature OFF defaults.
+                ["per_user_enabled"]  = defaults.PerUserEnabled,
+                ["spn"]               = defaults.Spn,
+                ["fallback_policy"]   = defaults.FallbackPolicy,
+                ["helper_timeout_ms"] = defaults.HelperTimeoutMs
             },
             ["log"] = new JsonObject
             {

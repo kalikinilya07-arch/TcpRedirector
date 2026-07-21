@@ -52,14 +52,14 @@
           - $(ProjectDir)..\..\..\external\lwip\src\include   → vendor'ные lwip/*.h
         Vendor-исходники редактировать нельзя (см. WP9 в WINTUN_INTEGRATION_PLAN.md §11).
       -->
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..\..\external;$(ProjectDir)..\..\..\external\boost;$(ProjectDir)infrastructure\capture\wintun\lwip;$(ProjectDir)..\..\..\external\lwip\src\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\..;$(ProjectDir)..\..\..\external;$(ProjectDir)..\..\..\external\boost;$(ProjectDir)infrastructure\capture\wintun\lwip;$(ProjectDir)..\..\..\external\lwip\src\include</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;iphlpapi.lib;psapi.lib;version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;crypt32.lib;ws2_32.lib;iphlpapi.lib;psapi.lib;version.lib;wtsapi32.lib;userenv.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -79,6 +79,8 @@
     <ClCompile Include="infrastructure\logging\Logger.cpp" />
     <ClCompile Include="infrastructure\stats\StatsCollector.cpp" />
     <ClCompile Include="infrastructure\auth\auth_sspi.cpp" />
+    <!-- Variant 4b Phase 5: per-user auth helper manager (WTS + CreateProcessAsUser + Job) -->
+    <ClCompile Include="infrastructure\auth\AuthHelperManager.cpp" />
     <!-- WP9: lwIP glue (project-owned) -->
     <ClCompile Include="infrastructure\capture\wintun\lwip\sys_now_msvc.cpp" />
     <ClCompile Include="infrastructure\capture\wintun\lwip\lwip_hooks_impl.c" />
@@ -138,6 +140,7 @@
     <ClInclude Include="domain\ports\ICapture.h" />
     <ClInclude Include="domain\ports\ICapturePreflight.h" />
     <ClInclude Include="domain\ports\IConfigStore.h" />
+    <ClInclude Include="domain\ports\IAuthProvider.h" />
     <ClInclude Include="domain\ports\IConnectionMonitor.h" />
     <ClInclude Include="domain\ports\IProxyConnector.h" />
     <ClInclude Include="domain\services\ConnectionTracker.h" />
@@ -148,9 +151,18 @@
     <ClInclude Include="infrastructure\ipc\TcpIpcServer.h" />
     <ClInclude Include="infrastructure\logging\Logger.h" />
     <ClInclude Include="infrastructure\auth\auth_sspi.h" />
+    <ClInclude Include="infrastructure\auth\LocalSspiProvider.h" />
+    <ClInclude Include="infrastructure\auth\AuthBrokerClient.h" />
+    <ClInclude Include="infrastructure\auth\BrokeredAuthProvider.h" />
+    <ClInclude Include="infrastructure\auth\AuthHelperManager.h" />
+    <!-- Variant 4b Phase 6/7: per-user auth provider selection + drop fallback -->
+    <ClInclude Include="infrastructure\auth\DropAuthProvider.h" />
+    <ClInclude Include="infrastructure\auth\SelectingAuthProviderFactory.h" />
+    <ClInclude Include="infrastructure\auth\SelectingAuthProviderAdapters.h" />
     <ClInclude Include="infrastructure\paths\AppPaths.h" />
     <ClInclude Include="infrastructure\preflight\WinDivertPreflight.h" />
     <ClInclude Include="infrastructure\preflight\WintunPreflight.h" />
+    <ClInclude Include="..\..\shared\auth_broker\AuthBrokerProtocol.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

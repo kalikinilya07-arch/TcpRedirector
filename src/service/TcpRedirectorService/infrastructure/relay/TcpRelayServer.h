@@ -22,8 +22,10 @@
 #include "../../domain/ports/IRelayServer.h"
 #include "../../domain/ports/IConnectionTable.h"
 #include "../../domain/ports/IConnectionMonitor.h"
+#include "../../domain/ports/IAuthProvider.h"
 #include "../../domain/entities/ProxyConfig.h"
 #include "../../infrastructure/auth/auth_sspi.h"
+#include "../../infrastructure/auth/LocalSspiProvider.h"
 #include "../utf8_convert.h"
 #include "Socks5Adapter.h"     // WP12a — optional SOCKS5 upstream listener
 
@@ -73,6 +75,18 @@ public:
     void SetLogCallback(RelayLogCallback cb) { m_logCb = std::move(cb); }
     void SetConnCallback(RelayConnCallback cb) { m_connCb = std::move(cb); }
     void SetConnectionMonitor(domain::ports::IConnectionMonitor* monitor) { m_connectionMonitor = monitor; }
+
+    /**
+     * @brief Установить фабрику провайдеров аутентификации (Variant 4b, Phase 1).
+     *
+     * Опционально: если не вызвана, relay использует встроенную
+     * LocalSspiProviderFactory (машинный аккаунт, прежнее поведение). На Phase 4/6
+     * ServiceMain сможет подменить фабрику на выбирающую BrokeredAuthProvider при
+     * per_user_auth_enabled. Передача nullptr восстанавливает дефолтную фабрику.
+     */
+    void SetAuthProviderFactory(domain::ports::IAuthProviderFactory* factory) {
+        m_authProviderFactory = factory ? factory : &m_defaultAuthProviderFactory;
+    }
 
     bool Start() {
         if (m_running) return true;
@@ -349,6 +363,7 @@ private:
         auto* ctx = new RelayContext();
         ctx->server = this;
         ctx->client_sock = client_sock;
+        ctx->client_port = client_port;   // Phase 6: нужен для PID->session резолва.
         ctx->orig_dest_ip = orig_dest_ip;
         ctx->orig_dest_port = orig_dest_port;
         ctx->proxy_config_id = proxy_config_id;
@@ -369,6 +384,7 @@ private:
     struct RelayContext {
         TcpRelayServer* server;
         SOCKET client_sock;
+        uint16_t client_port;    // Phase 6: эфемерный порт клиента (ключ PID-резолва).
         uint32_t orig_dest_ip;
         uint16_t orig_dest_port;
         uint32_t proxy_config_id;
@@ -386,6 +402,9 @@ private:
         SOCKET client_sock = ctx->client_sock;
         uint32_t dest_ip = ctx->orig_dest_ip;
         uint16_t dest_port = ctx->orig_dest_port;
+        // Phase 6: сохраняем реальный client_port ДО освобождения ctx, чтобы
+        // передать его в ConnectionIdentity (нужно для PID->session резолва).
+        uint16_t client_port = ctx->client_port;
         delete ctx;
 
         // DEBUG: проверим, какие флаги реально приходят
@@ -449,7 +468,28 @@ private:
         inet_ntop(AF_INET, &in, ip_str, sizeof(ip_str));
 
         // ---- SSPI/Kerberos: инициализация (только при первом CONNECT) ----
-        infrastructure::SspiContext sspiCtx;
+        // Variant 4b, Phase 1: токены Negotiate производятся через IAuthProvider
+        // вместо прямого вызова SspiNegotiate. На Phase 1 фабрика всегда отдаёт
+        // LocalSspiProvider (машинный аккаунт) — поведение идентично прежнему.
+        // Провайдер держит per-connection SSPI-состояние внутри и живёт ровно
+        // столько же, сколько прежний стековый SspiContext (до выхода из handler).
+        std::unique_ptr<domain::ports::IAuthProvider> authProvider;
+        // Phase 7: признак «drop-семантики» текущего провайдера. Для per-user
+        // пути (Brokered/Drop) Failed => жёсткий drop соединения БЕЗ отката на
+        // машинную аутентификацию. Для legacy LocalSspiProvider остаётся false —
+        // обработка Failed/NoCredentials прежняя (обратная совместимость).
+        bool dropOnAuthFailure = false;
+        if (m_kerberosAuth) {
+            domain::ports::ConnectionIdentity ident;
+            // Phase 6: реальный client_port (fix прежнего client_port=0) — по нему
+            // фабрика резолвит PID->session и выбирает helper нужного пользователя.
+            ident.client_port     = client_port;
+            ident.orig_dest_ip    = dest_ip;
+            ident.orig_dest_port  = dest_port;
+            ident.proxy_config_id = m_proxyConfigId;
+            authProvider = m_authProviderFactory->Create(ident);
+            dropOnAuthFailure = authProvider && authProvider->DropOnFailure();
+        }
         std::string sspiToken;
         bool sspiInitDone = false;
         bool sspiAvailable = true;   // локальный флаг, НЕ классовый m_kerberosAuth
@@ -479,12 +519,29 @@ private:
                         "Use the proxy FQDN and a domain account for real Kerberos.");
                 }
                 Log(domain::LogLevel::Debug, "Acquiring credentials for " + m_proxyHost + "...");
-                auto r = infrastructure::SspiNegotiate(sspiCtx, "", sspiToken,
-                    infrastructure::MakeSpn(m_proxyHost));
-                if (r == infrastructure::SspiResult::NoCredentials) {
+                auto r = authProvider->NextToken(
+                    infrastructure::MakeSpn(m_proxyHost), "", sspiToken);
+                // Phase 7: для per-user провайдера (dropOnAuthFailure==true) любой
+                // сбой (Failed ИЛИ NoCredentials) означает, что пользовательский
+                // токен получить нельзя. По утверждённой политике drop это ДОЛЖНО
+                // приводить к закрытию соединения, а НЕ к молчаливому откату на
+                // машинную аутентификацию (которым и был бы CONNECT без Negotiate).
+                if (dropOnAuthFailure &&
+                    (r == domain::ports::AuthStepStatus::Failed ||
+                     r == domain::ports::AuthStepStatus::NoCredentials)) {
+                    Log(domain::LogLevel::Warn,
+                        "per-user auth failed; dropping connection "
+                        "(fallback_policy=drop) dst=" + std::string(ip_str) + ":" +
+                        std::to_string(dest_port));
+                    if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
+                    closesocket(client_sock);
+                    closesocket(proxy_sock);
+                    return;
+                }
+                if (r == domain::ports::AuthStepStatus::NoCredentials) {
                     Log(domain::LogLevel::Warn, "Kerberos/NTLM недоступен (SEC_E_NO_CREDENTIALS)");
                     sspiAvailable = false; // локальный флаг, НЕ классовый
-                } else if (r == infrastructure::SspiResult::Error) {
+                } else if (r == domain::ports::AuthStepStatus::Failed) {
                     Log(domain::LogLevel::Warn, "Ошибка инициализации SSPI");
                     sspiAvailable = false;
                 } else {
@@ -613,10 +670,20 @@ private:
                 return;
             }
             Log(domain::LogLevel::Debug, "Got 407 challenge (" + std::to_string(challenge.size()) + " bytes), continuing...");
-            auto r = infrastructure::SspiNegotiate(sspiCtx, challenge, sspiToken,
-                infrastructure::MakeSpn(m_proxyHost));
-            if (r == infrastructure::SspiResult::Error) {
-                Log(domain::LogLevel::Error, "SSPI error after 407 challenge: " + std::string(resp_buf, 100));
+            auto r = authProvider->NextToken(
+                infrastructure::MakeSpn(m_proxyHost), challenge, sspiToken);
+            if (r == domain::ports::AuthStepStatus::Failed) {
+                // Phase 7: под per-user путём (dropOnAuthFailure) Failed после 407
+                // — это терминальный drop; НИКОГДА не откатываемся на машинную
+                // аутентификацию. Легаси-путь и без того здесь закрывает соединение.
+                if (dropOnAuthFailure) {
+                    Log(domain::LogLevel::Warn,
+                        "per-user auth failed after 407; dropping connection "
+                        "(fallback_policy=drop) dst=" + std::string(ip_str) + ":" +
+                        std::to_string(dest_port));
+                } else {
+                    Log(domain::LogLevel::Error, "SSPI error after 407 challenge: " + std::string(resp_buf, 100));
+                }
                 if (m_connectionMonitor) m_connectionMonitor->IncrementProxyErrors();
                 closesocket(client_sock);
                 closesocket(proxy_sock);
@@ -833,6 +900,12 @@ private:
     RelayLogCallback m_logCb;
     RelayConnCallback m_connCb;
     domain::ports::IConnectionMonitor* m_connectionMonitor = nullptr;
+
+    // Variant 4b, Phase 1: фабрика провайдеров Negotiate-аутентификации.
+    // По умолчанию — локальная (машинный аккаунт), поведение как до Phase 1.
+    // Может быть подменена через SetAuthProviderFactory (Phase 4/6).
+    LocalSspiProviderFactory m_defaultAuthProviderFactory;
+    domain::ports::IAuthProviderFactory* m_authProviderFactory = &m_defaultAuthProviderFactory;
 
     // H4: number of active bridge pairs (incremented before StartBridge,
     // decremented after both directions finish).  Stop() polls this counter

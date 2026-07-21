@@ -17,6 +17,10 @@
 #include "../../infrastructure/preflight/WintunPreflight.h"
 #include "../../infrastructure/relay/ConnectionTable.h"
 #include "../../infrastructure/relay/TcpRelayServer.h"
+#include "../../infrastructure/process/ProcessResolver.h"
+#include "../../infrastructure/auth/AuthHelperManager.h"
+#include "../../infrastructure/auth/SelectingAuthProviderFactory.h"
+#include "../../infrastructure/auth/SelectingAuthProviderAdapters.h"
 #include "../../infrastructure/ipc/TcpIpcServer.h"
 #include "../../infrastructure/config/ConfigManager.h"
 #include "../../infrastructure/logging/Logger.h"
@@ -190,6 +194,89 @@ public:
         m_relayServer->SetLogCallback([this](const std::string& msg) {
             m_logger->Debug("relay", msg);
         });
+
+        // --------------------------------------------------------------------
+        // Variant 4b, Phase 6/7 — per-user Kerberos auth helper wiring.
+        //
+        // Только когда per_user_auth_enabled И включён Kerberos: поднимаем
+        // AuthHelperManager (запускает per-user helper'ы в интерактивных сессиях)
+        // и подменяем дефолтную (машинную) фабрику провайдеров на выбирающую
+        // SelectingAuthProviderFactory. Она резолвит соединение -> сессию и
+        // отдаёт BrokeredAuthProvider (реальный пользовательский Kerberos) либо,
+        // при невозможности, применяет fallback_policy (§5, дефолт drop).
+        //
+        // Когда фича выключена — НИКАКОЙ менеджер не создаётся, фабрика не
+        // подменяется, поведение relay БАЙТ-В-БАЙТ прежнее (LocalSspiProvider,
+        // машинный аккаунт). См. plans/kerberos_per_user_auth_helper_plan.md.
+        // --------------------------------------------------------------------
+        if (proxyCfg.per_user_auth_enabled && proxyCfg.kerberos_auth) {
+            try {
+                // Helper EXE резолвится РЯДОМ с EXE службы (Phase 8 обязан его
+                // туда доставить). См. AppPaths::GetExecutableDirectoryW.
+                const std::wstring helperExe =
+                    infrastructure::paths::GetExecutableDirectoryW() +
+                    L"TcpRedirectorAuthHelper.exe";
+
+                auto mgrCfg = infrastructure::auth::AuthHelperManager::MakeConfig(
+                    proxyCfg, helperExe, /*helperVersion*/ "1");
+                m_authHelperManager =
+                    std::make_unique<infrastructure::auth::AuthHelperManager>(
+                        mgrCfg, m_logger.get());
+
+                if (!m_authHelperManager->Start()) {
+                    m_logger->Warn("service",
+                        "AuthHelperManager failed to start; per-user auth will fall "
+                        "back per fallback_policy for every connection");
+                } else {
+                    m_logger->Info("service",
+                        "AuthHelperManager started (per-user Kerberos auth enabled)");
+                }
+
+                // ProcessResolver-фолбэк для PID-резолва (когда ConnectionTable
+                // не содержит PID). Живёт столько же, сколько служба.
+                m_authProcessResolver =
+                    std::make_unique<infrastructure::process::ProcessResolver>();
+
+                // Порт-адаптеры для выбирающей фабрики.
+                m_authSessionResolver =
+                    std::make_unique<infrastructure::auth::ConnectionTableSessionResolver>(
+                        m_connTable.get(), m_authProcessResolver.get(), m_logger.get());
+                m_authParamsSource =
+                    std::make_unique<infrastructure::auth::ManagerParamsSource>(
+                        m_authHelperManager.get());
+
+                infrastructure::auth::SelectingAuthProviderConfig selCfg;
+                selCfg.perUserEnabled  = proxyCfg.per_user_auth_enabled;
+                selCfg.fallbackPolicy  = proxyCfg.fallback_policy;
+                selCfg.spn             = infrastructure::WideToUtf8(proxyCfg.auth_spn);
+                selCfg.proxyHost       = infrastructure::WideToUtf8(proxyCfg.host);
+                selCfg.helperTimeoutMs = proxyCfg.helper_timeout_ms;
+
+                m_selectingAuthFactory =
+                    std::make_unique<infrastructure::auth::SelectingAuthProviderFactory>(
+                        selCfg, m_authSessionResolver.get(),
+                        m_authParamsSource.get(), m_logger.get());
+
+                static_cast<infrastructure::TcpRelayServer*>(m_relayServer.get())
+                    ->SetAuthProviderFactory(m_selectingAuthFactory.get());
+
+                m_logger->Info("service",
+                    std::string("Per-user auth provider factory installed "
+                        "(fallback_policy=") +
+                        (proxyCfg.fallback_policy == domain::AuthFallbackPolicy::Drop
+                             ? "drop"
+                             : proxyCfg.fallback_policy ==
+                                       domain::AuthFallbackPolicy::System
+                                   ? "system"
+                                   : "error") +
+                        ")");
+            } catch (const std::exception& e) {
+                m_logger->Error("service",
+                    std::string("Failed to wire per-user auth: ") + e.what() +
+                    " — relay keeps machine-account SSPI (LocalSspiProvider)");
+                // Оставляем дефолтную фабрику: безопаснее не падать.
+            }
+        }
 
         // Start relay server
         if (!m_relayServer->Start()) {
@@ -424,6 +511,15 @@ public:
             m_logger->Info("service", "IPC server stopped");
         }
 
+        // 2b. Variant 4b Phase 6: stop per-user auth helper manager (kills all
+        // helper processes via the kill-on-close Job Object). Done BEFORE the
+        // relay stop so no new brokered handshakes start; in-flight relay pairs
+        // are drained by the relay stop below.
+        if (m_authHelperManager) {
+            m_authHelperManager->Stop();
+            m_logger->Info("service", "AuthHelperManager stopped");
+        }
+
         // 3. Stop relay (no more connections will be proxied).
         if (m_relayServer) {
             m_relayServer->Stop();
@@ -477,11 +573,43 @@ public:
         m_status.dwCurrentState = state;
         m_status.dwControlsAccepted = SERVICE_ACCEPT_STOP |
                                       SERVICE_ACCEPT_SHUTDOWN;
+        // Variant 4b, Phase 6: принимаем session-change ТОЛЬКО когда per-user
+        // auth активен (иначе SCM не шлёт эти уведомления и поведение прежнее).
+        if (WantsSessionChange()) {
+            m_status.dwControlsAccepted |= SERVICE_ACCEPT_SESSIONCHANGE;
+        }
         m_status.dwWin32ExitCode = win32_exit_code;
         m_status.dwWaitHint = wait_hint;
 
         SetServiceStatus(m_statusHandle, &m_status);
     }
+
+    /**
+     * @brief Variant 4b, Phase 6 — проброс WTS session-change в AuthHelperManager.
+     *
+     * Вызывается из ServiceControlHandlerEx на SERVICE_CONTROL_SESSIONCHANGE.
+     * Если менеджер не создан (фича выключена) — no-op. Никогда не бросает
+     * (обработчик SCM обязан быть неубиваемым).
+     *
+     * @param eventType  WTS_SESSION_LOGON / LOGOFF / UNLOCK / CONNECT / ... .
+     * @param sessionId  WTS session id из WTSSESSION_NOTIFICATION.
+     */
+    void OnSessionChange(DWORD eventType, DWORD sessionId) {
+        if (!m_authHelperManager) return;
+        try {
+            m_authHelperManager->OnSessionChange(eventType, sessionId);
+        } catch (...) {
+            if (m_logger) {
+                m_logger->Warn("service",
+                    "OnSessionChange: exception forwarding event " +
+                    std::to_string(eventType) + " for session " +
+                    std::to_string(sessionId));
+            }
+        }
+    }
+
+    /// True, если служба хочет получать SERVICE_CONTROL_SESSIONCHANGE (per-user auth активен).
+    bool WantsSessionChange() const { return m_authHelperManager != nullptr; }
 
 private:
     // Удалён старый HandleRedirect — не используется в DST-modification архитектуре
@@ -507,6 +635,21 @@ private:
 
     // DST modification relay (храним через порты для injectable тестов)
     std::unique_ptr<domain::ports::IConnectionTable> m_connTable;
+
+    // ------------------------------------------------------------------------
+    // Variant 4b, Phase 6/7 — per-user auth helper wiring.
+    //
+    // ПОРЯДОК ОБЪЯВЛЕНИЯ ВАЖЕН для корректного разрушения (обратный порядок):
+    // сначала фабрика (её держит relay по указателю), затем адаптеры (держат
+    // менеджер/резолвер по указателю), затем сам менеджер/резолвер, а
+    // m_connTable (на который смотрит session-resolver) объявлен выше и живёт
+    // дольше. Все поля nullptr, когда фича выключена.
+    // ------------------------------------------------------------------------
+    std::unique_ptr<infrastructure::auth::AuthHelperManager> m_authHelperManager;
+    std::unique_ptr<infrastructure::process::ProcessResolver> m_authProcessResolver;
+    std::unique_ptr<infrastructure::auth::ConnectionTableSessionResolver> m_authSessionResolver;
+    std::unique_ptr<infrastructure::auth::ManagerParamsSource> m_authParamsSource;
+    std::unique_ptr<infrastructure::auth::SelectingAuthProviderFactory> m_selectingAuthFactory;
 
     // Uptime tracking
     std::chrono::steady_clock::time_point m_startTime;

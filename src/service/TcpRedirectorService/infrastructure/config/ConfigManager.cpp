@@ -154,6 +154,23 @@ domain::ProxyConfig ConfigManager::GetProxyConfig() const {
             pc.plain_password = DecryptPassword(m_config.auth.encryptedPassword);
         }
     }
+
+    // --- Per-user Kerberos auth helper (Variant 4b, Phase 0) ---
+    // Переносим в доменный ProxyConfig. На Phase 0 эти поля никем не читаются
+    // в auth/relay-логике (проводка — в поздних фазах), но уже доступны через
+    // единый доменный интерфейс конфигурации.
+    pc.per_user_auth_enabled = m_config.auth.per_user_enabled;
+    pc.auth_spn = Utf8ToWide(m_config.auth.spn);
+    pc.helper_timeout_ms = m_config.auth.helper_timeout_ms;
+    switch (m_config.auth.fallback_policy) {
+        case AuthFallbackPolicy::System:
+            pc.fallback_policy = domain::AuthFallbackPolicy::System; break;
+        case AuthFallbackPolicy::Error:
+            pc.fallback_policy = domain::AuthFallbackPolicy::Error; break;
+        case AuthFallbackPolicy::Drop:
+        default:
+            pc.fallback_policy = domain::AuthFallbackPolicy::Drop; break;
+    }
     return pc;
 }
 
@@ -386,6 +403,27 @@ bool ConfigManager::LoadImpl() {
             // использовать DPAPI-encryptedPassword.
             m_config.auth.encryptPassword = a.value("encryptPassword", true);
             m_config.auth.password = a.value("password", std::string());
+
+            // --- Per-user Kerberos auth helper (Variant 4b, Phase 0) ---
+            // Все поля опциональны: старые конфиги без них загружаются с
+            // безопасными дефолтами (per_user_enabled=false, fallback=drop,
+            // helper_timeout_ms=5000, spn=""). Поведение auth/relay не меняется.
+            m_config.auth.per_user_enabled = a.value("per_user_enabled", false);
+            m_config.auth.spn = a.value("spn", std::string());
+            m_config.auth.helper_timeout_ms = a.value("helper_timeout_ms", 5000);
+            {
+                // fallback_policy: строка "drop" | "system" | "error".
+                // Неизвестное/отсутствующее значение → безопасный дефолт Drop.
+                std::string fp = a.value("fallback_policy", std::string("drop"));
+                AuthFallbackPolicy parsed = AuthFallbackPolicy::Drop;
+                if (!AuthFallbackPolicyFromString(fp, parsed)) {
+                    std::fprintf(stderr,
+                        "[WARN] ConfigManager: unknown auth.fallback_policy '%s', coercing to 'drop'\n",
+                        fp.c_str());
+                    parsed = AuthFallbackPolicy::Drop;
+                }
+                m_config.auth.fallback_policy = parsed;
+            }
         }
         if (j.contains("log") && j["log"].is_object()) {
             auto& l = j["log"];
@@ -522,6 +560,11 @@ bool ConfigManager::SaveImpl() {
         // (Задача №2) Режим хранения пароля.
         j["auth"]["encryptPassword"] = m_config.auth.encryptPassword;
         j["auth"]["password"] = m_config.auth.password;
+        // Per-user Kerberos auth helper (Variant 4b, Phase 0).
+        j["auth"]["per_user_enabled"] = m_config.auth.per_user_enabled;
+        j["auth"]["spn"] = m_config.auth.spn;
+        j["auth"]["fallback_policy"] = AuthFallbackPolicyToString(m_config.auth.fallback_policy);
+        j["auth"]["helper_timeout_ms"] = m_config.auth.helper_timeout_ms;
         j["log"]["level"] = m_config.log.level;
         j["log"]["fileEnabled"] = m_config.log.fileEnabled;
         j["log"]["maxSizeMB"] = m_config.log.maxSizeMB;
@@ -649,6 +692,11 @@ nlohmann::json ConfigManager::ConfigToJson(const Config& cfg) const {
     j["auth"]["kerberos"] = cfg.auth.kerberos;
     j["auth"]["encryptPassword"] = cfg.auth.encryptPassword;  // (Задача №2)
     j["auth"]["password"] = cfg.auth.password;                // (Задача №2)
+    // Per-user Kerberos auth helper (Variant 4b, Phase 0).
+    j["auth"]["per_user_enabled"] = cfg.auth.per_user_enabled;
+    j["auth"]["spn"] = cfg.auth.spn;
+    j["auth"]["fallback_policy"] = AuthFallbackPolicyToString(cfg.auth.fallback_policy);
+    j["auth"]["helper_timeout_ms"] = cfg.auth.helper_timeout_ms;
     j["log"]["level"] = cfg.log.level;
     j["log"]["fileEnabled"] = cfg.log.fileEnabled;
     j["log"]["maxSizeMB"] = cfg.log.maxSizeMB;
