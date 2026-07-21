@@ -42,7 +42,7 @@
         "engine": "embedded",
         "process_filter_enabled": true,
         "block_ipv6": true,
-        "direct_passthrough": false,
+        "direct_passthrough": true,
         "direct_fallback": "drop",
         "direct_egress_interface": "",
         "direct_route_optimization": true,

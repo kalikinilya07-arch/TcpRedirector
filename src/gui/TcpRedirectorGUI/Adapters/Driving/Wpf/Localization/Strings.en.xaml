@@ -48,6 +48,8 @@
     <sys:String x:Key="Wintun.RouteLadderPrefix">Route ladder depth (1..8):</sys:String>
     <sys:String x:Key="Wintun.ProcessFilter">Per-process filtering (Wintun)</sys:String>
     <sys:String x:Key="Wintun.BlockIpv6">Block IPv6 (force IPv4 through the tunnel)</sys:String>
+    <sys:String x:Key="Wintun.DirectPassthrough">Direct passthrough for non-listed apps</sys:String>
+    <sys:String x:Key="Wintun.DirectPassthrough.Tooltip">Wintun embedded mode only. When enabled (default), traffic from applications that are NOT in the redirect list goes out directly via the physical network adapter instead of being dropped. When disabled, such traffic is dropped (fail-fast).</sys:String>
     <sys:String x:Key="Wintun.ExternalTitle">External (tun2socks.exe)</sys:String>
     <sys:String x:Key="Wintun.ExternalExe">EXE path:</sys:String>
     <sys:String x:Key="Wintun.ExternalSocks5">SOCKS5 listen:</sys:String>

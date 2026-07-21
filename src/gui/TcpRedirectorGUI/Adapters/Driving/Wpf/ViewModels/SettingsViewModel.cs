@@ -470,6 +470,19 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
         set { if (Wintun.BlockIpv6 != value) { Wintun.BlockIpv6 = value; OnPropertyChanged(); } }
     }
 
+    public bool WintunDirectPassthrough
+    {
+        get => Wintun.DirectPassthrough;
+        set
+        {
+            if (Wintun.DirectPassthrough != value)
+            {
+                Wintun.DirectPassthrough = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
     public string ExternalExecutable
     {
         get => Wintun.ExternalEngine.Executable;
@@ -650,6 +663,7 @@ public partial class SettingsViewModel : ObservableObject, INotifyDataErrorInfo
             OnPropertyChanged(nameof(WintunProcessFilterEnabled));
             OnPropertyChanged(nameof(WintunRouteLadderPrefix));
             OnPropertyChanged(nameof(WintunBlockIpv6));
+            OnPropertyChanged(nameof(WintunDirectPassthrough));
             OnPropertyChanged(nameof(ExternalExecutable));
             OnPropertyChanged(nameof(ExternalSocks5Listen));
             OnPropertyChanged(nameof(ExternalRestartOnCrash));

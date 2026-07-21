@@ -49,6 +49,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
+#include <ifdef.h>   // NET_LUID (для SetTunLuid / резолва физ. egress'а)
 
 #include <atomic>
 #include <condition_variable>
@@ -225,6 +226,20 @@ public:
         m_direct = direct;
     }
 
+    /**
+     * @brief (Корневой фикс DIRECT) Задать LUID Wintun-адаптера, чтобы движок
+     *        при резолве физического egress'а МОГ ИСКЛЮЧИТЬ туннель.
+     *
+     * Без этого GetBestRoute2 к произвольному dst возвращает САМ Wintun
+     * (его split-tunnel /1-лестница выигрывает LPM у физического /0), и
+     * DIRECT-сокет, запиннутый по такому ifIndex, отправляет SYN обратно в
+     * туннель -> нет egress'а -> таймаут («трафик не-целевых приложений
+     * не проходит»).  Должно вызываться ДО Start().
+     *
+     * @param luid LUID Wintun-адаптера (WintunAdapter::Luid()).
+     */
+    void SetTunLuid(NET_LUID luid) { m_tun_luid = luid; }
+
     ~Tun2SocksEngineEmbedded() override;
 
     Tun2SocksEngineEmbedded(const Tun2SocksEngineEmbedded&) = delete;
@@ -262,17 +277,29 @@ private:
     // ifIndex + source-IPv4 (network byte order) через GetBestRoute2, с учётом
     // ручного override m_direct.egress_interface.  Возвращает false, если
     // физический путь определить нельзя (тогда применяется direct_fallback).
+    // out_if_index/out_src_be — как раньше; дополнительно out_luid/out_nexthop_be
+    // возвращают физический интерфейс/шлюз для корректного Option 2a /32-bypass.
     bool ResolvePhysicalEgress(uint32_t dst_be,
                                uint32_t& out_if_index,
-                               uint32_t& out_src_be);
+                               uint32_t& out_src_be,
+                               NET_LUID& out_luid,
+                               uint32_t& out_nexthop_be);
 
     // Пиннит сокет s к физическому интерфейсу: IP_UNICAST_IF (primary, индекс в
     // NETWORK byte order) + source-IP bind (fallback).  false — не удалось.
     bool PinSocketToPhysical(SOCKET s, uint32_t if_index, uint32_t src_be);
 
-    // Option 2a: пытается поставить <dst_be>/32 bypass через физ. шлюз, если dst
-    // не используется PROXY-flow'ом.  Refcount по dst.  Вызывается из DIRECT-треда.
-    void MaybeInstallDirectBypass(uint32_t dst_be);
+    // Option 2a: пытается поставить <dst_be>/32 bypass через ЯВНО заданный
+    // физический интерфейс/шлюз (if_index/luid/next_hop_be из
+    // ResolvePhysicalEgress), если dst не используется PROXY-flow'ом.  Refcount
+    // по dst.  Вызывается из DIRECT-треда.  Передача физ. egress'а явно —
+    // критично: иначе InstallHostBypass в рантайме резолвит Wintun и bypass
+    // указывает обратно в туннель (бесполезен/вреден).
+    // iter-2: возвращает true, если /32-bypass гарантированно стоит для dst
+    // (установлен сейчас ИЛИ уже был установлен и refcount увеличен).  Ставится
+    // ДО connect() как ПРЕДУСЛОВИЕ DIRECT-egress'а, а не как пост-оптимизация.
+    bool MaybeInstallDirectBypass(uint32_t dst_be, uint32_t if_index,
+                                  NET_LUID luid, uint32_t next_hop_be);
     // Декремент refcount; при обнулении снимает /32-маршрут.
     void ReleaseDirectBypass(uint32_t dst_be);
     // Регистрирует dst как «используемый PROXY»; если для него был поставлен
@@ -301,7 +328,10 @@ private:
     friend struct EngineTramp;
 
     // Утилиты
-    void CloseFlow(Flow* flow, bool from_engine_thread);
+    // reason — короткая метка ИСТОЧНИКА закрытия (для диагностики: reaper vs
+    // lwIP-callback vs stop-flag).  Логируется на Debug в начале CloseFlow.
+    void CloseFlow(Flow* flow, bool from_engine_thread,
+                   const char* reason = "unspecified");
 
     // --- Задача 2: фильтрация по процессу ---
 
@@ -353,6 +383,12 @@ private:
     // Задача 3: конфигурация DIRECT-passthrough (Option 1 + 2a).  См.
     // EmbeddedDirectConfig.  m_direct.enabled=false → DIRECT дропается (как было).
     EmbeddedDirectConfig           m_direct;
+
+    // Корневой фикс DIRECT: LUID Wintun-адаптера — исключается при резолве
+    // физического egress'а, чтобы GetBestRoute2 не вернул сам туннель (см.
+    // SetTunLuid / ResolvePhysicalEgress).  {0} = не задан (тогда резолвер
+    // работает как раньше — небезопасно, но не крашит).
+    NET_LUID                       m_tun_luid{};
 
     // Option 2a: учёт динамических DIRECT /32 bypass-маршрутов и guard'а против
     // проксируемых dst.  Ключи — dst IPv4 в NETWORK byte order.

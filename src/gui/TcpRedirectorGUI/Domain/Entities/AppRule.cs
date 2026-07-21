@@ -103,6 +103,18 @@ public sealed class WintunSettings
     /// </summary>
     public bool BlockIpv6 { get; set; } = true;
 
+    /// <summary>
+    /// Direct passthrough for apps NOT in the redirect list, in Wintun embedded
+    /// mode. Mirrors C++ <c>wintun.direct_passthrough</c> (default <c>true</c> —
+    /// enabled). When <c>true</c>, DIRECT-flows (traffic from processes not
+    /// matched by <c>apps[]</c>) go out DIRECTLY via the physical NIC instead of
+    /// being dropped (<c>tcp_abort</c>). When <c>false</c>, the historical
+    /// fail-fast behaviour applies and DIRECT traffic is dropped. Must be
+    /// round-tripped so the GUI does not silently drop it when it rewrites the
+    /// whole <c>wintun</c> section on save.
+    /// </summary>
+    public bool DirectPassthrough { get; set; } = true;
+
     public ExternalEngineSettings ExternalEngine { get; set; } = new();
 }
 

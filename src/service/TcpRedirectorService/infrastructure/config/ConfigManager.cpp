@@ -946,8 +946,10 @@ WintunSettings ConfigManager::ParseWintunSettings(const nlohmann::json& jw) cons
     // block_ipv6 — по умолчанию true (нейтрализация IPv6-утечки в Wintun-режиме).
     w.block_ipv6 = jw.value("block_ipv6", w.block_ipv6);
 
-    // Задача 3: direct_passthrough — по умолчанию false (сохраняет прежнее
-    // fail-fast/drop поведение для DIRECT-flow'ов в embedded-режиме).
+    // Задача 3: direct_passthrough — по умолчанию true (не-целевой DIRECT-трафик
+    // в embedded-режиме идёт НАПРЯМУЮ мимо прокси; см. WintunSettings в Config.h).
+    // Если поле отсутствует в конфиге — берётся дефолт struct'а (true), поэтому
+    // поведение консистентно вне зависимости от того, записан ли ключ явно.
     w.direct_passthrough = jw.value("direct_passthrough", w.direct_passthrough);
 
     // direct_fallback — enum "drop" | "proxy" (default drop).  Что делать, если

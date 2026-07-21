@@ -184,6 +184,12 @@ public sealed class JsonConfigRepository : IConfigRepository
             if (jw["block_ipv6"] is JsonValue biVal && biVal.TryGetValue<bool>(out var bi))
                 w.BlockIpv6 = bi;
 
+            // direct_passthrough — direct egress for non-listed apps in the
+            // Wintun embedded engine. Missing → default true (enabled), matching
+            // the C++ service default.
+            if (jw["direct_passthrough"] is JsonValue dpVal && dpVal.TryGetValue<bool>(out var dp))
+                w.DirectPassthrough = dp;
+
             var je = jw["external_engine"]?.AsObject();
             if (je is not null)
             {
@@ -709,6 +715,7 @@ public sealed class JsonConfigRepository : IConfigRepository
             ["process_filter_enabled"] = w.ProcessFilterEnabled,
             ["route_ladder_prefix"]    = w.RouteLadderPrefix,
             ["block_ipv6"]             = w.BlockIpv6,
+            ["direct_passthrough"]     = w.DirectPassthrough,
             ["external_engine"]  = new JsonObject
             {
                 ["executable"]          = w.ExternalEngine.Executable,

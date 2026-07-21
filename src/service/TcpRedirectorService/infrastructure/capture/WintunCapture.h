@@ -211,6 +211,13 @@ private:
     // relay, резолвящий имя независимо, мог бы выбрать не-покрытый IP.
     std::vector<uint32_t>                      m_bypassIps;
 
+    // DNS/UDP-митигация: физический /32 bypass для системных DNS-серверов.
+    // lwIP собран с LWIP_UDP=0 — UDP-DNS, попавший в TUN по лестнице, молча
+    // дропается, и имя-резолвинг DIRECT-приложений ломается («большинство
+    // трафика не проходит»).  Ставим bypass ДО лестницы, чтобы DNS (UDP и TCP)
+    // шёл напрямую по физике.  Снимаются на Close (см. TearDown).
+    std::vector<uint32_t>                      m_dnsBypassIps;
+
     std::atomic<bool>                          m_open{false};
 };
 

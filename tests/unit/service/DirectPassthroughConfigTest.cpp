@@ -3,7 +3,7 @@
 // Задача 3: юнит-тесты для конфигурации DIRECT-passthrough (Config.h).
 // Проверяют:
 //   • DirectFallback ⇄ string round-trip и регистро-независимый парсинг;
-//   • дефолты WintunSettings (backward-compat: passthrough OFF, fallback drop);
+//   • дефолты WintunSettings (passthrough ON по умолчанию, fallback drop);
 //   • отклонение неизвестных значений (out не трогается).
 //
 // Config.h — header-only (только <string>/<vector>/<cstdint>), поэтому тест
@@ -62,9 +62,12 @@ void TestDirectFallbackRoundTrip() {
 void TestWintunDefaultsBackwardCompat() {
     std::cout << "Test: WintunDefaultsBackwardCompat..." << std::endl;
     WintunSettings w;
-    // КРИТИЧНО: по умолчанию passthrough ВЫКЛЮЧЕН → прежнее fail-fast/drop
-    // поведение сохраняется (нулевое изменение при отсутствии конфига).
-    assert(w.direct_passthrough == false);
+    // Дефолт passthrough ВКЛЮЧЁН: не-целевой DIRECT-трафик в embedded-режиме
+    // идёт НАПРЯМУЮ мимо прокси, если ключ отсутствует в конфиге (в т.ч. в
+    // legacy-конфигах без этого поля).  Значение по умолчанию совпадает с
+    // WintunSettings::direct_passthrough в Config.h и коэрсией в ConfigManager.
+    assert(w.direct_passthrough == true);
+    // fallback при невозможности установить egress остаётся безопасным drop.
     assert(w.direct_fallback == DirectFallback::Drop);
     assert(w.direct_egress_interface.empty());
     // route-optimization по умолчанию true, но активна только при passthrough=true.

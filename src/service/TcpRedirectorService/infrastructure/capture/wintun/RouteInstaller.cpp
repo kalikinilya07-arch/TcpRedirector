@@ -368,6 +368,174 @@ bool RouteInstaller::UninstallHostBypass(uint32_t dst_ipv4_be, std::string* outE
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// КОРНЕВОЙ ФИКС DIRECT-passthrough: физический egress ИСКЛЮЧАЯ Wintun-туннель.
+// ---------------------------------------------------------------------------
+
+bool RouteInstaller::ResolvePhysicalEgressExcluding(uint32_t dst_ipv4_be,
+                                                    NET_LUID exclude_luid,
+                                                    PhysicalEgress& out,
+                                                    std::string* outError) {
+    out = PhysicalEgress{};
+
+    const uint32_t dst_host = ntohl(dst_ipv4_be);
+
+    // Шаг 1: ручной longest-prefix-match по IPv4-таблице маршрутов, ПРОПУСКАЯ
+    // все маршруты на Wintun-LUID (наша /1-лестница + connected TUN-подсеть).
+    // Так мы ГАРАНТИРОВАННО не выберем туннель, даже если его /5-листья
+    // специфичнее физического default-route /0.
+    PMIB_IPFORWARD_TABLE2 table = nullptr;
+    DWORD rc = GetIpForwardTable2(AF_INET, &table);
+    if (rc != NO_ERROR || table == nullptr) {
+        if (outError) *outError = FormatWinErr("GetIpForwardTable2(phys-egress)", rc);
+        return false;
+    }
+
+    bool     found       = false;
+    int      bestPrefix  = -1;
+    uint32_t bestMetric  = 0xFFFFFFFFu;
+    NET_LUID bestLuid{};
+    uint32_t bestIfIndex = 0;
+    uint32_t bestNextHop = 0;
+
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IPFORWARD_ROW2& r = table->Table[i];
+        if (r.DestinationPrefix.Prefix.si_family != AF_INET) continue;
+        // ИСКЛЮЧАЕМ Wintun-адаптер — это суть фикса.
+        if (r.InterfaceLuid.Value == exclude_luid.Value) continue;
+
+        const uint8_t  plen     = r.DestinationPrefix.PrefixLength;
+        const uint32_t routeNet = ntohl(r.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr);
+        // Проверка принадлежности dst данному префиксу.
+        if (plen != 0) {
+            const uint32_t mask = (plen == 32)
+                ? 0xFFFFFFFFu
+                : ~((1u << (32 - plen)) - 1u);
+            if ((dst_host & mask) != (routeNet & mask)) continue;
+        }
+        // Longest-prefix-match, при равенстве — меньшая метрика.
+        if (plen > bestPrefix ||
+            (plen == bestPrefix && r.Metric < bestMetric)) {
+            bestPrefix  = plen;
+            bestMetric  = r.Metric;
+            bestLuid    = r.InterfaceLuid;
+            bestIfIndex = r.InterfaceIndex;
+            bestNextHop = (r.NextHop.si_family == AF_INET)
+                ? r.NextHop.Ipv4.sin_addr.S_un.S_addr : 0u;
+            found = true;
+        }
+    }
+    FreeMibTable(table);
+
+    if (!found) {
+        if (outError) *outError = "ResolvePhysicalEgressExcluding: no non-TUN route to dst";
+        return false;
+    }
+
+    out.if_index    = bestIfIndex;
+    out.luid        = bestLuid;
+    out.next_hop_be = bestNextHop;
+
+    // Шаг 2: корректный source-IP получаем через GetBestRoute2, ОГРАНИЧЕННЫЙ
+    // найденным физ. интерфейсом (первый параметр — InterfaceLuid).  Это
+    // заставляет ОС выбрать source на ФИЗИЧЕСКОМ адаптере (а не TUN-подсеть).
+    SOCKADDR_INET dst{};
+    dst.si_family = AF_INET;
+    dst.Ipv4.sin_family = AF_INET;
+    dst.Ipv4.sin_addr.S_un.S_addr = dst_ipv4_be;
+
+    MIB_IPFORWARD_ROW2 best{};
+    SOCKADDR_INET bestSrc{};
+    DWORD rc2 = GetBestRoute2(&bestLuid, bestIfIndex, nullptr, &dst, 0, &best, &bestSrc);
+    if (rc2 == NO_ERROR && bestSrc.si_family == AF_INET) {
+        out.src_be = bestSrc.Ipv4.sin_addr.S_un.S_addr;
+        // Если ОС всё же вернула next-hop иной — предпочитаем табличный (наш LPM).
+        if (out.next_hop_be == 0 && best.NextHop.si_family == AF_INET) {
+            out.next_hop_be = best.NextHop.Ipv4.sin_addr.S_un.S_addr;
+        }
+    }
+    // src_be может остаться 0 (редко) — IP_UNICAST_IF по ifIndex всё равно
+    // корректно уведёт сокет на физику; source-bind тогда просто не делаем.
+
+    return out.if_index != 0;
+}
+
+bool RouteInstaller::InstallHostBypassVia(uint32_t dst_ipv4_be,
+                                          const PhysicalEgress& egress,
+                                          std::string* outError) {
+    const uint8_t firstOctet = static_cast<uint8_t>(dst_ipv4_be & 0xFF);
+    if (firstOctet == 127) {
+        return true; // loopback — bypass не нужен
+    }
+    if (egress.if_index == 0) {
+        if (outError) *outError = "InstallHostBypassVia: egress.if_index == 0";
+        return false;
+    }
+
+    MIB_IPFORWARD_ROW2 row{};
+    InitializeIpForwardEntry(&row);
+    row.InterfaceLuid  = egress.luid;
+    row.InterfaceIndex = egress.if_index;
+    row.DestinationPrefix.Prefix.si_family = AF_INET;
+    row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
+    row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr = dst_ipv4_be;
+    row.DestinationPrefix.PrefixLength = 32;
+    row.NextHop.si_family = AF_INET;
+    row.NextHop.Ipv4.sin_family = AF_INET;
+    row.NextHop.Ipv4.sin_addr.S_un.S_addr = egress.next_hop_be; // 0 = on-link
+    row.Metric   = 1;
+    row.Protocol = MIB_IPPROTO_NETMGMT;
+    row.Origin   = NlroManual;
+    row.SitePrefixLength = 0;
+
+    DWORD rc = CreateIpForwardEntry2(&row);
+    if (rc != NO_ERROR && rc != ERROR_OBJECT_ALREADY_EXISTS) {
+        if (outError) *outError = FormatWinErr("CreateIpForwardEntry2(direct/32 via phys)", rc);
+        return false;
+    }
+    return true;
+}
+
+std::vector<uint32_t> RouteInstaller::EnumerateDnsServersIpv4() {
+    std::vector<uint32_t> out;
+
+    ULONG family = AF_INET;
+    ULONG flags  = GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST
+                 | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    ULONG size = 15 * 1024;
+    std::vector<uint8_t> buf(size);
+    ULONG rc = GetAdaptersAddresses(family, flags, nullptr,
+                                    reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()),
+                                    &size);
+    if (rc == ERROR_BUFFER_OVERFLOW) {
+        buf.resize(size);
+        rc = GetAdaptersAddresses(family, flags, nullptr,
+                                  reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()),
+                                  &size);
+    }
+    if (rc != NO_ERROR) return out;
+
+    for (auto* aa = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data());
+         aa != nullptr; aa = aa->Next) {
+        if (aa->OperStatus != IfOperStatusUp) continue;
+        for (auto* dns = aa->FirstDnsServerAddress; dns != nullptr; dns = dns->Next) {
+            if (dns->Address.lpSockaddr == nullptr) continue;
+            if (dns->Address.lpSockaddr->sa_family != AF_INET) continue;
+            auto* sin = reinterpret_cast<sockaddr_in*>(dns->Address.lpSockaddr);
+            const uint32_t ipBe = sin->sin_addr.S_un.S_addr;
+            const uint8_t  o1   = static_cast<uint8_t>(ipBe & 0xFF);
+            // Пропускаем loopback (127/8) и link-local (169.254/16) — bypass не нужен.
+            if (o1 == 127) continue;
+            if (o1 == 169 && static_cast<uint8_t>((ipBe >> 8) & 0xFF) == 254) continue;
+            if (ipBe == 0) continue;
+            bool dup = false;
+            for (uint32_t e : out) { if (e == ipBe) { dup = true; break; } }
+            if (!dup) out.push_back(ipBe);
+        }
+    }
+    return out;
+}
+
 bool RouteInstaller::CleanupStaleBypass(const std::vector<uint32_t>& keep_ipv4_be,
                                         std::string* outError) {
     // Перечисляем IPv4-таблицу; удаляем наши /32 NETMGMT-маршруты (proxy-bypass),

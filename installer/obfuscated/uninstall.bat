@@ -21,6 +21,9 @@ if not errorlevel 1 (
 if exist "%APP_DIR%\gui"                 rmdir /S /Q "%APP_DIR%\gui"
 del /Q "%APP_DIR%\TcpRedirectorService.exe" 2>nul
 del /Q "%APP_DIR%\TcpRedirectorAuthHelper.exe" 2>nul
+del /Q "%APP_DIR%\vcruntime140.dll"         2>nul
+del /Q "%APP_DIR%\vcruntime140_1.dll"       2>nul
+del /Q "%APP_DIR%\msvcp140.dll"             2>nul
 del /Q "%APP_DIR%\WinDivert.dll"            2>nul
 del /Q "%APP_DIR%\WinDivert64.sys"          2>nul
 del /Q "%APP_DIR%\wintun.dll"               2>nul

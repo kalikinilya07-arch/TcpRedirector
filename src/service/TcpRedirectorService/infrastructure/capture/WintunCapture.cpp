@@ -356,6 +356,42 @@ bool WintunCapture::Open() {
         }
     }
 
+    // Шаг 6.6 (DNS/UDP-митигация): физический /32 bypass для системных DNS-
+    // серверов.  Ставим ДО лестницы (как proxy-bypass), чтобы GetBestRoute2
+    // внутри InstallHostBypass увидел физический путь, а не туннель.  ЗАЧЕМ:
+    // embedded lwIP собран с LWIP_UDP=0 — UDP-DNS, завёрнутый лестницей в TUN,
+    // молча дропается, и DIRECT-приложения не могут резолвить имена
+    // («большинство трафика не проходит»).  Bypass уводит DNS (UDP и TCP)
+    // напрямую по физике для ВСЕХ приложений.  Non-fatal: при провале DNS
+    // может не работать для DIRECT, но остальной фикс не ломается.
+    {
+        const std::vector<uint32_t> dnsIps =
+            capture::wintun::RouteInstaller::EnumerateDnsServersIpv4();
+        size_t installed = 0;
+        for (uint32_t ipBe : dnsIps) {
+            // Не дублируем bypass, уже поставленный для proxy (тот же IP).
+            bool already = false;
+            for (uint32_t p : m_bypassIps) { if (p == ipBe) { already = true; break; } }
+            if (already) continue;
+            std::string dnsErr;
+            if (capture::wintun::RouteInstaller::InstallHostBypass(ipBe, &dnsErr)) {
+                m_dnsBypassIps.push_back(ipBe);
+                ++installed;
+            } else {
+                LogWarn("DNS /32 bypass NOT installed for a resolver: " + dnsErr);
+            }
+        }
+        if (!dnsIps.empty()) {
+            LogDebug("DNS /32 bypass installed for " + std::to_string(installed)
+                     + " of " + std::to_string(dnsIps.size())
+                     + " system resolver(s) (LWIP_UDP=0 mitigation — DNS goes "
+                       "direct via physical NIC)");
+        } else {
+            LogDebug("No non-loopback system DNS servers found to bypass "
+                     "(DNS may be loopback/DoH — no /32 needed)");
+        }
+    }
+
     // Шаг 6.7 (F2): понизить interface-метрику Wintun и отключить AutomaticMetric.
     // Нужно ДО install лестницы, чтобы при равной длине префикса с другим
     // адаптером (напр. сторонним VPN) выигрыш по метрике был наш.
@@ -482,6 +518,12 @@ bool WintunCapture::Open() {
             dc.route_optimization = m_settings.direct_route_optimization;
             dc.egress_interface   = m_settings.direct_egress_interface;
             embedded->SetDirectConfig(dc);
+
+            // КОРНЕВОЙ ФИКС DIRECT-passthrough: сообщаем движку LUID Wintun-
+            // адаптера, чтобы при резолве физического egress'а он ИСКЛЮЧАЛ
+            // туннель (иначе GetBestRoute2 вернёт сам Wintun, и DIRECT-SYN
+            // завернётся обратно в TUN — «трафик не-целевых приложений не идёт»).
+            embedded->SetTunLuid(m_adapter->Luid());
 
             if (pf.enabled && pf.rule_engine) {
                 if (m_settings.direct_passthrough) {
@@ -652,6 +694,19 @@ void WintunCapture::TearDown() {
         LogDebug("Proxy bypass /32 route(s) uninstalled ("
                  + std::to_string(m_bypassIps.size()) + ")");
         m_bypassIps.clear();
+    }
+
+    // 3c. Снятие DNS /32 bypass (DNS/UDP-митигация).
+    if (!m_dnsBypassIps.empty()) {
+        for (uint32_t ipBe : m_dnsBypassIps) {
+            std::string err;
+            if (!capture::wintun::RouteInstaller::UninstallHostBypass(ipBe, &err)) {
+                LogWarn("RouteInstaller::UninstallHostBypass(dns): " + err);
+            }
+        }
+        LogDebug("DNS bypass /32 route(s) uninstalled ("
+                 + std::to_string(m_dnsBypassIps.size()) + ")");
+        m_dnsBypassIps.clear();
     }
 
     // 4. Закрытие/удаление адаптера.

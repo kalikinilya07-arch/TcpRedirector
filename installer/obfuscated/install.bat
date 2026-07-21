@@ -32,6 +32,16 @@ if exist "%~dp0TcpRedirectorAuthHelper.exe" (
     echo     [SKIP] TcpRedirectorAuthHelper.exe not shipped - per-user auth unavailable
 )
 
+:: --- MSVC C++ runtime (REQUIRED for the /MD-linked native EXEs) ---
+if exist "%~dp0vcruntime140.dll" (
+    copy /Y "%~dp0vcruntime140.dll"   "%APP_DIR%\" >nul
+    copy /Y "%~dp0vcruntime140_1.dll" "%APP_DIR%\" >nul 2>&1
+    copy /Y "%~dp0msvcp140.dll"       "%APP_DIR%\" >nul 2>&1
+    echo     [OK] MSVC CRT present
+) else (
+    echo     [SKIP] MSVC CRT not shipped - service may fail without vc_redist
+)
+
 :: --- Optional WinDivert ---
 if exist "%~dp0WinDivert.dll" (
     copy /Y "%~dp0WinDivert.dll"   "%APP_DIR%\" >nul

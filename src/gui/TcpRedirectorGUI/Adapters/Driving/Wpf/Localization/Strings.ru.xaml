@@ -50,6 +50,8 @@
     <sys:String x:Key="Wintun.RouteLadderPrefix">Глубина лестницы маршрутов (1..8):</sys:String>
     <sys:String x:Key="Wintun.ProcessFilter">Фильтрация по процессу (Wintun)</sys:String>
     <sys:String x:Key="Wintun.BlockIpv6">Блокировать IPv6 (форсировать IPv4 через туннель)</sys:String>
+    <sys:String x:Key="Wintun.DirectPassthrough">Прямой проход трафика приложений вне списка</sys:String>
+    <sys:String x:Key="Wintun.DirectPassthrough.Tooltip">Только для режима Wintun embedded. При включении (по умолчанию) трафик приложений, которых НЕТ в списке перенаправления, идёт напрямую через физический сетевой адаптер вместо отбрасывания. При выключении такой трафик отбрасывается (fail-fast).</sys:String>
     <sys:String x:Key="Wintun.ExternalTitle">Внешний (tun2socks.exe)</sys:String>
     <sys:String x:Key="Wintun.ExternalExe">Путь к EXE:</sys:String>
     <sys:String x:Key="Wintun.ExternalSocks5">SOCKS5 listen:</sys:String>

@@ -449,6 +449,11 @@
                                               IsChecked="{Binding Settings.WintunBlockIpv6, Mode=TwoWay}"
                                               Margin="0,6,0,0"/>
 
+                                    <CheckBox Content="{DynamicResource Wintun.DirectPassthrough}"
+                                              IsChecked="{Binding Settings.WintunDirectPassthrough, Mode=TwoWay}"
+                                              ToolTip="{DynamicResource Wintun.DirectPassthrough.Tooltip}"
+                                              Margin="0,6,0,0"/>
+
                                     <!-- External engine sub-panel — visible only when engine==External -->
                                     <StackPanel Margin="0,6,0,0"
                                                 Visibility="{Binding Settings.IsExternalEngine, Converter={StaticResource BoolToVis}}">

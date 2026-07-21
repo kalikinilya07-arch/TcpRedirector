@@ -136,6 +136,75 @@ public:
     static bool UninstallHostBypass(uint32_t dst_ipv4_be, std::string* outError);
 
     /**
+     * @brief Результат резолва ФИЗИЧЕСКОГО egress'а к произвольному dst,
+     *        ЗАВЕДОМО исключающий Wintun-адаптер (его split-tunnel лестницу).
+     *
+     * if_index    — ifIndex физического интерфейса (0 = не найден);
+     * luid        — LUID того же интерфейса (для InstallHostBypassVia);
+     * src_be      — source-IPv4 физ. интерфейса (network byte order);
+     * next_hop_be — next-hop (шлюз) IPv4 (network byte order; 0 = on-link).
+     */
+    struct PhysicalEgress {
+        uint32_t if_index    = 0;
+        NET_LUID luid{};
+        uint32_t src_be      = 0;
+        uint32_t next_hop_be = 0;
+    };
+
+    /**
+     * @brief Найти физический путь к dst, ИСКЛЮЧАЯ Wintun-туннель.
+     *
+     * КОРНЕВОЙ ФИКС бага DIRECT-passthrough: split-tunnel лестница
+     * (0.0.0.0/0 набором /D) стоит на РЕАЛЬНОМ Wintun-NDIS-адаптере и по
+     * longest-prefix-match выигрывает у физического default-route (/0).
+     * Поэтому «наивный» GetBestRoute2(dst) возвращает САМ Wintun (ifIndex +
+     * TUN source-IP), и DIRECT-сокет, запиннутый по этому ifIndex через
+     * IP_UNICAST_IF, отправляет SYN ОБРАТНО в туннель -> egress'а нет -> таймаут.
+     *
+     * Здесь мы перечисляем таблицу маршрутов (GetIpForwardTable2) и делаем
+     * ручной LPM, ПРОПУСКАЯ все маршруты на LUID = exclude_luid (Wintun).
+     * Затем через GetBestRoute2, ОГРАНИЧЕННЫЙ найденным физ. интерфейсом,
+     * получаем корректный source-IP.
+     *
+     * @param dst_ipv4_be  IPv4 назначения (network byte order).
+     * @param exclude_luid LUID, который НЕЛЬЗЯ выбирать (Wintun-адаптер).
+     * @param out          [out] заполненный PhysicalEgress при успехе.
+     * @param outError     [out, опционально] диагностика.
+     * @return true, если физический путь найден (out.if_index != 0).
+     */
+    static bool ResolvePhysicalEgressExcluding(uint32_t dst_ipv4_be,
+                                               NET_LUID exclude_luid,
+                                               PhysicalEgress& out,
+                                               std::string* outError);
+
+    /**
+     * @brief Поставить <dst>/32 bypass через ЯВНО заданный физический
+     *        интерфейс/next-hop (из ResolvePhysicalEgressExcluding), НЕ
+     *        полагаясь на GetBestRoute2 (который в рантайме вернул бы Wintun).
+     *
+     * @param dst_ipv4_be IPv4 назначения (network byte order).
+     * @param egress      Физический egress (LUID/ifIndex/next-hop).
+     * @param outError    [out, опционально] диагностика.
+     * @return true при успехе (или если bypass не требуется — loopback).
+     */
+    static bool InstallHostBypassVia(uint32_t dst_ipv4_be,
+                                     const PhysicalEgress& egress,
+                                     std::string* outError);
+
+    /**
+     * @brief Перечислить IPv4-адреса системных DNS-серверов (network byte order).
+     *
+     * DNS/UDP-митигация: lwIP собран с LWIP_UDP=0, поэтому UDP-DNS, попавший в
+     * TUN по лестнице, молча дропается — имя-резолвинг DIRECT-приложений
+     * ломается.  Перечислив резолверы, WintunCapture ставит для каждого
+     * физический /32 bypass ДО лестницы, чтобы DNS (UDP и TCP) шёл напрямую.
+     * Loopback/link-local резолверы пропускаются (bypass не нужен).
+     *
+     * @return вектор IPv4 (network byte order), возможно пустой.
+     */
+    static std::vector<uint32_t> EnumerateDnsServersIpv4();
+
+    /**
      * @brief Убрать «протёкшие» proxy-bypass /32 маршруты от прошлых запусков.
      *
      * F1-фикс (см. plans/wintun_no_traffic_debug_2026-07-14.md): InstallHostBypass

@@ -87,6 +87,27 @@ struct Tun2SocksEngineEmbedded::Flow {
     std::atomic<bool>           closing{false};
     std::atomic<bool>           pcb_dead{false}; // set из engine-thread OnErrCb
 
+    // === iter-3 ФИКС «flow closing during connect» ===
+    // Готов ли outbound-сокет к ::send()?  Для PROXY-flow'а connect() выполняется
+    // СИНХРОННО в OnAccept, поэтому сокет всегда connected к моменту первого
+    // OnRecv → флаг ставится в true сразу при создании PROXY-flow'а.  Для
+    // DIRECT-flow'а connect() ASYNC на DirectFlowThread; пока он не завершился,
+    // OnRecv (engine-тред) НЕ ДОЛЖЕН слать в сокет (send на неподключённый сокет
+    // возвращал <=0 → OnRecv трактовал это как «relay умер» и звал CloseFlow →
+    // closing=true → DirectFlowThread видел его как «flow closing during connect»,
+    // роняя КАЖДЫЙ DIRECT-flow, кроме самого первого).  Теперь DIRECT-flow до
+    // connect'а БУФЕРИЗУЕТ туннельные байты в pending_tx, а DirectFlowThread
+    // после успешного connect'а флашит их и ставит sock_connected=true.
+    std::atomic<bool>           sock_connected{false};
+    // Байты из туннеля (tcp_recv), пришедшие ДО завершения async-connect'а
+    // DIRECT-сокета.  Флашатся DirectFlowThread'ом сразу после connect'а.
+    // Защищён pending_mu; трогается из OnRecv (engine) и DirectFlowThread (per-flow).
+    std::mutex                  pending_mu;
+    std::vector<uint8_t>        pending_tx;
+    // Клиент прислал FIN (OnRecv p==nullptr) ДО завершения connect'а: отложенный
+    // shut_send применится после connect+flush.
+    std::atomic<bool>           tunnel_fin_pending{false};
+
     // Сколько байт ещё лежит в TX-очереди pcb (заполнили tcp_write, но
     // соответствующий tcp_sent пока не пришёл).  Используется для back-pressure
     // socket-reader'а: он не читает следующий чанк, пока в pcb есть место.
@@ -121,6 +142,14 @@ struct Tun2SocksEngineEmbedded::Flow {
     // и снятия /32 на закрытии.  0 = bypass для этого flow'а не ставился.
     uint32_t                    direct_dst_be = 0;
     bool                        direct_bypass_installed = false;
+
+    // Корневой фикс: разрешённый ФИЗИЧЕСКИЙ egress DIRECT-flow'а (заполняется в
+    // OnAccept из ResolvePhysicalEgressExcluding).  Используется как для
+    // IP_UNICAST_IF-пиннинга, так и для Option 2a /32-bypass — чтобы /32 ставился
+    // через ФИЗИЧЕСКИЙ интерфейс/шлюз, а НЕ через Wintun (иначе bypass бесполезен).
+    uint32_t                    direct_egress_if = 0;
+    NET_LUID                    direct_egress_luid{};
+    uint32_t                    direct_egress_nexthop_be = 0;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -299,8 +328,10 @@ struct EngineTramp {
             // Это БЫСТРЫЙ табличный lookup ОС (не сетевой I/O) — безопасно на
             // engine-треде.  Сам connect + качалка данных выполняются на
             // DirectFlowThread (НИКОГДА не на engine-треде — инвариант №1).
-            uint32_t ifIndex = 0, srcBe = 0;
-            const bool egressOk = engine->ResolvePhysicalEgress(dst_be, ifIndex, srcBe);
+            uint32_t ifIndex = 0, srcBe = 0, nextHopBe = 0;
+            NET_LUID egressLuid{};
+            const bool egressOk = engine->ResolvePhysicalEgress(
+                dst_be, ifIndex, srcBe, egressLuid, nextHopBe);
             if (!egressOk) {
                 if (engine->m_direct.fallback_proxy && engine->m_conn_table
                     && engine->m_filter.proxy_configured) {
@@ -355,6 +386,11 @@ struct EngineTramp {
                     flow->meta          = meta;
                     flow->is_direct     = true;
                     flow->direct_dst_be = dst_be;
+                    // Сохраняем РАЗРЕШЁННЫЙ физический egress — Option 2a /32-bypass
+                    // поставится через него (а НЕ через Wintun, как было).
+                    flow->direct_egress_if        = ifIndex;
+                    flow->direct_egress_luid      = egressLuid;
+                    flow->direct_egress_nexthop_be = nextHopBe;
 
                     if (engine->m_conn_monitor) {
                         domain::ConnectionRecord rec;
@@ -390,13 +426,23 @@ struct EngineTramp {
                     raw->sock_reader = std::thread(
                         [engine, raw]() { engine->DirectFlowThread(raw); });
 
-                    engine->FilterLog(domain::LogLevel::Debug,
-                        "[wintun][flow] DIRECT pid=" + std::to_string(flowPid)
-                        + " proc=" + WideToUtf8(flowProc)
-                        + " src=" + meta.source_ip + ":" + std::to_string(meta.source_port)
-                        + " dst=" + meta.original_dst_ip + ":"
-                        + std::to_string(meta.original_dst_port)
-                        + " egress_ifindex=" + std::to_string(ifIndex));
+                    // Диагностика фикса: логируем РАЗРЕШЁННЫЙ физический egress
+                    // (ifIndex + source-IP).  Если здесь виден Wintun-ifIndex или
+                    // TUN-source (10.6.7.x) — резолвер всё ещё цепляет туннель.
+                    {
+                        in_addr sa{}; sa.S_un.S_addr = srcBe;
+                        char sbuf[16] = {0};
+                        inet_ntop(AF_INET, &sa, sbuf, sizeof(sbuf));
+                        engine->FilterLog(domain::LogLevel::Debug,
+                            "[wintun][flow] DIRECT pid=" + std::to_string(flowPid)
+                            + " proc=" + WideToUtf8(flowProc)
+                            + " src=" + meta.source_ip + ":" + std::to_string(meta.source_port)
+                            + " dst=" + meta.original_dst_ip + ":"
+                            + std::to_string(meta.original_dst_port)
+                            + " egress_ifindex=" + std::to_string(ifIndex)
+                            + " egress_src=" + std::string(sbuf)
+                            + " (physical, TUN excluded)");
+                    }
 
                     if (engine->m_on_flow) {
                         try { engine->m_on_flow(meta); }
@@ -488,6 +534,11 @@ struct EngineTramp {
         flow->owner = engine;
         flow->meta  = meta;
         flow->relay_src_port = relay_src_port;
+        // PROXY-flow: connect() к relay выполнен СИНХРОННО выше (::connect на
+        // строке ~489), сокет уже подключён → OnRecv может слать сразу.  Это
+        // ключевое отличие от DIRECT (async-connect на DirectFlowThread), для
+        // которого флаг остаётся false до завершения connect'а.
+        flow->sock_connected.store(true, std::memory_order_release);
 
         // Задача 4: регистрируем соединение в трекере для GUI-трассировки.
         if (engine->m_conn_monitor) {
@@ -549,13 +600,61 @@ struct EngineTramp {
         auto* flow = static_cast<Tun2SocksEngineEmbedded::Flow*>(arg);
         if (err != ERR_OK) {
             if (p) pbuf_free(p);
-            if (flow) flow->owner->CloseFlow(flow, /*from_engine_thread=*/true);
+            if (flow) flow->owner->CloseFlow(flow, /*from_engine_thread=*/true,
+                                             "OnRecv err!=ERR_OK");
             return ERR_OK;
         }
         if (p == nullptr) {
-            if (flow) ::shutdown(flow->sock, SD_SEND);
+            // Клиент закрыл свою half (FIN).  Если DIRECT-сокет ещё не подключён —
+            // откладываем shut_send до конца connect'а (см. DirectFlowThread flush).
+            if (flow) {
+                if (flow->is_direct
+                    && !flow->sock_connected.load(std::memory_order_acquire)) {
+                    flow->tunnel_fin_pending.store(true, std::memory_order_release);
+                } else {
+                    ::shutdown(flow->sock, SD_SEND);
+                }
+            }
             return ERR_OK;
         }
+
+        // === iter-3 ФИКС: DIRECT-flow ещё не подключён — БУФЕРИЗУЕМ, не шлём. ===
+        // Историческая ошибка: send() на неподключённый DIRECT-сокет возвращал
+        // <=0, OnRecv трактовал это как смерть relay-half и звал CloseFlow →
+        // closing=true → «flow closing during connect» на КАЖДОМ flow'е, кроме
+        // первого.  Теперь до завершения async-connect'а туннельные байты копятся
+        // в pending_tx; DirectFlowThread флашит их сразу после connect'а.  Окно
+        // window'а lwIP всё равно двигаем через tcp_recved, чтобы клиент не встал.
+        if (flow->is_direct
+            && !flow->sock_connected.load(std::memory_order_acquire)) {
+            constexpr size_t kMaxPending = 256u * 1024u; // защита от разбухания
+            {
+                std::lock_guard<std::mutex> lk(flow->pending_mu);
+                // Повторная проверка под локом: DirectFlowThread мог только что
+                // выставить connected и уже сфлашить — тогда падаем в общий send.
+                if (!flow->sock_connected.load(std::memory_order_acquire)) {
+                    const size_t cur = flow->pending_tx.size();
+                    if (cur < kMaxPending) {
+                        const size_t room = kMaxPending - cur;
+                        const u16_t take = static_cast<u16_t>(
+                            std::min<size_t>(room, p->tot_len));
+                        const size_t base = flow->pending_tx.size();
+                        flow->pending_tx.resize(base + take);
+                        pbuf_copy_partial(p, flow->pending_tx.data() + base, take, 0);
+                    }
+                    // Двигаем окно на ВЕСЬ сегмент (даже если часть отброшена по
+                    // cap'у — connect имеет 10s таймаут, разбухание исключено на
+                    // практике для handshake-данных).
+                    tcp_recved(tpcb, p->tot_len);
+                    flow->owner->m_rx_bytes.fetch_add(p->tot_len,
+                                                      std::memory_order_relaxed);
+                    pbuf_free(p);
+                    return ERR_OK;
+                }
+            }
+            // fallthrough: connected стал true — шлём напрямую ниже.
+        }
+
         uint8_t buf[2048];
         u16_t offset = 0;
         while (offset < p->tot_len) {
@@ -567,7 +666,8 @@ struct EngineTramp {
             int sent = ::send(flow->sock, reinterpret_cast<const char*>(buf), got, 0);
             if (sent <= 0) {
                 pbuf_free(p);
-                flow->owner->CloseFlow(flow, /*from_engine_thread=*/true);
+                flow->owner->CloseFlow(flow, /*from_engine_thread=*/true,
+                                       "OnRecv send<=0");
                 return ERR_ABRT;
             }
             offset += static_cast<u16_t>(sent);
@@ -664,69 +764,64 @@ done:
 
 bool Tun2SocksEngineEmbedded::ResolvePhysicalEgress(uint32_t dst_be,
                                                     uint32_t& out_if_index,
-                                                    uint32_t& out_src_be) {
-    out_if_index = 0;
-    out_src_be = 0;
+                                                    uint32_t& out_src_be,
+                                                    NET_LUID& out_luid,
+                                                    uint32_t& out_nexthop_be) {
+    out_if_index   = 0;
+    out_src_be     = 0;
+    out_luid       = NET_LUID{};
+    out_nexthop_be = 0;
 
-    // GetBestRoute2 — быстрый lookup таблицы маршрутов ОС (не сетевой I/O).
-    // ВАЖНО: он вернёт лучший маршрут к dst С УЧЁТОМ наших split-tunnel /1-
-    // маршрутов, то есть может указать на TUN.  Нам нужен ФИЗИЧЕСКИЙ путь.
-    // Поэтому если ручной override не задан — мы также умеем предпочесть
-    // не-TUN интерфейс: наш netif не является системным адаптером с LUID в
-    // таблице маршрутов Windows (lwIP-netif живёт в user space), поэтому
-    // GetBestRoute2 в embedded-режиме уже возвращает физический адаптер —
-    // split-tunnel /1 стоят на Wintun-адаптере (реальный NDIS), но source-IP
-    // для него — TUN-подсеть; чтобы гарантированно уйти на физику, мы задаём
-    // IP_UNICAST_IF по физическому ifIndex.  Здесь резолвим физический путь.
-
-    // Ручной override интерфейса (имя/ifIndex/IP).
+    // Ручной override интерфейса (имя/ifIndex/IP) — приоритетнее авто-резолва.
     if (!m_direct.egress_interface.empty()) {
         const std::string& s = m_direct.egress_interface;
-        // 1) числовой ifIndex?
         bool numeric = !s.empty();
         for (char c : s) { if (c < '0' || c > '9') { numeric = false; break; } }
         if (numeric) {
             out_if_index = static_cast<uint32_t>(std::strtoul(s.c_str(), nullptr, 10));
+            NET_LUID lu{};
+            NET_IFINDEX idx = static_cast<NET_IFINDEX>(out_if_index);
+            if (ConvertInterfaceIndexToLuid(idx, &lu) == NO_ERROR) out_luid = lu;
         } else {
-            // 2) IPv4-адрес интерфейса?
             IN_ADDR ia{};
             if (inet_pton(AF_INET, s.c_str(), &ia) == 1) {
                 out_src_be = ia.S_un.S_addr;
-                // Найдём ifIndex по source-IP через GetBestRoute2 (source=ia).
-            }
-            // 3) имя интерфейса — конвертируем через if_nametoindex.
-            else {
+            } else {
                 NET_LUID luid{};
                 std::wstring w(s.begin(), s.end());
                 if (ConvertInterfaceAliasToLuid(w.c_str(), &luid) == NO_ERROR) {
                     NET_IFINDEX idx = 0;
                     if (ConvertInterfaceLuidToIndex(&luid, &idx) == NO_ERROR) {
                         out_if_index = idx;
+                        out_luid = luid;
                     }
                 }
             }
         }
-    }
-
-    // Всегда прогоняем GetBestRoute2 для получения ifIndex/source, если чего-то
-    // не хватает.  Это даёт корректный source-IP физического интерфейса.
-    if (out_if_index == 0 || out_src_be == 0) {
-        SOCKADDR_INET dst{};
-        dst.si_family = AF_INET;
-        dst.Ipv4.sin_family = AF_INET;
-        dst.Ipv4.sin_addr.S_un.S_addr = dst_be;
-
-        MIB_IPFORWARD_ROW2 best{};
-        SOCKADDR_INET bestSrc{};
-        DWORD rc = GetBestRoute2(nullptr, 0, nullptr, &dst, 0, &best, &bestSrc);
-        if (rc != NO_ERROR) {
-            return false;
-        }
-        if (out_if_index == 0) out_if_index = best.InterfaceIndex;
-        if (out_src_be == 0 && bestSrc.si_family == AF_INET) {
-            out_src_be = bestSrc.Ipv4.sin_addr.S_un.S_addr;
+        // При ручном override, если ifIndex задан — этого достаточно для
+        // IP_UNICAST_IF; но source/next-hop всё равно добираем ниже, если можем.
+        if (out_if_index != 0 && out_src_be != 0) {
+            return true;
         }
     }
+
+    // КОРНЕВОЙ ФИКС: резолвим физический путь, ЯВНО исключая Wintun-LUID.
+    // Прежняя реализация звала GetBestRoute2(nullptr,...) без исключения —
+    // и получала САМ Wintun (его /5-лестница выигрывает LPM у физ. /0), после
+    // чего IP_UNICAST_IF пиннил DIRECT-сокет обратно в туннель -> нет egress'а.
+    RouteInstaller::PhysicalEgress eg;
+    std::string err;
+    const bool ok =
+        RouteInstaller::ResolvePhysicalEgressExcluding(dst_be, m_tun_luid, eg, &err);
+    if (!ok) {
+        FilterLog(domain::LogLevel::Debug,
+            "[wintun][DIRECT] ResolvePhysicalEgressExcluding failed: " + err);
+        return false;
+    }
+    if (out_if_index == 0)   out_if_index   = eg.if_index;
+    if (out_src_be == 0)     out_src_be     = eg.src_be;
+    if (out_luid.Value == 0) out_luid       = eg.luid;
+    out_nexthop_be = eg.next_hop_be;
 
     return out_if_index != 0;
 }
@@ -734,7 +829,8 @@ bool Tun2SocksEngineEmbedded::ResolvePhysicalEgress(uint32_t dst_be,
 bool Tun2SocksEngineEmbedded::PinSocketToPhysical(SOCKET s,
                                                   uint32_t if_index,
                                                   uint32_t src_be) {
-    bool pinned = false;
+    bool unicastIfOk = false;
+    bool bindOk      = false;
 
     // IP_UNICAST_IF — переопределяет egress-интерфейс сокета, минуя таблицу
     // маршрутов (наши /1 в TUN больше не «притягивают» этот сокет).  КРИТИЧНО:
@@ -744,23 +840,47 @@ bool Tun2SocksEngineEmbedded::PinSocketToPhysical(SOCKET s,
         if (::setsockopt(s, IPPROTO_IP, IP_UNICAST_IF,
                          reinterpret_cast<const char*>(&ifIndexNbo),
                          sizeof(ifIndexNbo)) == 0) {
-            pinned = true;
+            unicastIfOk = true;
+        } else {
+            const int e = ::WSAGetLastError();
+            FilterLog(domain::LogLevel::Debug,
+                "[wintun][DIRECT][pin] IP_UNICAST_IF setsockopt FAILED ifindex="
+                + std::to_string(if_index) + " WSA=" + std::to_string(e));
         }
     }
 
-    // Source-IP bind как «belt-and-suspenders» / fallback: если IP_UNICAST_IF
-    // не сработал, bind к физическому source-IP помогает LPM выбрать физику.
+    // Source-IP bind — TOLERANT (iter-2): раньше это был обязательный «belt-and-
+    // suspenders», но при этом bind к физическому source-IP, ПОКА OS-маршрут к dst
+    // ещё указывает в TUN, мог давать немедленный WSAEADDRNOTAVAIL/WSAENETUNREACH и
+    // ронять весь DIRECT-путь.  Теперь egress выбирается связкой /32-bypass (ставится
+    // ДО connect) + IP_UNICAST_IF; source-bind оставляем ТОЛЬКО как best-effort и
+    // НЕ считаем его провал фатальным для пиннинга.
     if (src_be != 0) {
         sockaddr_in la{};
         la.sin_family = AF_INET;
         la.sin_addr.s_addr = src_be;
         la.sin_port = 0;
+        char srcStr[INET_ADDRSTRLEN] = {0};
+        ::inet_ntop(AF_INET, &la.sin_addr, srcStr, sizeof(srcStr));
         if (::bind(s, reinterpret_cast<sockaddr*>(&la), sizeof(la)) == 0) {
-            pinned = true;
+            bindOk = true;
+        } else {
+            const int e = ::WSAGetLastError();
+            FilterLog(domain::LogLevel::Debug,
+                std::string("[wintun][DIRECT][pin] source-IP bind() to ") + srcStr
+                + " FAILED (non-fatal, tolerant) WSA=" + std::to_string(e));
         }
     }
 
-    return pinned;
+    FilterLog(domain::LogLevel::Debug,
+        std::string("[wintun][DIRECT][pin] result: IP_UNICAST_IF=")
+        + (unicastIfOk ? "ok" : "FAIL")
+        + " src-bind=" + (bindOk ? "ok" : (src_be ? "FAIL" : "skip"))
+        + " ifindex=" + std::to_string(if_index));
+
+    // Пин считается успешным, если сработал IP_UNICAST_IF (главный механизм) ИЛИ
+    // получилось привязать source-IP.  Провал одного лишь source-bind — не отказ.
+    return unicastIfOk || bindOk;
 }
 
 void Tun2SocksEngineEmbedded::NoteProxyDestination(uint32_t dst_be) {
@@ -783,38 +903,57 @@ void Tun2SocksEngineEmbedded::NoteProxyDestination(uint32_t dst_be) {
     }
 }
 
-void Tun2SocksEngineEmbedded::MaybeInstallDirectBypass(uint32_t dst_be) {
-    if (!m_direct.enabled || !m_direct.route_optimization) return;
-    // Loopback не нуждается в bypass (InstallHostBypass сам это отсекает).
-    if (static_cast<uint8_t>(dst_be & 0xFF) == 127) return;
+bool Tun2SocksEngineEmbedded::MaybeInstallDirectBypass(uint32_t dst_be,
+                                                       uint32_t if_index,
+                                                       NET_LUID luid,
+                                                       uint32_t next_hop_be) {
+    // iter-2: этот /32-bypass — уже НЕ «оптимизация ПОСЛЕ первого connect», а
+    // ПРЕДУСЛОВИЕ DIRECT-egress'а: он ставится ДО connect(), чтобы OS-маршрут к dst
+    // в момент отправки SYN указывал на ФИЗИЧЕСКИЙ интерфейс/шлюз, а не на /5-лестницу
+    // Wintun'а (иначе SYN уходит в TUN и connect отбивается мгновенно локально).
+    if (!m_direct.enabled || !m_direct.route_optimization) return false;
+    // Loopback не нуждается в bypass — путь напрямую корректен.
+    if (static_cast<uint8_t>(dst_be & 0xFF) == 127) return false;
+    // Без разрешённого физического интерфейса /32 указывал бы в никуда/в TUN.
+    if (if_index == 0) return false;
 
     bool doInstall = false;
     {
         std::lock_guard<std::mutex> lk(m_bypass_mu);
         // Guard: dst используется PROXY → НЕ ставим (иначе сломаем проксирование).
-        if (m_proxy_dsts.find(dst_be) != m_proxy_dsts.end()) return;
+        if (m_proxy_dsts.find(dst_be) != m_proxy_dsts.end()) return false;
         auto it = m_bypass_refcount.find(dst_be);
         if (it == m_bypass_refcount.end()) {
             m_bypass_refcount.emplace(dst_be, 1u);
             doInstall = true;
         } else {
             ++(it->second); // уже стоит — только refcount++
+            return true;    // маршрут уже установлен другим flow — refcount учтён
         }
     }
     if (doInstall) {
         std::string err;
-        if (RouteInstaller::InstallHostBypass(dst_be, &err)) {
+        RouteInstaller::PhysicalEgress eg;
+        eg.if_index    = if_index;
+        eg.luid        = luid;
+        eg.next_hop_be = next_hop_be;
+        // КРИТИЧНО: ставим /32 через ЯВНЫЙ физический интерфейс (НЕ через
+        // GetBestRoute2, который в рантайме вернул бы Wintun).
+        if (RouteInstaller::InstallHostBypassVia(dst_be, eg, &err)) {
             FilterLog(domain::LogLevel::Debug,
-                "[wintun][bypass] installed DIRECT /32 bypass for established dst");
+                "[wintun][bypass] installed DIRECT /32 bypass via physical ifindex="
+                + std::to_string(if_index) + " nexthop_be="
+                + std::to_string(next_hop_be) + " (pre-connect precondition)");
+            return true;
         } else {
-            // Не удалось — откатываем refcount, работаем без оптимизации (Option 1
-            // software-роутинг остаётся корректным).
             std::lock_guard<std::mutex> lk(m_bypass_mu);
             m_bypass_refcount.erase(dst_be);
-            FilterLog(domain::LogLevel::Debug,
-                "[wintun][bypass] InstallHostBypass failed (non-fatal): " + err);
+            FilterLog(domain::LogLevel::Warn,
+                "[wintun][bypass] InstallHostBypassVia FAILED: " + err);
+            return false;
         }
     }
+    return false;
 }
 
 void Tun2SocksEngineEmbedded::ReleaseDirectBypass(uint32_t dst_be) {
@@ -858,33 +997,66 @@ void Tun2SocksEngineEmbedded::DirectFlowThread(Flow* flow) {
     // Выполняется НА per-flow треде (НЕ на engine-треде): здесь можно блокирующе
     // connect'иться и recv'иться — engine-тред не затрагивается (инвариант №1).
     // Сокет уже создан и запиннут к физическому NIC в OnAccept (инвариант №2).
+    // Установка маршрута здесь — тоже КОРРЕКТНА на этом треде: CreateIpForwardEntry2
+    // это syscall, но мы НЕ на lwIP core-треде и НЕ держим m_core_lock (инвариант №1;
+    // m_bypass_mu — отдельный короткоживущий mutex, не пересекается с core-lock'ом).
+
+    const std::string dstStr = flow->meta.original_dst_ip;
+    const uint16_t    dstPort = flow->meta.original_dst_port;
+    const uint32_t    egIf   = flow->direct_egress_if;
+
+    // === iter-2 ФИКС ПОРЯДКА: ставим <dst>/32 physical-gateway bypass ДО connect() ===
+    // Раньше /32 ставился ПОСЛЕ успешного connect (пост-оптимизация).  Но первый SYN
+    // тогда полагался ТОЛЬКО на IP_UNICAST_IF, чтобы обойти /5-лестницу Wintun'а — и
+    // проигрывал: SYN заходил в TUN, и connect отбивался локально в ту же миллисекунду.
+    // Теперь /32 через физический шлюз — ПРЕДУСЛОВИЕ: в момент отправки SYN OS-маршрут
+    // к dst уже указывает на физику.  Guard PROXY-dst и refcount сохранены.
+    const bool bypassInstalled = MaybeInstallDirectBypass(
+        flow->direct_dst_be, flow->direct_egress_if,
+        flow->direct_egress_luid, flow->direct_egress_nexthop_be);
+    if (bypassInstalled) {
+        // Пометка гарантирует, что CloseFlow декрементирует refcount ДАЖЕ если connect
+        // провалится ниже — /32 не утечёт на неудачном connect'е.
+        flow->direct_bypass_installed = true;
+    }
 
     // 1) connect к реальному dst.  Делаем НЕблокирующим с таймаутом через select,
     //    чтобы поток не завис навечно на неответчивом хосте.
     sockaddr_in target{};
     target.sin_family = AF_INET;
     target.sin_addr.s_addr = flow->direct_dst_be;
-    target.sin_port = htons(flow->meta.original_dst_port);
+    target.sin_port = htons(dstPort);
 
     u_long nb = 1;
     ::ioctlsocket(flow->sock, FIONBIO, &nb);
     int cr = ::connect(flow->sock, reinterpret_cast<sockaddr*>(&target), sizeof(target));
     bool connected = (cr == 0);
+    int  connectImmediateErr = 0; // WSAGetLastError сразу после connect()
+    int  selectResult = -2;       // -2 = не вызывался; >0 ready; 0 timeout; -1 error
+    int  soErr = 0;               // SO_ERROR после select
+    bool selectTimedOut = false;
     if (!connected) {
-        const int e = ::WSAGetLastError();
-        if (e == WSAEWOULDBLOCK) {
+        connectImmediateErr = ::WSAGetLastError();
+        if (connectImmediateErr == WSAEWOULDBLOCK) {
             fd_set wfds, efds;
             FD_ZERO(&wfds); FD_ZERO(&efds);
             FD_SET(flow->sock, &wfds); FD_SET(flow->sock, &efds);
             timeval tv{}; tv.tv_sec = 10; tv.tv_usec = 0; // 10 c на connect
-            int sr = ::select(0, nullptr, &wfds, &efds, &tv);
-            if (sr > 0 && FD_ISSET(flow->sock, &wfds)) {
-                int soErr = 0; int len = sizeof(soErr);
+            selectResult = ::select(0, nullptr, &wfds, &efds, &tv);
+            if (selectResult == 0) {
+                selectTimedOut = true;
+            } else if (selectResult > 0 && FD_ISSET(flow->sock, &wfds)) {
+                int len = sizeof(soErr);
                 if (::getsockopt(flow->sock, SOL_SOCKET, SO_ERROR,
                                  reinterpret_cast<char*>(&soErr), &len) == 0
                     && soErr == 0) {
                     connected = true;
                 }
+            } else if (selectResult > 0 && FD_ISSET(flow->sock, &efds)) {
+                // Сокет в exception-set → connect провалился; забираем SO_ERROR.
+                int len = sizeof(soErr);
+                ::getsockopt(flow->sock, SOL_SOCKET, SO_ERROR,
+                             reinterpret_cast<char*>(&soErr), &len);
             }
         }
     }
@@ -895,20 +1067,87 @@ void Tun2SocksEngineEmbedded::DirectFlowThread(Flow* flow) {
     if (!connected || flow->closing.load(std::memory_order_relaxed)) {
         // connect провалился — просим engine-тред закрыть flow (FIN/RST уедет в TUN,
         // приложение мгновенно получит отказ).  reader_exited → ReapFinishedReaders.
+        //
+        // iter-2 УТЕЧКА /32: если мы поставили /32 ДО connect, а connect провалился,
+        // release'им маршрут ЗДЕСЬ немедленно (не ждём CloseFlow) — так неудачный DIRECT
+        // не оставляет за собой /32.  Флаг сбрасываем, чтобы CloseFlow не декрементировал
+        // повторно (double-release).
+        if (flow->direct_bypass_installed && flow->direct_dst_be != 0) {
+            ReleaseDirectBypass(flow->direct_dst_be);
+            flow->direct_bypass_installed = false;
+        }
+
+        // iter-2 ИНСТРУМЕНТОВКА: логируем ТОЧНЫЕ коды отказа, чтобы отличать
+        // WSAENETUNREACH(10051)/WSAEADDRNOTAVAIL(10049)/WSAETIMEDOUT(10060)/
+        // WSAECONNREFUSED(10061).  Раньше код отказа отбрасывался.
+        std::string reason;
+        if (flow->closing.load(std::memory_order_relaxed)) {
+            reason = "flow closing during connect";
+        } else if (selectTimedOut) {
+            reason = "select TIMEOUT (10s) — SYN sent but no response (wire loss/blackhole)";
+        } else if (connectImmediateErr != 0 && connectImmediateErr != WSAEWOULDBLOCK) {
+            reason = "immediate connect() reject WSA=" + std::to_string(connectImmediateErr);
+        } else if (soErr != 0) {
+            reason = "SO_ERROR=" + std::to_string(soErr) + " (post-select)";
+        } else if (selectResult < 0) {
+            reason = "select error WSA=" + std::to_string(::WSAGetLastError());
+        } else {
+            reason = "unknown (connectImmediateErr=" + std::to_string(connectImmediateErr)
+                   + " selectResult=" + std::to_string(selectResult)
+                   + " soErr=" + std::to_string(soErr) + ")";
+        }
         flow->reader_exited.store(true, std::memory_order_release);
-        FilterLog(domain::LogLevel::Debug,
-            "[wintun][flow] DIRECT connect FAILED -> " + flow->meta.original_dst_ip
-            + ":" + std::to_string(flow->meta.original_dst_port));
+        FilterLog(domain::LogLevel::Warn,
+            "[wintun][flow] DIRECT connect FAILED -> " + dstStr + ":"
+            + std::to_string(dstPort) + " egress_ifindex=" + std::to_string(egIf)
+            + " bypass=" + (bypassInstalled ? "installed-then-released" : "none")
+            + " reason: " + reason);
         return;
     }
 
-    // 2) Option 2a: соединение установлено — ставим <dst>/32 bypass (если dst не
-    //    проксируется).  Отмечаем на flow, чтобы CloseFlow декрементировал refcount.
-    MaybeInstallDirectBypass(flow->direct_dst_be);
+    FilterLog(domain::LogLevel::Debug,
+        "[wintun][flow] DIRECT connect OK -> " + dstStr + ":"
+        + std::to_string(dstPort) + " egress_ifindex=" + std::to_string(egIf)
+        + " bypass=" + (bypassInstalled ? "yes" : "n/a"));
+
+    // === iter-3 ФИКС: сокет подключён — флашим туннельные байты, накопленные
+    // OnRecv'ом ДО connect'а, затем публикуем sock_connected=true. ===
+    // Порядок критичен и делается ПОД pending_mu, чтобы не разъехаться с OnRecv:
+    //   • держим pending_mu → OnRecv не может параллельно дописать в pending_tx;
+    //   • шлём весь накопленный буфер в (уже блокирующий) сокет;
+    //   • ставим sock_connected=true — после разлочки OnRecv пойдёт по прямому
+    //     send-пути (порядок байт сохранён: сначала буфер, потом новые сегменты).
     {
-        std::lock_guard<std::mutex> lk(m_bypass_mu);
-        if (m_bypass_refcount.find(flow->direct_dst_be) != m_bypass_refcount.end()) {
-            flow->direct_bypass_installed = true;
+        std::vector<uint8_t> flush;
+        {
+            std::lock_guard<std::mutex> lk(flow->pending_mu);
+            flush.swap(flow->pending_tx);
+            // Публикуем connected ПОД локом: любой OnRecv, взявший лок после нас,
+            // увидит connected=true и отправит напрямую (после нашего флаша).
+            flow->sock_connected.store(true, std::memory_order_release);
+        }
+        size_t off = 0;
+        bool flushOk = true;
+        while (off < flush.size()) {
+            if (flow->closing.load(std::memory_order_relaxed)
+                || flow->pcb_dead.load(std::memory_order_relaxed)) { flushOk = false; break; }
+            int sent = ::send(flow->sock,
+                              reinterpret_cast<const char*>(flush.data() + off),
+                              static_cast<int>(flush.size() - off), 0);
+            if (sent <= 0) { flushOk = false; break; }
+            off += static_cast<size_t>(sent);
+        }
+        if (!flushOk) {
+            // Сокет умер во время флаша накопленного — закрываемся штатно.
+            flow->reader_exited.store(true, std::memory_order_release);
+            FilterLog(domain::LogLevel::Warn,
+                "[wintun][flow] DIRECT pending-flush FAILED -> " + dstStr + ":"
+                + std::to_string(dstPort) + " — flow closing");
+            return;
+        }
+        // Клиент прислал FIN до connect'а — применяем отложенный shut_send.
+        if (flow->tunnel_fin_pending.load(std::memory_order_acquire)) {
+            ::shutdown(flow->sock, SD_SEND);
         }
     }
 
@@ -953,9 +1192,22 @@ ddone:
 /*  CloseFlow                                                                     */
 /* ------------------------------------------------------------------------- */
 
-void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread) {
+void Tun2SocksEngineEmbedded::CloseFlow(Flow* flow, bool from_engine_thread,
+                                        const char* reason) {
     if (!flow) return;
     if (flow->closing.exchange(true, std::memory_order_relaxed)) return;
+
+    // iter-3 ИНСТРУМЕНТОВКА: одна строка «кто закрыл flow».  Если DIRECT-flow'ы
+    // снова начнут падать «during connect», в логе будет видно, ЧТО именно
+    // выставило closing первым (OnRecv-send / OnRecv-err / reaper / stop) —
+    // это отличает регрессию OnRecv-гонки от reaper-таймаута или engine-stop.
+    FilterLog(domain::LogLevel::Debug,
+        std::string("[wintun][flow][close] ") + (flow->is_direct ? "DIRECT" : "PROXY")
+        + " id=" + std::to_string(flow->id)
+        + " dst=" + flow->meta.original_dst_ip + ":"
+        + std::to_string(flow->meta.original_dst_port)
+        + " connected=" + (flow->sock_connected.load(std::memory_order_relaxed) ? "1" : "0")
+        + " source=" + (reason ? reason : "unspecified"));
 
     // Задача 4: снимаем запись из трекера (GUI-трассировка).
     if (m_conn_monitor && flow->conn_id != 0) {
@@ -1100,7 +1352,7 @@ void Tun2SocksEngineEmbedded::ReapFinishedReaders() {
     // (RetireFlow сам берёт m_flows_mu).  from_engine_thread=true: мы в engine-
     // треде.
     for (Flow* f : to_close) {
-        CloseFlow(f, /*from_engine_thread=*/true);
+        CloseFlow(f, /*from_engine_thread=*/true, "reaper reader_exited");
     }
 }
 
@@ -1592,7 +1844,7 @@ void Tun2SocksEngineEmbedded::Stop() {
     for (auto& f : to_drop) {
         // from_engine_thread=false: владение Flow уже у нас (to_drop), CloseFlow
         // не должен дёргать map/reaper — мы сами join'им ридер и уничтожим объект.
-        CloseFlow(f.get(), /*from_engine_thread=*/false);
+        CloseFlow(f.get(), /*from_engine_thread=*/false, "engine Stop()");
         if (f->sock_reader.joinable()) f->sock_reader.join();
     }
     to_drop.clear();
