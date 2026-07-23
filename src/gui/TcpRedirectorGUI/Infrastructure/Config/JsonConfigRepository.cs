@@ -30,7 +30,15 @@ public sealed class JsonConfigRepository : IConfigRepository
         try
         {
             var j = Load();
-            return j[section]?[key]?.GetValue<string>() ?? defaultValue;
+            var node = j[section]?[key];
+            if (node is null) return defaultValue;
+            // Handle both string and numeric JSON values (port is saved as number)
+            if (node is JsonValue jv)
+            {
+                var raw = jv.GetValue<object>();
+                return raw?.ToString() ?? defaultValue;
+            }
+            return node.ToJsonString();
         }
         catch
         {

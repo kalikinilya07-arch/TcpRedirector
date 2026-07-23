@@ -2,6 +2,10 @@
 #include <sddl.h>
 #include <string>
 #include <cstdio>
+#include <ctime>
+#include <fstream>
+#include <mutex>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include "SspiEngine.h"
 #include "ContextStore.h"
@@ -10,6 +14,52 @@
 #pragma comment(lib, "secur32.lib")
 
 using namespace tcp_redirector::auth_agent;
+
+// ============================================================================
+// File logger — writes to %ProgramData%\TcpRedirector\logs\auth_agent.log
+// ============================================================================
+
+static std::ofstream g_logFile;
+static std::mutex g_logMutex;
+
+void AgentLog(const char* fmt, ...) {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    
+    // Timestamp
+    time_t now = time(nullptr);
+    struct tm tm_info;
+    localtime_s(&tm_info, &now);
+    char timeBuf[32];
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &tm_info);
+    
+    // Format message
+    char msgBuf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msgBuf, sizeof(msgBuf), fmt, args);
+    va_end(args);
+    
+    // Write to file and stderr
+    if (g_logFile.is_open()) {
+        g_logFile << "[" << timeBuf << "] " << msgBuf << std::endl;
+        g_logFile.flush();
+    }
+    fprintf(stderr, "[%s] %s\n", timeBuf, msgBuf);
+    fflush(stderr);
+}
+
+static void InitLogFile() {
+    wchar_t progData[MAX_PATH];
+    if (GetEnvironmentVariableW(L"ProgramData", progData, MAX_PATH) > 0) {
+        std::filesystem::path logDir = std::filesystem::path(progData) / L"TcpRedirector" / L"logs";
+        std::filesystem::create_directories(logDir);
+        std::filesystem::path logPath = logDir / L"auth_agent.log";
+        g_logFile.open(logPath, std::ios::app);
+        if (g_logFile.is_open()) {
+            AgentLog("=== AuthAgent started (PID=%lu) ===", GetCurrentProcessId());
+        }
+    }
+}
 
 // ============================================================================
 // Named Pipe Server для AuthAgent
@@ -73,9 +123,14 @@ static void SendMessage(HANDLE pipe, const std::string& msg) {
 static nlohmann::json HandleRequest(const nlohmann::json& req) {
     nlohmann::json resp;
     resp["jsonrpc"] = "2.0";
-    resp["id"] = req.value("id", nullptr);
+    // Fix: req.value("id", nullptr) throws type_error.302 when id is numeric.
+    // Use contains() check instead to handle both numeric and null ids.
+    resp["id"] = req.contains("id") ? req["id"] : nlohmann::json(nullptr);
 
     std::string method = req.value("method", "");
+
+    AgentLog("REQ method=%s id=%s", method.c_str(),
+             req.contains("id") ? req["id"].dump().c_str() : "null");
 
     try {
         if (method == "hello") {
@@ -83,6 +138,16 @@ static nlohmann::json HandleRequest(const nlohmann::json& req) {
             nlohmann::json result;
             result["version"] = 1;  // Поддерживаемая версия протокола
             result["agent"] = "TcpRedirectorAuthAgent/1.1.0";
+            // Report the user account under which the agent runs (Kerberos context)
+            wchar_t userName[256] = {0};
+            DWORD userNameLen = 256;
+            if (GetUserNameW(userName, &userNameLen)) {
+                char userNameUtf8[512];
+                WideCharToMultiByte(CP_UTF8, 0, userName, -1,
+                                    userNameUtf8, sizeof(userNameUtf8), nullptr, nullptr);
+                result["user"] = userNameUtf8;
+                AgentLog("  hello: agent user=%s", userNameUtf8);
+            }
             resp["result"] = result;
         }
         else if (method == "ping") {
@@ -92,6 +157,7 @@ static nlohmann::json HandleRequest(const nlohmann::json& req) {
         }
         else if (method == "create_context") {
             std::string spn = req["params"]["spn"].get<std::string>();
+            AgentLog("  create_context: SPN=%s", spn.c_str());
 
             CredHandle credentials;
             CtxtHandle context;
@@ -165,12 +231,15 @@ static nlohmann::json HandleRequest(const nlohmann::json& req) {
             resp["error"] = error;
         }
     } catch (const std::exception& e) {
+        AgentLog("  ERROR in %s: %s", method.c_str(), e.what());
         nlohmann::json error;
         error["code"] = -32603;
         error["message"] = std::string("Internal error: ") + e.what();
         resp["error"] = error;
     }
 
+    AgentLog("RESP method=%s success=%s", method.c_str(),
+             resp.contains("result") ? "true" : "false");
     return resp;
 }
 
@@ -189,7 +258,7 @@ static void HandleClient(HANDLE pipe) {
             SendMessage(pipe, respStr);
         } catch (const std::exception& e) {
             // Ошибка чтения/записи — клиент отключился
-            fprintf(stderr, "[AuthAgent] Client disconnected: %s\n", e.what());
+            AgentLog("Client disconnected: %s", e.what());
             break;
         }
     }
@@ -204,14 +273,15 @@ int main() {
     setbuf(stdout, nullptr);
     setbuf(stderr, nullptr);
 
-    printf("[AuthAgent] TcpRedirectorAuthAgent v1.1.0 starting...\n");
-    printf("[AuthAgent] Running as user: ");
+    // Init file logger FIRST
+    InitLogFile();
+
     wchar_t userName[256] = {0};
     DWORD userNameLen = 256;
     if (GetUserNameW(userName, &userNameLen)) {
-        printf("%S\n", userName);
+        AgentLog("TcpRedirectorAuthAgent v1.1.9 starting as user: %S", userName);
     } else {
-        printf("<unknown>\n");
+        AgentLog("TcpRedirectorAuthAgent v1.1.9 starting as user: <unknown>");
     }
 
     // Периодическая очистка просроченных контекстов (каждые 5 минут)

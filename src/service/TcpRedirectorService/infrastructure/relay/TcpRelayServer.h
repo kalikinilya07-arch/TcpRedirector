@@ -18,6 +18,7 @@
 #include <memory>
 #include <functional>
 #include <cstring>
+#include <vector>
 
 #include "../../domain/ports/IRelayServer.h"
 #include "../../domain/ports/IConnectionTable.h"
@@ -650,7 +651,11 @@ private:
         delete cfg;
 
         uint64_t total_bytes = 0;
-        char buf[131072];
+        // H9: 128 KB heap buffer instead of stack to avoid stack overflow
+        // (c0000409 STATUS_STACK_BUFFER_OVERRUN) when many relay threads
+        // are active simultaneously.
+        std::vector<char> bufVec(131072);
+        char* buf = bufVec.data();
 
         auto bridgeLog = [&](const std::string& msg) {
             if (server) {

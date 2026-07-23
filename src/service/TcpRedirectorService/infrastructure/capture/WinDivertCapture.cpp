@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cstring>
+#include <mutex>
 #include <iphlpapi.h>
 #include <tcpmib.h>
 #include <tlhelp32.h>
@@ -17,6 +18,7 @@
 
 // File logging — пишем в windivert_debug.log
 static FILE* g_wdLogFile = nullptr;
+static std::mutex g_wdLogMutex;  // H9: thread-safe logging
 
 // Log level macros for WinDivert capture logging
 #define WD_ERROR(...) WdLog(domain::LogLevel::Error, __VA_ARGS__)
@@ -35,6 +37,9 @@ void WinDivertCapture::WdLog(domain::LogLevel level, const char* fmt, ...) {
     char buf[2048];
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
+
+    // H9: thread-safe logging — mutex protects stdout and debug file
+    std::lock_guard<std::mutex> lock(g_wdLogMutex);
 
     // Always write to console (--console mode needs this)
     SYSTEMTIME st; GetLocalTime(&st);

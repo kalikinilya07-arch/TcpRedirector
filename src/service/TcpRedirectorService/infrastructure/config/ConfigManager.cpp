@@ -263,6 +263,10 @@ bool ConfigManager::LoadImpl() {
             auto& s = j["stats"];
             m_config.stats.updateIntervalMs = s.value("updateIntervalMs", 2000);
         }
+        if (j.contains("capture")) {
+            m_config.capture_enabled = j["capture"].value("enabled", false);
+        }
+
         if (j.contains("log_rotation")) {
             auto& lr = j["log_rotation"];
             m_config.log_rotation.enabled = lr.value("enabled", true);
@@ -304,6 +308,8 @@ bool ConfigManager::SaveImpl() {
         j["log"]["level"] = m_config.log.level;
         j["log"]["fileEnabled"] = m_config.log.fileEnabled;
         j["log"]["maxSizeMB"] = m_config.log.maxSizeMB;
+        j["capture"]["enabled"] = m_config.capture_enabled;
+
         j["log_rotation"]["enabled"] = m_config.log_rotation.enabled;
         j["log_rotation"]["schedule"] = m_config.log_rotation.schedule;
         j["log_rotation"]["hour"] = m_config.log_rotation.hour;
@@ -334,6 +340,7 @@ bool ConfigManager::SaveImpl() {
 
 bool ConfigManager::CreateDefaultConfig() {
     m_config = Config();
+    m_config.capture_enabled = false;  // безопасный старт: редирект выключен
     m_config.app.exePath = L"C:\\Projects\\china\\police_sec\\TransfersClient.exe";
     m_config.proxy.host = "127.0.0.1";
     m_config.proxy.port = 8888;

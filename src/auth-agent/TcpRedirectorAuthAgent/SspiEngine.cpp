@@ -1,4 +1,8 @@
 #include "SspiEngine.h"
+#include <cstdio>
+
+// External logger from main.cpp
+extern void AgentLog(const char* fmt, ...);
 #include <sstream>
 #include <cstdio>
 
@@ -39,12 +43,14 @@ SspiStepResult SspiEngine::CreateContext(
     // 2. Initialize security context (первый вызов — без входного токена)
     std::string spnStr = MakeSpn(spn);
     std::wstring wSpn(spnStr.begin(), spnStr.end());
+    AgentLog("  SSPI: InitializeSecurityContextW SPN=%s", spnStr.c_str());
 
+    char tokenBuf[16384];
     SecBufferDesc outBufDesc;
     SecBuffer outBuf;
     outBuf.BufferType = SECBUFFER_TOKEN;
-    outBuf.cbBuffer = 0;
-    outBuf.pvBuffer = nullptr;
+    outBuf.cbBuffer = sizeof(tokenBuf);
+    outBuf.pvBuffer = tokenBuf;
     outBufDesc.ulVersion = SECBUFFER_VERSION;
     outBufDesc.cBuffers = 1;
     outBufDesc.pBuffers = &outBuf;
@@ -56,7 +62,7 @@ SspiStepResult SspiEngine::CreateContext(
         &outCredentials,
         nullptr,                    // phContext = nullptr (новый контекст)
         const_cast<LPWSTR>(wSpn.c_str()),
-        ISC_REQ_CONFIDENTIALITY | ISC_REQ_CONNECTION,
+        ISC_REQ_CONFIDENTIALITY | ISC_REQ_CONNECTION | ISC_REQ_ALLOCATE_MEMORY,
         0,                          // Reserved1
         SECURITY_NATIVE_DREP,       // TargetDataRep
         nullptr,                    // pInput (нет входного токена)
@@ -78,7 +84,10 @@ SspiStepResult SspiEngine::CreateContext(
                 static_cast<uint8_t*>(outBuf.pvBuffer),
                 static_cast<uint8_t*>(outBuf.pvBuffer) + outBuf.cbBuffer);
             result.token = Base64Encode(token);
-            FreeContextBuffer(outBuf.pvBuffer);
+            // Free only if SSPI allocated its own buffer (not our tokenBuf)
+            if (outBuf.BufferType == SECBUFFER_TOKEN && outBuf.pvBuffer != tokenBuf) {
+                FreeContextBuffer(outBuf.pvBuffer);
+            }
         }
 
         result.success = true;
@@ -87,6 +96,7 @@ SspiStepResult SspiEngine::CreateContext(
     } else {
         result.error_message = "InitializeSecurityContextW failed: " +
                                SspiErrorText(sc);
+        AgentLog("  SSPI: FAILED sc=0x%08X (%s)", sc, SspiErrorText(sc).c_str());
         FreeCredentialsHandle(&outCredentials);
     }
 

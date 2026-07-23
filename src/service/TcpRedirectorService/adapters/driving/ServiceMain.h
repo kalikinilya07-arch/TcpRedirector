@@ -171,13 +171,25 @@ public:
             m_capture = std::move(capture);
         }
 
-        // Start WinDivert capture (H7: critical — fail Initialize if capture fails)
-        if (m_capture->Open()) {
-            m_logger->Info("service", "WinDivert capture started (DST-modification mode)");
-        } else {
-            m_logger->Error("service", "CRITICAL: WinDivert not available — install WinDivert driver first");
-            m_logger->Shutdown();
-            return false;
+        // Start WinDivert capture only if enabled in config.
+        // Default is OFF — user must configure and enable via GUI first.
+        {
+            auto cfg = m_configManager->GetConfig();
+            if (cfg.capture_enabled) {
+                if (m_capture->Open()) {
+                    m_logger->Info("service", "WinDivert capture started (DST-modification mode)");
+                } else {
+                    m_logger->Error("service", "CRITICAL: WinDivert not available — install WinDivert driver first");
+                    if (m_relayServer) {
+                        m_relayServer->Stop();
+                        m_logger->Info("service", "TcpRelayServer stopped (rollback)");
+                    }
+                    m_logger->Shutdown();
+                    return false;
+                }
+            } else {
+                m_logger->Info("service", "Capture disabled by config — waiting for GUI to enable");
+            }
         }
 
         // Enable scheduled log rotation (config.json only, not in UI)
@@ -230,17 +242,34 @@ public:
             },
             [this](bool start) -> bool {
                 if (!m_capture) return false;
+                bool ok = false;
                 if (start) {
                     if (!m_capture->IsOpen()) {
-                        return m_capture->Open();
+                        ok = m_capture->Open();
+                    } else {
+                        ok = true; // already open
                     }
-                    return true; // already open
                 } else {
                     if (m_capture->IsOpen()) {
                         m_capture->Close();
                     }
-                    return true; // already closed
+                    ok = true; // already closed
                 }
+                // Persist capture state to config so it survives reboots
+                if (ok && m_configManager) {
+                    try {
+                        auto cfg = m_configManager->GetConfig();
+                        cfg.capture_enabled = start;
+                        m_configManager->UpdateConfig(cfg);
+                        m_logger->Info("service", std::string("Capture ") +
+                            (start ? "enabled" : "disabled") + " (persisted to config)");
+                    } catch (const std::exception& e) {
+                        m_logger->Warn("service", std::string("Failed to persist capture state: ") + e.what());
+                    } catch (...) {
+                        m_logger->Warn("service", "Failed to persist capture state (unknown error)");
+                    }
+                }
+                return ok;
             },
             [this]() -> bool {
                 if (!m_configManager) return false;
@@ -287,6 +316,20 @@ public:
                 }
                 m_logger->Info("service", "Configuration reloaded");
                 return true;
+            },
+            [this]() {
+                // Called after GUI saves proxy config — update relay + capture immediately
+                auto proxyCfg = m_configManager->GetProxyConfig();
+                if (m_relayServer) {
+                    m_relayServer->SetProxyConfig(proxyCfg, 1);
+                }
+                auto* capture = static_cast<infrastructure::WinDivertCapture*>(m_capture.get());
+                if (capture) {
+                    capture->SetProxyConfig(
+                        infrastructure::WideToUtf8(proxyCfg.host),
+                        proxyCfg.port);
+                }
+                m_logger->Info("service", "Proxy config updated from GUI (relay + capture)");
             });
         SetupIpcHandlers();
         if (m_pipeServer->Start()) {
@@ -406,12 +449,17 @@ private:
                     nlohmann::json j;
                     j["jsonrpc"] = "2.0";
                     j["result"]["service_state"] = m_running ? "running" : "stopped";
-                    j["result"]["driver_loaded"] = m_capture && m_capture->IsOpen();
-                    j["result"]["capture_enabled"] = m_capture && m_capture->IsOpen();
+                    bool captureOpen = m_capture && m_capture->IsOpen();
+                    j["result"]["driver_loaded"] = captureOpen;
+                    j["result"]["capture_active"] = captureOpen;     // runtime state
+                    j["result"]["capture_enabled"] = m_configManager
+                        ? m_configManager->GetConfig().capture_enabled
+                        : false;                                      // config state (persisted)
                     j["result"]["active_connections"] = m_capture
                         ? static_cast<infrastructure::WinDivertCapture*>(m_capture.get())->GetActiveConnections()
                         : 0;
-                    j["result"]["relay_connections"] = 0; // TODO: from m_connTable
+                    j["result"]["relay_connections"] = 0;
+                    j["result"]["agent_user"] = infrastructure::KerberosAgentProvider::GetAgentUser();
                     j["result"]["version"] = "1.1.0";
                     j["id"] = nullptr;
                     response = j.dump();

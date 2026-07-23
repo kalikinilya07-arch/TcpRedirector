@@ -8,6 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>TcpRedirectorGUI</RootNamespace>
     <AssemblyName>TcpRedirectorGUI</AssemblyName>
+    <Version>1.1.8</Version>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

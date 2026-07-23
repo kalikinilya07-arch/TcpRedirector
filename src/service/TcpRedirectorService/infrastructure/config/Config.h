@@ -89,12 +89,13 @@ struct StatsSettings {
  * Предоставляет метод GetExeName() для извлечения имени файла из пути.
  */
 struct Config {
-    AppSettings          app;           //!< Настройки целевого процесса
-    ProxySettings        proxy;         //!< Настройки прокси-сервера
-    AuthSettings         auth;          //!< Настройки авторизации
-    LogSettings          log;           //!< Настройки логирования
-    LogRotationSettings  log_rotation;  //!< Настройки ротации логов (только config, не UI)
-    StatsSettings        stats;         //!< Настройки статистики
+    AppSettings          app;              //!< Настройки целевого процесса
+    ProxySettings        proxy;            //!< Настройки прокси-сервера
+    AuthSettings         auth;             //!< Настройки авторизации
+    LogSettings          log;              //!< Настройки логирования
+    LogRotationSettings  log_rotation;     //!< Настройки ротации логов (только config, не UI)
+    StatsSettings        stats;            //!< Настройки статистики
+    bool                 capture_enabled = false;  //!< Запускать ли захват при старте (включается из GUI)
 
     /**
      * @brief Извлечь имя исполняемого файла из полного пути.

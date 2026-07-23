@@ -271,7 +271,9 @@ public class IpcClient : ITcpRedirectorService, IDisposable
         {
             Running = d.GetProperty("service_state").GetString() == "running",
             DriverLoaded = d.GetProperty("driver_loaded").GetBoolean(),
+            CaptureActive = d.GetProperty("capture_active").GetBoolean(),
             CaptureEnabled = d.GetProperty("capture_enabled").GetBoolean(),
+            AgentUser = d.TryGetProperty("agent_user", out var au) && au.ValueKind == System.Text.Json.JsonValueKind.String ? au.GetString() ?? "" : "",
             ActiveConnections = (int)d.GetProperty("active_connections").GetInt32(),
             RelayConnections = (int)d.GetProperty("relay_connections").GetInt32(),
             Version = d.GetProperty("version").GetString() ?? ""

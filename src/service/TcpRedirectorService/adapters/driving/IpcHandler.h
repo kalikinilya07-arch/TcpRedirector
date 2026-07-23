@@ -32,6 +32,9 @@ using CaptureControlCallback = std::function<bool(bool start)>;
 // Callback to reload configuration from disk
 using ReloadConfigCallback = std::function<bool()>;
 
+// Callback to notify that proxy config was updated (host/port/auth changed)
+using OnProxyConfigChanged = std::function<void()>;
+
 class IpcHandler {
 public:
     IpcHandler(
@@ -45,7 +48,8 @@ public:
         GetActiveCountCallback getActiveCount = nullptr,
         GetUptimeCallback getUptime = nullptr,
         CaptureControlCallback captureControl = nullptr,
-        ReloadConfigCallback reloadConfig = nullptr)
+        ReloadConfigCallback reloadConfig = nullptr,
+        OnProxyConfigChanged onProxyConfigChanged = nullptr)
         : m_ruleEngine(ruleEngine)
         , m_connectionTracker(connectionTracker)
         , m_configManager(configManager)
@@ -56,7 +60,8 @@ public:
         , m_getActiveCount(std::move(getActiveCount))
         , m_getUptime(std::move(getUptime))
         , m_captureControl(std::move(captureControl))
-        , m_reloadConfig(std::move(reloadConfig)) {
+        , m_reloadConfig(std::move(reloadConfig))
+        , m_onProxyConfigChanged(std::move(onProxyConfigChanged)) {
     }
 
     // M13: Maximum IPC message size to prevent OOM from giant JSON payloads
@@ -161,6 +166,10 @@ private:
             result["status"] = "error";
             result["error"] = "failed to persist config";
             return;
+        }
+        // Notify relay server to pick up new proxy config immediately
+        if (m_onProxyConfigChanged) {
+            m_onProxyConfigChanged();
         }
         result["status"] = "success";
     }
@@ -276,6 +285,8 @@ private:
         result["status"] = "success";
         result["data"]["running"] = m_running->load();
         result["data"]["initialized"] = m_initialized->load();
+        auto cfg = m_configManager->GetConfig();
+        result["data"]["capture_enabled"] = cfg.capture_enabled;
     }
 
     void SetLogLevel(const std::string& params, nlohmann::json& result) {
@@ -333,6 +344,7 @@ private:
     GetUptimeCallback m_getUptime;
     CaptureControlCallback m_captureControl;
     ReloadConfigCallback m_reloadConfig;
+    OnProxyConfigChanged m_onProxyConfigChanged;
 };
 
 } // namespace adapters

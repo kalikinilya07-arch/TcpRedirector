@@ -62,6 +62,10 @@ public:
     // Exposed for StaticLog helper in .cpp
     static std::function<void(const std::string&)> s_logFn;
 
+    /// Returns the Windows user name under which the AuthAgent is running.
+    /// Empty if agent has never connected.
+    static std::string GetAgentUser() { return s_agentUser; }
+
 private:
     static constexpr const wchar_t* kPipeName = L"\\\\.\\pipe\\TcpRedirectorAuth";
     static constexpr auto kKeepaliveInterval = std::chrono::seconds(15);
@@ -78,6 +82,7 @@ private:
     static bool LaunchAuthAgentInUserSession();
     static std::atomic<bool> s_launchInProgress;
     static std::atomic<int64_t> s_lastLaunchTime;  // nanoseconds since epoch
+    static std::string s_agentUser;                // user account under which agent runs
 
     // ---- JSON-RPC helpers ----
     nlohmann::json Call(const std::string& method,

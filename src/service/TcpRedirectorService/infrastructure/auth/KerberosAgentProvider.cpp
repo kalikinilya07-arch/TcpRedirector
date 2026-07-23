@@ -1,6 +1,7 @@
 #include "KerberosAgentProvider.h"
 #include <sstream>
 #include <cstdio>
+#include <tlhelp32.h>
 
 namespace tcp_redirector {
 namespace infrastructure {
@@ -8,6 +9,7 @@ namespace infrastructure {
 // Static members
 std::atomic<bool> KerberosAgentProvider::s_launchInProgress{false};
 std::atomic<int64_t> KerberosAgentProvider::s_lastLaunchTime{0};
+std::string KerberosAgentProvider::s_agentUser;
 std::function<void(const std::string&)> KerberosAgentProvider::s_logFn;
 
 // Helper: log via static callback if set
@@ -193,6 +195,11 @@ bool KerberosAgentProvider::ConnectToAgent() {
             m_version.store(resp["result"]["version"].get<int>(),
                            std::memory_order_release);
             m_connected.store(true, std::memory_order_release);
+            // Store agent user for GUI display (Kerberos ticket context)
+            if (resp["result"].contains("user")) {
+                s_agentUser = resp["result"]["user"].get<std::string>();
+                StaticLog("[ConnectToAgent] agent user: " + s_agentUser);
+            }
             StaticLog("[ConnectToAgent] version negotiation OK, connected");
             return true;
         }

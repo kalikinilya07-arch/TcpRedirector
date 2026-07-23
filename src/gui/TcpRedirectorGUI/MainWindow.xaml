@@ -4,7 +4,7 @@
         xmlns:vm="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.ViewModels"
         xmlns:ctl="clr-namespace:TcpRedirectorGUI.Adapters.Driving.Wpf.Controls"
         Title="TcpRedirector"
-        Width="1100" MinHeight="700" MinWidth="900" SizeToContent="Height"
+        Width="1100" MinHeight="550" MinWidth="900" MaxHeight="820" SizeToContent="Height"
         Background="#1E1E1E"
         FontFamily="Segoe UI"
         TextElement.Foreground="#CCCCCC"
@@ -95,6 +95,14 @@
                     <TextBlock Text="{Binding SvcMsg, Mode=OneWay}"
                                Foreground="#4EC9B0" FontSize="12"
                                Margin="8,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <!-- User name (top-right corner) -->
+                <StackPanel Grid.Column="6" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="👤" FontSize="12" Foreground="#858585" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBlock Text="{Binding UserName, Mode=OneWay}"
+                               Foreground="#CCCCCC" FontSize="12"
+                               VerticalAlignment="Center"/>
                 </StackPanel>
 
             </Grid>
@@ -347,7 +355,7 @@
                             </TextBlock>
                             <TextBlock Grid.Column="4" Foreground="#858585" FontSize="10" Margin="16,0">
                                 <Run Text="Rate:"/>
-                                <Run Text="{Binding Stats.ConnectionRate, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
+                                <Run Text="{Binding Stats.DataRate, Mode=OneWay}" FontWeight="Bold" Foreground="#CCCCCC"/>
                             </TextBlock>
                         </Grid>
                     </Grid>

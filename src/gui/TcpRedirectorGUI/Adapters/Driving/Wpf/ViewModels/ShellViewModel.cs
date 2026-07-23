@@ -81,6 +81,11 @@ public partial class ShellViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _versionText = "TcpRedirector v1.1.5";
 
+    // ---- User info ----
+
+    [ObservableProperty]
+    private string _userName = "";
+
     // ---- Child ViewModels ----
 
     public SettingsViewModel Settings { get; }
@@ -127,7 +132,9 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
             StartTimer();
             Settings.LoadFromConfig();
-            IsCaptureRunning = true;  // service starts capture automatically
+            // Query real capture state from service (not hardcoded)
+            var status = await _svc.GetStatusAsync();
+            IsCaptureRunning = status?.CaptureActive ?? false;
             SvcStatus = "Running";
             IsServiceAvailable = true;
             ServiceStatusText = "🟢 Service running";
@@ -281,7 +288,11 @@ public partial class ShellViewModel : ObservableObject, IDisposable
 
                 var status = statusTask.Result;
                 if (status is not null)
+                {
                     SvcStatus = status.Running ? "Running" : "Stopped";
+                    if (!string.IsNullOrEmpty(status.AgentUser))
+                        UserName = status.AgentUser;
+                }
             }
             catch (OperationCanceledException)
             {

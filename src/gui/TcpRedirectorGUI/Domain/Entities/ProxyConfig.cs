@@ -122,7 +122,9 @@ public class ServiceStatus
     public bool Initialized { get; set; }
     // v1.1.0: extended status fields
     public bool DriverLoaded { get; set; }
-    public bool CaptureEnabled { get; set; }
+    public bool CaptureActive { get; set; }     // runtime: is capture actually running?
+    public bool CaptureEnabled { get; set; }    // config: will auto-start on reboot?
+    public string AgentUser { get; set; } = ""; // user under which AuthAgent runs
     public int ActiveConnections { get; set; }
     public int RelayConnections { get; set; }
     public string Version { get; set; } = "";
